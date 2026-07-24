@@ -1,0 +1,13 @@
+[Unit]
+Description=Encrypted backup for owui-personal-slim
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/owui-personal-slim-backup.env
+ExecStart=/opt/owui-personal-slim/deploy/backup.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
