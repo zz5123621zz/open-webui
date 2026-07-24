@@ -56,10 +56,18 @@ install -d -m 0700 -o 65532 -g 65532 "$DEPLOY_ROOT/data/backups"
 install -d -m 0700 "$DEPLOY_ROOT/secrets"
 install -d -m 0700 "$DEPLOY_ROOT/encrypted-backups"
 install -d -m 0750 "$DEPLOY_ROOT/deploy"
+install -d -m 0750 "$DEPLOY_ROOT/deploy/systemd"
 install -m 0640 "$SOURCE_ROOT/compose.yaml" "$DEPLOY_ROOT/compose.yaml"
 install -m 0750 "$SOURCE_ROOT/deploy/backup.sh" "$DEPLOY_ROOT/deploy/backup.sh"
+install -m 0750 "$SOURCE_ROOT/deploy/setup-backup-root.sh" "$DEPLOY_ROOT/deploy/setup-backup-root.sh"
 install -m 0750 "$SOURCE_ROOT/deploy/preflight.sh" "$DEPLOY_ROOT/deploy/preflight.sh"
 install -m 0750 "$SOURCE_ROOT/deploy/certbot-reload-nginx.sh" "$DEPLOY_ROOT/deploy/certbot-reload-nginx.sh"
+install -m 0644 \
+  "$SOURCE_ROOT/deploy/systemd/owui-personal-slim-backup.service" \
+  "$DEPLOY_ROOT/deploy/systemd/owui-personal-slim-backup.service"
+install -m 0644 \
+  "$SOURCE_ROOT/deploy/systemd/owui-personal-slim-backup.timer" \
+  "$DEPLOY_ROOT/deploy/systemd/owui-personal-slim-backup.timer"
 
 if [ ! -e "$DEPLOY_ROOT/.env" ]; then
   umask 077

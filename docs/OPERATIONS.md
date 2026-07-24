@@ -166,6 +166,21 @@ sudo docker inspect --format '{{.Image}}' owui-personal-slim
 4. 只保留最近 7 份本机密文；
 5. 若设置 `RCLONE_REMOTE`，上传密文到异地。
 
+首次部署可用安装脚本生成 root-only age identity、写入
+`/etc/owui-personal-slim-backup.env`，并启用每日 systemd timer：
+
+```bash
+cd /home/vpsadmin/owui-personal-slim
+sudo ./deploy/setup-backup-root.sh
+sudo systemctl status owui-personal-slim-backup.timer
+sudo systemctl status owui-personal-slim-backup.service
+```
+
+默认每天 UTC 03:17 执行，并加入最多 30 分钟随机延迟。私钥位于
+`/root/.config/owui-personal-slim/backup-age-key.txt`；必须另行保存到
+VPS 之外的安全位置，否则 VPS 整机丢失后无法解密备份。需要异地上传时，
+先配置 rclone，再以 `RCLONE_REMOTE='remote:path'` 重跑安装脚本。
+
 恢复演练必须在单独目录中进行。停止应用后解密归档，恢复 `app.db`、
 `uploads/` 与 `generated/`，确认属主为 `65532:65532`、目录 `0700`、
 文件 `0600`，再启动固定的旧镜像 digest。
