@@ -1,0 +1,30 @@
+{
+  "name": "owui-personal-slim-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource-variable/noto-sans-sc": "5.3.0",
+    "dompurify": "3.4.12",
+    "highlight.js": "11.11.1",
+    "katex": "0.17.0",
+    "marked": "15.0.12",
+    "marked-katex-extension": "5.1.10",
+    "svelte": "5.56.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@sveltejs/vite-plugin-svelte": "5.0.3",
+    "@tsconfig/svelte": "5.0.4",
+    "@types/node": "22.15.3",
+    "svelte-check": "4.1.7",
+    "typescript": "5.8.3",
+    "vite": "6.4.3"
+  }
+}

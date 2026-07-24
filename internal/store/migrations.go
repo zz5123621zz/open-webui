@@ -1,0 +1,148 @@
+package store
+
+const schemaV1 = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+	id TEXT PRIMARY KEY,
+	username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+	password_hash TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	preferred_model TEXT,
+	status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	token_hash BLOB NOT NULL UNIQUE,
+	expires_at INTEGER NOT NULL,
+	last_seen_at INTEGER NOT NULL,
+	created_at INTEGER NOT NULL,
+	user_agent_hash BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	title TEXT NOT NULL DEFAULT 'New chat',
+	model TEXT NOT NULL,
+	reasoning_effort TEXT NOT NULL DEFAULT 'auto',
+	archived_at INTEGER,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_updated ON conversations(user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS messages (
+	id TEXT PRIMARY KEY,
+	conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+	model TEXT,
+	reasoning_effort_requested TEXT,
+	reasoning_effort_sent TEXT,
+	status TEXT NOT NULL CHECK (status IN ('pending', 'streaming', 'completed', 'interrupted', 'error')),
+	parent_message_id TEXT REFERENCES messages(id),
+	provider_response_id TEXT,
+	client_request_id TEXT,
+	input_tokens INTEGER,
+	output_tokens INTEGER,
+	reasoning_tokens INTEGER,
+	error_code TEXT,
+	created_at INTEGER NOT NULL,
+	completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_user_request ON messages(user_id, client_request_id) WHERE client_request_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS message_parts (
+	id TEXT PRIMARY KEY,
+	message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+	sequence INTEGER NOT NULL,
+	type TEXT NOT NULL,
+	text_content TEXT,
+	json_content TEXT,
+	attachment_id TEXT,
+	created_at INTEGER NOT NULL,
+	UNIQUE(message_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+	message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+	kind TEXT NOT NULL CHECK (kind IN ('upload', 'generated')),
+	original_name TEXT,
+	media_type TEXT NOT NULL,
+	byte_size INTEGER NOT NULL,
+	sha256 TEXT NOT NULL,
+	storage_path TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_user ON attachments(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS provider_items (
+	id TEXT PRIMARY KEY,
+	message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+	sequence INTEGER NOT NULL,
+	item_type TEXT NOT NULL,
+	replay_json TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	UNIQUE(message_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS context_checkpoints (
+	id TEXT PRIMARY KEY,
+	conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	boundary_message_id TEXT NOT NULL REFERENCES messages(id),
+	previous_checkpoint_id TEXT REFERENCES context_checkpoints(id),
+	model TEXT NOT NULL,
+	summary_text TEXT NOT NULL,
+	source_first_message_id TEXT NOT NULL REFERENCES messages(id),
+	source_last_message_id TEXT NOT NULL REFERENCES messages(id),
+	estimated_tokens_before INTEGER NOT NULL,
+	estimated_tokens_after INTEGER NOT NULL,
+	source_bytes INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_conversation ON context_checkpoints(conversation_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tool_events (
+	id TEXT PRIMARY KEY,
+	message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+	call_id TEXT,
+	tool_type TEXT NOT NULL,
+	status TEXT NOT NULL,
+	safe_arguments_json TEXT,
+	safe_result_json TEXT,
+	started_at INTEGER NOT NULL,
+	completed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_tool_events_message ON tool_events(message_id, started_at);
+`
+
+const schemaV2 = `
+ALTER TABLE context_checkpoints ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE context_checkpoints ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+DELETE FROM context_checkpoints
+WHERE rowid NOT IN (
+	SELECT MAX(rowid)
+	FROM context_checkpoints
+	GROUP BY conversation_id, boundary_message_id
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_checkpoints_boundary
+ON context_checkpoints(conversation_id, boundary_message_id);
+`
