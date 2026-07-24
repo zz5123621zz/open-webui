@@ -21,8 +21,9 @@ const (
 )
 
 var (
-	ErrUnavailable = errors.New("provider unavailable")
-	ErrBadResponse = errors.New("invalid provider response")
+	ErrUnavailable        = errors.New("provider unavailable")
+	ErrBadResponse        = errors.New("invalid provider response")
+	ErrImagePromptTooLong = errors.New("image prompt too long")
 )
 
 type Model struct {
@@ -58,6 +59,7 @@ type Client struct {
 	httpClient       *http.Client
 	streamClient     *http.Client
 	clientVersion    string
+	imagePromptMax   int
 	requestMax       int64
 	requestTempDir   string
 }
@@ -90,6 +92,7 @@ func NewClient(cfg config.Provider, appVersion string) *Client {
 			ResponseHeaderTimeout: 10 * time.Minute,
 		}},
 		clientVersion:  "owui-personal-slim/" + appVersion,
+		imagePromptMax: cfg.ImagePromptMaxBytes,
 		requestMax:     cfg.RequestBodyMaxBytes,
 		requestTempDir: cfg.RequestTempDir,
 	}

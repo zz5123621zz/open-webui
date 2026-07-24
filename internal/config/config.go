@@ -40,6 +40,7 @@ type Provider struct {
 	ModelsTimeout             time.Duration
 	DefaultReasoningEffort    string
 	UnknownModelContextTokens int
+	ImagePromptMaxBytes       int
 	RequestBodyMaxBytes       int64
 	RequestTempDir            string
 }
@@ -116,6 +117,7 @@ func Load() (Config, error) {
 		ModelsTimeout:             5 * time.Second,
 		DefaultReasoningEffort:    strings.ToLower(env("AI_DEFAULT_REASONING_EFFORT", "auto")),
 		UnknownModelContextTokens: 128000,
+		ImagePromptMaxBytes:       8000,
 		RequestBodyMaxBytes:       50 * 1024 * 1024,
 		RequestTempDir:            filepath.Join(absoluteDataDir, "tmp", "provider"),
 	}
@@ -178,6 +180,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("AI_REQUEST_BODY_MAX_BYTES must be between 1 MiB and 50 MiB")
 		}
 		cfg.Provider.RequestBodyMaxBytes = bytes
+	}
+	if raw := strings.TrimSpace(os.Getenv("AI_IMAGE_PROMPT_MAX_BYTES")); raw != "" {
+		bytes, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || bytes < 1024 || bytes > 1<<20 {
+			return Config{}, fmt.Errorf("AI_IMAGE_PROMPT_MAX_BYTES must be between 1024 and 1048576")
+		}
+		cfg.Provider.ImagePromptMaxBytes = bytes
 	}
 	if !validReasoningEffort(cfg.Provider.DefaultReasoningEffort) {
 		return Config{}, fmt.Errorf("AI_DEFAULT_REASONING_EFFORT is invalid")

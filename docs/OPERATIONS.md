@@ -79,6 +79,9 @@ sudo chmod 0400 /opt/owui-personal-slim/secrets/*
 - `AI_DEDICATED_IMAGE_MODELS_JSON`：聊天模型到
   `/v1/images/generations` 专用模型的映射。CPA 模式在变量缺失或为空时
   默认使用 `{"grok-4.5":"grok-imagine-image-quality"}`。
+- `AI_IMAGE_PROMPT_MAX_BYTES`：专用图片接口的提示词 UTF-8 字节上限。
+  CPA Imagine 当前限制为 `8000`。应用会先移除仅用于排版的空白；压缩后
+  仍超限时会在本地返回明确错误，不会把无效请求发送给 CPA。
 
 应用只发送模型、提示词、`n=1` 和 `response_format=b64_json`；不会覆盖
 `quality`、`size`、`compression` 或 `partial_images`，因此图片质量保持
