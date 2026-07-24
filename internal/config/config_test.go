@@ -28,6 +28,14 @@ func TestLoadDevelopmentConfig(t *testing.T) {
 	if cfg.Provider.ImagePromptMaxBytes != 8000 {
 		t.Fatalf("image prompt limit = %d, want 8000", cfg.Provider.ImagePromptMaxBytes)
 	}
+	if cfg.Provider.DefaultReasoningEffort != "high" {
+		t.Fatalf("default reasoning effort = %q, want high", cfg.Provider.DefaultReasoningEffort)
+	}
+	if cfg.Lifecycle.MaxStorageBytes != 3*1024*1024*1024 ||
+		cfg.Lifecycle.MaxActiveConversations != 30 ||
+		cfg.Lifecycle.MaxPinnedConversations != 10 {
+		t.Fatalf("lifecycle defaults = %#v", cfg.Lifecycle)
+	}
 }
 
 func TestLoadSecretFile(t *testing.T) {

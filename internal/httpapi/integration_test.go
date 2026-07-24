@@ -103,6 +103,12 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	admin, err := dataStore.CreateUserWithRole(
+		context.Background(), "admin", "Administrator", passwordHash, "admin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	baseURL, _ := url.Parse("http://chat.test")
 	providerURL, _ := url.Parse(mockProvider.URL + "/v1")
@@ -311,6 +317,62 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	}
 	crossUserImage.Body.Close()
 
+	adminToken, err := createTestSession(dataStore, admin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminList := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/conversations", adminToken, "", "",
+	)
+	var adminConversations struct {
+		Conversations []store.Conversation `json:"conversations"`
+	}
+	if err := json.NewDecoder(adminList.Body).Decode(&adminConversations); err != nil {
+		t.Fatal(err)
+	}
+	adminList.Body.Close()
+	if adminList.StatusCode != http.StatusOK || len(adminConversations.Conversations) < 2 {
+		t.Fatalf("admin conversations status=%d body=%#v", adminList.StatusCode, adminConversations)
+	}
+	foundOwnedConversation := false
+	for _, item := range adminConversations.Conversations {
+		if item.ID == conversation.ID && item.UserID == user.ID && item.OwnerUsername == user.Username {
+			foundOwnedConversation = true
+		}
+	}
+	if !foundOwnedConversation {
+		t.Fatalf("admin list omitted owner metadata: %#v", adminConversations.Conversations)
+	}
+	adminMessages := authenticatedRequest(
+		t, http.MethodGet,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/messages",
+		adminToken, "", "",
+	)
+	if adminMessages.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(adminMessages.Body)
+		t.Fatalf("admin message read status=%d body=%s", adminMessages.StatusCode, body)
+	}
+	adminMessages.Body.Close()
+	adminImage := authenticatedRequest(
+		t, http.MethodGet,
+		server.URL+"/api/v1/attachments/"+generatedAttachmentID+"/content",
+		adminToken, "", "",
+	)
+	if adminImage.StatusCode != http.StatusOK {
+		t.Fatalf("admin image read status=%d", adminImage.StatusCode)
+	}
+	adminImage.Body.Close()
+	adminWrite := authenticatedRequest(
+		t, http.MethodPatch,
+		server.URL+"/api/v1/conversations/"+conversation.ID,
+		adminToken, app.csrfToken(adminToken), `{"title":"must not change"}`,
+	)
+	if adminWrite.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(adminWrite.Body)
+		t.Fatalf("admin cross-user write status=%d body=%s", adminWrite.StatusCode, body)
+	}
+	adminWrite.Body.Close()
+
 	generatedRoot := filepath.Join(dataDir, "generated")
 	if _, err := os.Stat(generatedRoot); err != nil {
 		t.Fatalf("generated image was not written: %v", err)
@@ -422,7 +484,7 @@ func authenticatedRequest(t *testing.T, method, endpoint string, cookie any, csr
 }
 
 func createTestSession(dataStore *store.Store, userID string) (string, error) {
-	token := "other-user-session-token"
+	token := "test-session-" + userID
 	_, err := dataStore.CreateSession(context.Background(), userID, token, "test", time.Hour)
 	return token, err
 }

@@ -12,6 +12,7 @@
     getMessages,
     getModels,
     getSession,
+    getStorageStatus,
     login,
     logout,
     logoutAll,
@@ -31,6 +32,7 @@
     Message,
     MessagePart,
     Model,
+    StorageStatus,
     StreamEvent,
     User
   } from './lib/types';
@@ -71,7 +73,33 @@
   let editingTitleId = '';
   let editingTitle = '';
   let modelPickerOpen = false;
+  let effortPickerOpen = false;
   let modelSearch = '';
+  let storageStatus: StorageStatus | null = null;
+  let creatingConversation = false;
+  const reasoningChoices = [
+    {
+      value: 'medium',
+      chinese: '低',
+      english: 'Low',
+      chineseDescription: '适合日常聊天，响应更快',
+      englishDescription: 'Faster for everyday conversations'
+    },
+    {
+      value: 'high',
+      chinese: '中',
+      english: 'Medium',
+      chineseDescription: '默认档位，质量与速度均衡',
+      englishDescription: 'Default balance of quality and speed'
+    },
+    {
+      value: 'max',
+      chinese: '高',
+      english: 'High',
+      chineseDescription: '适合复杂任务，可能等待更久',
+      englishDescription: 'For complex tasks; may take longer'
+    }
+  ] as const;
   type Theme = 'light' | 'dark' | 'system';
   const savedTheme = localStorage.getItem('personal-chat-theme');
   let theme: Theme =
@@ -84,11 +112,15 @@
     conversations.find((conversation) => conversation.id === activeConversationId) || null;
   $: activeModel =
     models.find((model) => model.id === (activeConversation?.model || draftModel)) || null;
-  $: effortOptions = Array.from(
-    new Set(['auto', ...(activeModel?.reasoningEfforts || [])])
-  );
   $: selectedReasoningEffort =
     activeConversation?.reasoningEffort || draftReasoningEffort;
+  $: viewingOtherUser =
+    Boolean(
+      user?.role === 'admin' &&
+        activeConversation?.ownerId &&
+        activeConversation.ownerId !== user.id
+    );
+  $: activeConversationReadOnly = showArchived || viewingOtherUser;
   $: selectableModels = models.filter((model) => model.selectable);
   $: filteredModels = selectableModels.filter((model) => {
     const query = modelSearch.trim().toLocaleLowerCase();
@@ -186,6 +218,18 @@
         'The connection ended before completion. The latest state was restored when possible.'
       ],
       too_many_requests: ['当前请求较多，请稍后再试。', 'The request queue is full. Try again shortly.'],
+      storage_quota_exceeded: [
+        '你的 3 GB 活跃空间已满，请先将对话移入临时留档或删除图片。',
+        'Your 3 GB active storage is full. Retain a chat or delete images before continuing.'
+      ],
+      conversation_limit_reached: [
+        '30 个活跃对话都已置顶保护，请先取消置顶或移入临时留档。',
+        'All 30 active chats are protected. Unpin or retain one before continuing.'
+      ],
+      pin_limit_reached: [
+        '每名用户最多置顶 10 个对话。',
+        'Each user can pin at most 10 chats.'
+      ],
       provider_queue_timeout: ['排队等待超时，请重试。', 'The request timed out while queued. Try again.'],
       provider_request_too_large: [
         '当前对话编译后超过 50 MiB，请减少本轮图片或开启新对话。',
@@ -198,14 +242,24 @@
   }
 
   function effortForModel(model: Model | undefined, requested: string): string {
-    if (!model) return 'auto';
-    const supported = new Set(['auto', ...(model.reasoningEfforts || [])]);
-    if (supported.has(requested)) return requested;
-    if (model.defaultReasoningEffort && supported.has(model.defaultReasoningEffort)) {
-      return model.defaultReasoningEffort;
-    }
-    if (supported.has('high')) return 'high';
-    return 'auto';
+    if (!model) return 'high';
+    const candidates = [
+      requested,
+      model.defaultReasoningEffort || '',
+      'high',
+      'medium',
+      'max'
+    ];
+    return candidates.find((effort) => supportsEffort(model, effort)) || 'high';
+  }
+
+  function supportsEffort(model: Model | null | undefined, effort: string): boolean {
+    if (!model || !model.capabilitiesComplete) return true;
+    return Boolean(model.reasoningEfforts?.includes(effort));
+  }
+
+  function ownsConversation(conversation: Conversation | null | undefined): boolean {
+    return Boolean(conversation && (!conversation.ownerId || conversation.ownerId === user?.id));
   }
 
   function setDraftModel(modelId: string) {
@@ -216,12 +270,14 @@
   }
 
   async function loadWorkspace() {
-    const [loadedModels, loadedConversations] = await Promise.all([
+    const [loadedModels, loadedConversations, loadedStorage] = await Promise.all([
       getModels(),
-      getConversations(false)
+      getConversations(false),
+      getStorageStatus().catch(() => null)
     ]);
     models = loadedModels;
     conversations = loadedConversations;
+    storageStatus = loadedStorage;
     const initialDraftModel =
       (user?.preferredModel &&
         loadedModels.find(
@@ -240,6 +296,14 @@
       loadedConversations.find((conversation) => conversation.id === remembered) ||
       loadedConversations[0];
     if (initial) await openConversation(initial.id);
+  }
+
+  async function refreshStorage() {
+    try {
+      storageStatus = await getStorageStatus();
+    } catch {
+      // Quota information is advisory; chat state remains usable if it cannot refresh.
+    }
   }
 
   async function refreshModels() {
@@ -286,6 +350,7 @@
       messages = [];
       checkpoints = [];
       conversations = [];
+      storageStatus = null;
       profileOpen = false;
       phase = 'login';
     }
@@ -297,6 +362,7 @@
     messages = [];
     checkpoints = [];
     conversations = [];
+    storageStatus = null;
     profileOpen = false;
     dialog = '';
     phase = 'login';
@@ -369,28 +435,43 @@
   }
 
   async function newConversation(): Promise<Conversation | null> {
-    if (generating) return null;
+    if (generating || creatingConversation) return null;
+    creatingConversation = true;
     workspaceError = '';
     try {
-      const wasShowingArchived = showArchived;
+      const useActiveSettings = ownsConversation(activeConversation);
       const conversation = await createConversation(
-        activeConversation?.model || draftModel,
-        activeConversation?.reasoningEffort || draftReasoningEffort
+        useActiveSettings ? activeConversation?.model || draftModel : draftModel,
+        useActiveSettings
+          ? activeConversation?.reasoningEffort || draftReasoningEffort
+          : draftReasoningEffort
       );
       showArchived = false;
-      conversations = wasShowingArchived ? [conversation] : [conversation, ...conversations];
+      try {
+        conversations = await getConversations(false);
+      } catch {
+        conversations = [
+          conversation,
+          ...conversations.filter(
+            (item) => item.id !== conversation.id && !item.archivedAt
+          )
+        ];
+      }
       activeConversationId = conversation.id;
       messages = [];
       checkpoints = [];
       contextStatus = '';
       localStorage.setItem('personal-chat-conversation', conversation.id);
       sidebarOpen = false;
+      await refreshStorage();
       await tick();
       textareaElement?.focus();
       return conversation;
     } catch (error) {
       workspaceError = errorMessage(error);
       return null;
+    } finally {
+      creatingConversation = false;
     }
   }
 
@@ -420,6 +501,21 @@
         messages = [];
         checkpoints = [];
       }
+      await refreshStorage();
+    } catch (error) {
+      workspaceError = errorMessage(error);
+    }
+  }
+
+  async function togglePinned(event: Event, conversation: Conversation) {
+    event.stopPropagation();
+    if (generating && conversation.id === activeConversationId) return;
+    try {
+      const updated = await updateConversation(conversation.id, {
+        pinned: !conversation.pinnedAt
+      });
+      replaceConversation(updated);
+      await refreshStorage();
     } catch (error) {
       workspaceError = errorMessage(error);
     }
@@ -429,8 +525,8 @@
     event.stopPropagation();
     if (generating && conversation.id === activeConversationId) return;
     if (!confirm(t(
-      `删除“${conversation.title}”及其全部消息？`,
-      `Delete “${conversation.title}” and all of its messages?`
+      `永久删除“${conversation.title}”及其全部消息和图片？此操作无法恢复。`,
+      `Permanently delete “${conversation.title}” and all of its messages and images? This cannot be undone.`
     ))) return;
     try {
       await deleteConversation(conversation.id);
@@ -442,6 +538,7 @@
         checkpoints = [];
         if (next) await openConversation(next.id);
       }
+      await refreshStorage();
     } catch (error) {
       workspaceError = errorMessage(error);
     }
@@ -467,6 +564,7 @@
 
   async function selectModel(model: string) {
     modelPickerOpen = false;
+    effortPickerOpen = false;
     modelSearch = '';
     if (!activeConversation) {
       setDraftModel(model);
@@ -481,8 +579,8 @@
       }
       if (result.reasoningEffortReset) {
         contextStatus = t(
-          '新模型不支持原推理强度，已重置为自动。',
-          'The new model does not support the previous reasoning effort, so it was reset to Auto.'
+          '新模型不支持原推理强度，已切换到可用的默认档位。',
+          'The new model does not support the previous reasoning effort, so a supported default was selected.'
         );
       }
     } catch (error) {
@@ -491,14 +589,21 @@
   }
 
   function toggleModelPicker() {
-    if (generating || showArchived || !selectableModels.length) return;
+    if (generating || activeConversationReadOnly || !selectableModels.length) return;
     modelPickerOpen = !modelPickerOpen;
+    effortPickerOpen = false;
     modelSearch = '';
   }
 
-  async function changeEffort(event: Event) {
-    if (generating) return;
-    const reasoningEffort = (event.currentTarget as HTMLSelectElement).value;
+  function toggleEffortPicker() {
+    if (generating || activeConversationReadOnly || !activeModel) return;
+    effortPickerOpen = !effortPickerOpen;
+    modelPickerOpen = false;
+  }
+
+  async function selectEffort(reasoningEffort: string) {
+    if (generating || !supportsEffort(activeModel, reasoningEffort)) return;
+    effortPickerOpen = false;
     if (!activeConversation) {
       draftReasoningEffort = reasoningEffort;
       return;
@@ -512,7 +617,7 @@
   }
 
   function toggleImageGeneration() {
-    if (generating || showArchived) return;
+    if (generating || activeConversationReadOnly) return;
     if (!activeModel?.imageGenerationMode) {
       workspaceError = localizedAPIError(
         'model_image_generation_unsupported',
@@ -536,6 +641,7 @@
   }
 
   function prepareImagePrompt() {
+    if (activeConversationReadOnly) return;
     if (!activeModel?.imageGenerationMode) {
       workspaceError = localizedAPIError(
         'model_image_generation_unsupported',
@@ -566,7 +672,15 @@
   function replaceConversation(updated: Conversation) {
     conversations = conversations
       .map((conversation) => (conversation.id === updated.id ? updated : conversation))
-      .sort((left, right) => right.updatedAt - left.updatedAt);
+      .sort((left, right) => {
+        if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) {
+          return left.pinnedAt ? -1 : 1;
+        }
+        if (left.pinnedAt && right.pinnedAt && left.pinnedAt !== right.pinnedAt) {
+          return right.pinnedAt - left.pinnedAt;
+        }
+        return right.updatedAt - left.updatedAt;
+      });
   }
 
   async function chooseFiles(event: Event) {
@@ -574,6 +688,7 @@
     const files = Array.from(input.files || []);
     input.value = '';
     if (!files.length) return;
+    if (activeConversationReadOnly) return;
     if (generateImage) {
       workspaceError = localizedAPIError(
         'image_generation_attachments_unsupported',
@@ -606,6 +721,7 @@
         }
         uploads = [...uploads, await uploadAttachment(file)];
       }
+      await refreshStorage();
     } catch (error) {
       workspaceError = errorMessage(error);
     } finally {
@@ -617,6 +733,7 @@
     uploads = uploads.filter((item) => item.id !== attachment.id);
     try {
       await deleteAttachment(attachment.id);
+      await refreshStorage();
     } catch {
       // It may already be bound if the response started; the preview can still disappear.
     }
@@ -659,7 +776,12 @@
     const outgoingText = text.trim();
     const outgoingUploads = [...uploads];
     const outgoingGenerateImage = generateImage;
-    if (generating || uploading || (!outgoingText && outgoingUploads.length === 0)) return;
+    if (
+      generating ||
+      uploading ||
+      activeConversationReadOnly ||
+      (!outgoingText && outgoingUploads.length === 0)
+    ) return;
 
     let conversation = activeConversation;
     if (!conversation) conversation = await newConversation();
@@ -759,12 +881,13 @@
       } catch {
         // The current conversation remains usable if refreshing the sidebar fails.
       }
+      await refreshStorage();
       queueScroll();
     }
   }
 
   async function regenerate(message: Message) {
-    if (generating || !activeConversation) return;
+    if (generating || !activeConversation || activeConversationReadOnly) return;
     generating = true;
     workspaceError = '';
     contextStatus = '';
@@ -834,6 +957,7 @@
       activeAssistantId = '';
       contextStatus = '';
       await refreshCheckpoints(activeConversation.id);
+      await refreshStorage();
       queueScroll();
     }
   }
@@ -965,19 +1089,28 @@
     profileOpen = false;
   }
 
+  function effortChoice(effort: string) {
+    return reasoningChoices.find((choice) => choice.value === effort);
+  }
+
   function effortLabel(effort: string): string {
-    const labels: Record<string, [string, string]> = {
-      none: ['不推理', 'None'],
-      minimal: ['极低', 'Minimal'],
-      low: ['低', 'Low'],
-      medium: ['中', 'Medium'],
-      high: ['高', 'High'],
-      xhigh: ['极高', 'Extra high'],
-      max: ['最高', 'Maximum'],
-      ultra: ['超高', 'Ultra']
-    };
-    const label = labels[effort];
-    return `${t('推理', 'Reasoning')} · ${label ? t(label[0], label[1]) : effort}`;
+    const choice = effortChoice(effort);
+    return choice
+      ? `${t('推理', 'Reasoning')} · ${t(choice.chinese, choice.english)}`
+      : `${t('推理', 'Reasoning')} · ${effort}`;
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024 * 1024) return `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function storagePercent(status: StorageStatus): number {
+    if (status.limitBytes <= 0) return 0;
+    return Math.min(100, Math.max(0, status.usedBytes / status.limitBytes * 100));
   }
 
   function modelCapabilityLabel(model: Model): string {
@@ -993,9 +1126,12 @@
       capabilities.push(t('图片生成', 'Image generation'));
     }
     if (model.reasoningEfforts?.length) {
-      capabilities.push(
-        `${t('推理', 'Reasoning')}: ${model.reasoningEfforts.join('/')}`
-      );
+      const visibleEfforts = reasoningChoices
+        .filter((choice) => supportsEffort(model, choice.value))
+        .map((choice) => t(choice.chinese, choice.english));
+      if (visibleEfforts.length) {
+        capabilities.push(`${t('推理', 'Reasoning')}: ${visibleEfforts.join('/')}`);
+      }
     }
     return capabilities.join(' · ') || t('文本聊天', 'Text chat');
   }
@@ -1047,7 +1183,7 @@
         {t('账户由服务器管理员创建 · 不开放注册', 'Accounts are created by the server administrator · Registration is closed')}
       </p>
     </section>
-    <footer>Personal Chat · Based on Open WebUI</footer>
+    <footer>La4RainGPT · Based on Open WebUI</footer>
   </main>
 {:else}
   <div class="app-shell">
@@ -1062,7 +1198,7 @@
       <div class="sidebar-top">
         <div class="sidebar-brand">
           <div class="brand-mark small"><Icon name="sparkles" size={15} /></div>
-          <span>Personal Chat</span>
+          <span>La4RainGPT</span>
         </div>
         <button
           class="icon-button mobile-close"
@@ -1072,14 +1208,26 @@
           <Icon name="close" size={20} />
         </button>
       </div>
-      <button class="new-chat" on:click={newConversation} disabled={generating || !selectableModels.length}>
-        <span class="plus"><Icon name="plus" size={18} /></span>
-        <span>{t('新对话', 'New chat')}</span>
+      <button
+        class="new-chat"
+        class:pending={creatingConversation}
+        aria-busy={creatingConversation}
+        on:click={newConversation}
+        disabled={generating || creatingConversation || !selectableModels.length}
+      >
+        <span class="plus">
+          {#if creatingConversation}
+            <span class="toolbar-spinner" aria-hidden="true"></span>
+          {:else}
+            <Icon name="plus" size={18} />
+          {/if}
+        </span>
+        <span>{creatingConversation ? t('正在创建…', 'Creating…') : t('新对话', 'New chat')}</span>
         <kbd>⌘ K</kbd>
       </button>
 
       <div class="history-label">
-        {showArchived ? t('已归档', 'Archived') : t('对话记录', 'Chats')}
+        {showArchived ? t('临时留档 · 7 天', 'Retained · 7 days') : t('对话记录', 'Chats')}
       </div>
       <nav class="conversation-list" aria-label={t('对话记录', 'Chats')}>
         {#each conversations as conversation (conversation.id)}
@@ -1105,50 +1253,107 @@
                 on:click={() => openConversation(conversation.id)}
                 aria-current={conversation.id === activeConversationId ? 'page' : undefined}
               >
-                <span class="conversation-icon"><Icon name="chat" size={16} /></span>
-                <span class="conversation-title">{conversation.title}</span>
+                <span class:pinned={Boolean(conversation.pinnedAt)} class="conversation-icon">
+                  <Icon name={conversation.pinnedAt ? 'pin' : 'chat'} size={16} />
+                </span>
+                <span class="conversation-copy">
+                  <span class="conversation-title">{conversation.title}</span>
+                  {#if user?.role === 'admin'}
+                    <small>
+                      {conversation.ownerDisplayName || conversation.ownerUsername}
+                      {conversation.ownerId === user.id ? t('（我）', ' (me)') : ''}
+                    </small>
+                  {:else if showArchived && conversation.retentionReason === 'conversation_limit'}
+                    <small>{t('因超过 30 个对话自动留档', 'Retained after reaching 30 chats')}</small>
+                  {/if}
+                </span>
               </button>
             {/if}
-            <span class="conversation-actions">
-              <button
-                type="button"
-                class="mini-action"
-                aria-label={showArchived ? t('恢复', 'Restore') : t('归档', 'Archive')}
-                title={showArchived ? t('恢复', 'Restore') : t('归档', 'Archive')}
-                on:click={(event) => setArchived(event, conversation, !showArchived)}
-              ><Icon name={showArchived ? 'restore' : 'archive'} size={15} /></button>
-              <button
-                type="button"
-                class="mini-action"
-                aria-label={t('重命名', 'Rename')}
-                title={t('重命名', 'Rename')}
-                on:click={(event) => beginRename(event, conversation)}
-              ><Icon name="edit" size={15} /></button>
-              <button
-                type="button"
-                class="mini-action danger"
-                aria-label={t('删除', 'Delete')}
-                title={t('删除', 'Delete')}
-                on:click={(event) => removeConversation(event, conversation)}
-              ><Icon name="trash" size={15} /></button>
-            </span>
+            {#if ownsConversation(conversation)}
+              <span class="conversation-actions">
+                {#if !showArchived}
+                  <button
+                    type="button"
+                    class:active={Boolean(conversation.pinnedAt)}
+                    class="mini-action"
+                    aria-label={conversation.pinnedAt ? t('取消置顶', 'Unpin') : t('置顶', 'Pin')}
+                    title={conversation.pinnedAt ? t('取消置顶', 'Unpin') : t('置顶（最多 10 个）', 'Pin (up to 10)')}
+                    on:click={(event) => togglePinned(event, conversation)}
+                  ><Icon name={conversation.pinnedAt ? 'pin-off' : 'pin'} size={15} /></button>
+                {/if}
+                <button
+                  type="button"
+                  class="mini-action"
+                  aria-label={showArchived ? t('恢复', 'Restore') : t('临时留档', 'Retain')}
+                  title={showArchived
+                    ? t('恢复到活跃对话', 'Restore to active chats')
+                    : t('临时留档 7 天', 'Retain for 7 days')}
+                  on:click={(event) => setArchived(event, conversation, !showArchived)}
+                ><Icon name={showArchived ? 'restore' : 'archive'} size={15} /></button>
+                {#if !showArchived}
+                  <button
+                    type="button"
+                    class="mini-action"
+                    aria-label={t('重命名', 'Rename')}
+                    title={t('重命名', 'Rename')}
+                    on:click={(event) => beginRename(event, conversation)}
+                  ><Icon name="edit" size={15} /></button>
+                {/if}
+                <button
+                  type="button"
+                  class="mini-action danger"
+                  aria-label={t('永久删除', 'Delete permanently')}
+                  title={t('永久删除', 'Delete permanently')}
+                  on:click={(event) => removeConversation(event, conversation)}
+                ><Icon name="trash" size={15} /></button>
+              </span>
+            {/if}
           </div>
         {/each}
         {#if conversations.length === 0}
           <p class="no-history">
             {showArchived
-              ? t('没有已归档的对话', 'No archived chats')
+              ? t('没有临时留档的对话', 'No retained chats')
               : t('开始第一段对话吧', 'Start your first chat')}
           </p>
         {/if}
       </nav>
+
+      {#if storageStatus}
+        <section class="storage-card" aria-label={t('我的空间用量', 'My storage usage')}>
+          <div class="storage-heading">
+            <span>{t('我的空间', 'My storage')}</span>
+            <strong>{formatBytes(storageStatus.usedBytes)} / {formatBytes(storageStatus.limitBytes)}</strong>
+          </div>
+          <div
+            class:warning={storagePercent(storageStatus) >= 85}
+            class="storage-track"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={Math.round(storagePercent(storageStatus))}
+          ><i style={`width: ${storagePercent(storageStatus)}%`}></i></div>
+          <div class="storage-meta">
+            <span>{storageStatus.activeConversations}/{storageStatus.maxActiveConversations} {t('对话', 'chats')}</span>
+            <span>{storageStatus.pinnedConversations}/{storageStatus.maxPinnedConversations} {t('置顶', 'pinned')}</span>
+          </div>
+          {#if storageStatus.retainedBytes > 0}
+            <small>
+              {t('临时留档', 'Retained')} {formatBytes(storageStatus.retainedBytes)}
+              · {t('不计入限额', 'excluded from quota')}
+            </small>
+          {/if}
+        </section>
+      {/if}
 
       <div class="sidebar-footer">
         <button class="profile-button" on:click={() => (profileOpen = !profileOpen)}>
           <span class="profile-avatar">{user?.displayName?.slice(0, 1).toUpperCase()}</span>
           <span class="profile-copy">
             <strong>{user?.displayName}</strong>
-            <small>@{user?.username}</small>
+            <small>
+              @{user?.username}{user?.role === 'admin' ? ` · ${t('管理员', 'Admin')}` : ''}
+            </small>
           </span>
           <Icon name="more" size={18} />
         </button>
@@ -1163,7 +1368,7 @@
             </button>
             <button on:click={toggleArchiveView}>
               <Icon name={showArchived ? 'chat' : 'archive'} size={17} />
-              {showArchived ? t('返回对话记录', 'Back to chats') : t('已归档对话', 'Archived chats')}
+              {showArchived ? t('返回对话记录', 'Back to chats') : t('临时留档', 'Retained chats')}
             </button>
             <button on:click={toggleLocale}>
               <Icon name="globe" size={17} />{$locale === 'zh-CN' ? 'English' : '中文'}
@@ -1187,11 +1392,14 @@
           <Icon name="menu" size={20} />
         </button>
         <div class="selectors">
-          {#if modelPickerOpen}
+          {#if modelPickerOpen || effortPickerOpen}
             <button
               class="model-picker-scrim"
-              aria-label={t('关闭模型列表', 'Close model list')}
-              on:click={() => (modelPickerOpen = false)}
+              aria-label={t('关闭选择列表', 'Close picker')}
+              on:click={() => {
+                modelPickerOpen = false;
+                effortPickerOpen = false;
+              }}
             ></button>
           {/if}
           <div class="model-picker">
@@ -1201,7 +1409,7 @@
               aria-haspopup="listbox"
               aria-expanded={modelPickerOpen}
               on:click={toggleModelPicker}
-              disabled={generating || showArchived || !selectableModels.length}
+              disabled={generating || activeConversationReadOnly || !selectableModels.length}
             >
               <span>{activeModel?.name || activeConversation?.model || draftModel || t('选择模型', 'Select model')}</span>
               <Icon name="chevron-down" size={15} />
@@ -1254,29 +1462,62 @@
               </div>
             {/if}
           </div>
-          {#if activeModel && (activeModel.reasoningEfforts?.length || activeConversation)}
-            <label
-              class="select-control effort-select"
-              title={t(
-                '更高推理强度通常响应更慢并消耗更多额度；它不是原始思维链开关。',
-                'Higher reasoning effort is usually slower and uses more quota; it is not a raw chain-of-thought switch.'
-              )}
-            >
-              <span class="sr-only">{t('推理强度', 'Reasoning effort')}</span>
-              <span class="effort-icon"><Icon name="sparkles" size={12} /></span>
-              <select
-                value={selectedReasoningEffort}
-                on:change={changeEffort}
-                disabled={generating || showArchived}
+          {#if activeModel}
+            <div class="effort-picker">
+              <button
+                type="button"
+                class="effort-picker-trigger"
+                aria-label={t('推理强度', 'Reasoning effort')}
+                aria-haspopup="listbox"
+                aria-expanded={effortPickerOpen}
+                title={t(
+                  '更高推理强度通常响应更慢并消耗更多额度；这里展示的是安全的推理摘要，不是原始思维链。',
+                  'Higher reasoning effort is usually slower and uses more quota. The UI shows safe reasoning summaries, not raw chain of thought.'
+                )}
+                on:click={toggleEffortPicker}
+                disabled={generating || activeConversationReadOnly}
               >
-                {#each effortOptions as effort}
-                  <option value={effort}>
-                    {effort === 'auto' ? t('自动推理', 'Reasoning · Auto') : effortLabel(effort)}
-                  </option>
-                {/each}
-              </select>
-              <span class="select-chevron"><Icon name="chevron-down" size={13} /></span>
-            </label>
+                <span class="effort-icon"><Icon name="sparkles" size={13} /></span>
+                <span>{effortLabel(selectedReasoningEffort)}</span>
+                <Icon name="chevron-down" size={14} />
+              </button>
+              {#if effortPickerOpen}
+                <div class="effort-picker-panel">
+                  <div class="picker-heading">
+                    <strong>{t('推理强度', 'Reasoning effort')}</strong>
+                    <small>{t('选择本对话的思考深度', 'Choose how deeply this chat should reason')}</small>
+                  </div>
+                  <div class="effort-options" role="listbox" aria-label={t('推理强度', 'Reasoning effort')}>
+                    {#each reasoningChoices as choice}
+                      <button
+                        type="button"
+                        role="option"
+                        class:selected={choice.value === selectedReasoningEffort}
+                        aria-selected={choice.value === selectedReasoningEffort}
+                        disabled={!supportsEffort(activeModel, choice.value)}
+                        on:click={() => selectEffort(choice.value)}
+                      >
+                        <span class="effort-option-icon"><Icon name="sparkles" size={14} /></span>
+                        <span class="effort-option-copy">
+                          <strong>{t(choice.chinese, choice.english)}</strong>
+                          <small>{t(choice.chineseDescription, choice.englishDescription)}</small>
+                          <code>{choice.value}</code>
+                        </span>
+                        {#if choice.value === selectedReasoningEffort}
+                          <span class="model-check"><Icon name="check" size={17} /></span>
+                        {/if}
+                      </button>
+                    {/each}
+                  </div>
+                  <p>
+                    {t(
+                      '档位依次映射到 CPA 的 medium / high / max。',
+                      'Levels map to CPA medium / high / max respectively.'
+                    )}
+                  </p>
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
         <button
@@ -1290,6 +1531,16 @@
           />
         </button>
       </header>
+
+      {#if viewingOtherUser && activeConversation}
+        <div class="readonly-banner" role="status">
+          <Icon name="eye" size={15} />
+          <span>
+            {t('管理员只读查看', 'Administrator read-only view')}
+            · {activeConversation.ownerDisplayName || activeConversation.ownerUsername}
+          </span>
+        </div>
+      {/if}
 
       <div
         class="messages-scroll"
@@ -1353,7 +1604,10 @@
               <MessageView
                 {message}
                 locale={$locale}
-                canRegenerate={message.role === 'assistant' && message.id === messages.at(-1)?.id && !generating}
+                canRegenerate={message.role === 'assistant' &&
+                  message.id === messages.at(-1)?.id &&
+                  !generating &&
+                  !activeConversationReadOnly}
                 on:regenerate={(event) => regenerate(event.detail.message)}
               />
               {#each checkpointsAfter(checkpoints, message.id) as checkpoint (checkpoint.id)}
@@ -1421,8 +1675,10 @@
             bind:value={text}
             on:input={resizeComposer}
             on:keydown={composerKeydown}
-            placeholder={showArchived
-              ? t('已归档对话为只读', 'Archived chats are read-only')
+            placeholder={viewingOtherUser
+              ? t('管理员查看其他用户会话时为只读', 'Other users’ chats are read-only for administrators')
+              : showArchived
+              ? t('临时留档对话为只读', 'Retained chats are read-only')
               : generateImage
                 ? t('描述你想生成的图片', 'Describe the image you want to create')
                 : t('给 AI 发送消息', 'Message AI')}
@@ -1430,7 +1686,7 @@
             aria-label={generateImage
               ? t('图片生成描述', 'Image generation prompt')
               : t('聊天消息', 'Chat message')}
-            disabled={generating || showArchived}
+            disabled={generating || activeConversationReadOnly}
           ></textarea>
           <div class="composer-toolbar">
             <div>
@@ -1450,7 +1706,7 @@
                   : t('上传图片（单张不超过 12 MiB）', 'Upload images (up to 12 MiB each)')}
                 on:click={() => fileElement?.click()}
                 disabled={generating ||
-                  showArchived ||
+                  activeConversationReadOnly ||
                   uploading ||
                   generateImage ||
                   uploads.length >= 4 ||
@@ -1478,7 +1734,7 @@
                       )}
                 on:click={toggleImageGeneration}
                 disabled={generating ||
-                  showArchived ||
+                  activeConversationReadOnly ||
                   !activeModel?.imageGenerationMode ||
                   uploads.length > 0}
               >
@@ -1504,7 +1760,9 @@
                 class="send-button"
                 aria-label={t('发送', 'Send')}
                 on:click={send}
-                disabled={showArchived || uploading || (!text.trim() && uploads.length === 0)}
+                disabled={activeConversationReadOnly ||
+                  uploading ||
+                  (!text.trim() && uploads.length === 0)}
               ><Icon name="send" size={18} /></button>
             {/if}
           </div>
@@ -1541,8 +1799,8 @@
           <h2 id="dialog-title">{t('账户与安全', 'Account & security')}</h2>
           <p class="dialog-lead">
             {t(
-              '修改密码会注销这个账户在所有设备上的会话。新密码至少需要 12 个字符。',
-              'Changing your password signs this account out on every device. The new password must be at least 12 characters.'
+              '修改密码会注销这个账户在所有设备上的会话。新密码至少需要 6 个字符。',
+              'Changing your password signs this account out on every device. The new password must be at least 6 characters.'
             )}
           </p>
           <form class="password-form" on:submit|preventDefault={submitPasswordChange}>
@@ -1562,7 +1820,7 @@
                 name="newPassword"
                 type="password"
                 autocomplete="new-password"
-                minlength="12"
+                minlength="6"
                 required
                 disabled={accountPending}
               />
@@ -1573,7 +1831,7 @@
                 name="confirmation"
                 type="password"
                 autocomplete="new-password"
-                minlength="12"
+                minlength="6"
                 required
                 disabled={accountPending}
               />
@@ -1591,11 +1849,11 @@
           </button>
         {:else}
           <div class="dialog-icon"><Icon name="sparkles" size={23} /></div>
-          <h2 id="dialog-title">Personal Chat</h2>
+          <h2 id="dialog-title">La4RainGPT</h2>
           <p class="dialog-lead">
             {t(
-              '为两名受邀用户精简的私人 AI 聊天界面，由 Open WebUI 的设计与代码基础衍生。',
-              'A streamlined private AI chat for two invited users, derived from the Open WebUI design and codebase.'
+              '为三名受邀用户精简的私人 AI 聊天界面，由 Open WebUI 的设计与代码基础衍生。',
+              'A streamlined private AI chat for three invited users, derived from the Open WebUI design and codebase.'
             )}
           </p>
           <div class="about-grid">
@@ -1631,8 +1889,9 @@
 <svelte:window
   on:keydown={(event) => {
     if (event.key === 'Escape') {
-      if (modelPickerOpen) {
+      if (modelPickerOpen || effortPickerOpen) {
         modelPickerOpen = false;
+        effortPickerOpen = false;
         return;
       }
       if (dialog) {

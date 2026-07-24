@@ -146,3 +146,19 @@ WHERE rowid NOT IN (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_checkpoints_boundary
 ON context_checkpoints(conversation_id, boundary_message_id);
 `
+
+const schemaV3 = `
+ALTER TABLE users
+ADD COLUMN role TEXT NOT NULL DEFAULT 'user'
+CHECK (role IN ('user', 'admin'));
+
+ALTER TABLE conversations ADD COLUMN pinned_at INTEGER;
+ALTER TABLE conversations ADD COLUMN retention_reason TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_active
+ON conversations(user_id, archived_at, pinned_at, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_retention_expiry
+ON conversations(archived_at)
+WHERE archived_at IS NOT NULL;
+`

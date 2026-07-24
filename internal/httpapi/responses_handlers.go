@@ -30,7 +30,20 @@ const (
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionFromContext(r.Context())
-	messages, err := s.store.ListMessages(r.Context(), session.User.ID, r.PathValue("id"))
+	conversation, err := s.readableConversation(
+		r.Context(), session, r.PathValue("id"), true,
+	)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "Conversation not found.")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "authorize message list", err)
+		return
+	}
+	messages, err := s.store.ListMessages(
+		r.Context(), conversation.UserID, conversation.ID,
+	)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "Conversation not found.")
 		return
@@ -432,6 +445,9 @@ func (s *Server) streamAssistantResponse(
 		if errors.Is(consumeErr, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
 			status = "interrupted"
 			errorCode = "client_disconnected"
+		} else if errors.Is(consumeErr, store.ErrStorageQuota) {
+			status = "error"
+			errorCode = "storage_quota_exceeded"
 		} else {
 			status = "error"
 			errorCode = "provider_stream_error"
@@ -564,15 +580,21 @@ func (s *Server) streamDedicatedImage(
 		failed := running
 		failed.Status = "failed"
 		failed.DurationMS = time.Since(startedAt).Milliseconds()
-		failed.ErrorCode = "generated_image_invalid"
+		errorCode := "generated_image_invalid"
+		message := "The generated image could not be saved safely."
+		if errors.Is(err, store.ErrStorageQuota) {
+			errorCode = "storage_quota_exceeded"
+			message = "Your active workspace has reached its storage allowance."
+		}
+		failed.ErrorCode = errorCode
 		finalMessage, _ := s.completeDedicatedImageFailure(
 			context.WithoutCancel(ctx), userID, messageID, failed,
-			"generated_image_invalid", "error",
+			errorCode, "error",
 		)
 		_ = stream.send("response.tool", failed)
 		_ = stream.send("response.error", map[string]any{
-			"code": "generated_image_invalid",
-			"message": "The generated image could not be saved safely.",
+			"code": errorCode,
+			"message": message,
 			"messageRecord": finalMessage,
 		})
 		return

@@ -103,4 +103,7 @@ func TestModelsPlainFallbackOnlySelectsDefault(t *testing.T) {
 	if len(catalog.Models) != 2 || !catalog.Models[0].Selectable || catalog.Models[1].Selectable {
 		t.Fatalf("models = %#v", catalog.Models)
 	}
+	if !SupportsEffort(catalog.Models[0], "max") {
+		t.Fatal("plain catalog should defer explicit reasoning validation to the provider")
+	}
 }

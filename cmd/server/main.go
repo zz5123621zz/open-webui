@@ -48,7 +48,7 @@ func run(logger *slog.Logger, args []string) error {
 	}
 
 	if len(args) > 0 && args[0] == "user" {
-		return runUserCommand(dataStore, args[1:])
+		return runUserCommand(dataStore, cfg.DataDir, args[1:])
 	}
 	if len(args) > 0 && args[0] == "healthcheck" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -74,6 +74,14 @@ func run(logger *slog.Logger, args []string) error {
 
 	shutdownContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go maintenanceLoop(
+		shutdownContext,
+		dataStore,
+		cfg.DataDir,
+		cfg.Lifecycle.RetentionTTL,
+		cfg.Lifecycle.MaintenanceInterval,
+		logger,
+	)
 	go func() {
 		<-shutdownContext.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -115,6 +123,57 @@ func cleanupStaleTemporaryFiles(dataDir string, olderThan time.Time) error {
 	return nil
 }
 
+func maintenanceLoop(
+	ctx context.Context,
+	dataStore *store.Store,
+	dataDir string,
+	retentionTTL, interval time.Duration,
+	logger *slog.Logger,
+) {
+	runMaintenance(ctx, dataStore, dataDir, retentionTTL, logger)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runMaintenance(ctx, dataStore, dataDir, retentionTTL, logger)
+		}
+	}
+}
+
+func runMaintenance(
+	ctx context.Context,
+	dataStore *store.Store,
+	dataDir string,
+	retentionTTL time.Duration,
+	logger *slog.Logger,
+) {
+	maintenanceContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
+	if err := dataStore.DeleteExpiredSessions(maintenanceContext); err != nil {
+		logger.Warn("expired session cleanup failed", "error", err)
+	}
+	cutoff := time.Now().Add(-retentionTTL).UnixMilli()
+	paths, conversations, err := dataStore.PurgeExpiredRetained(maintenanceContext, cutoff)
+	if err != nil {
+		logger.Warn("retained conversation cleanup failed", "error", err)
+		return
+	}
+	removed, removeErr := removeStoredFiles(dataDir, paths)
+	if removeErr != nil {
+		logger.Warn("retained attachment cleanup incomplete", "error", removeErr)
+	}
+	if conversations > 0 || removed > 0 {
+		logger.Info(
+			"retention cleanup completed",
+			"conversations", conversations,
+			"attachments", removed,
+		)
+	}
+}
+
 func runBackupCommand(dataStore *store.Store, dataDir string, args []string) error {
 	flags := flag.NewFlagSet("backup", flag.ContinueOnError)
 	output := flags.String("output", "", "destination SQLite snapshot")
@@ -133,19 +192,23 @@ func runBackupCommand(dataStore *store.Store, dataDir string, args []string) err
 	return nil
 }
 
-func runUserCommand(dataStore *store.Store, args []string) error {
+func runUserCommand(dataStore *store.Store, dataDir string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: server user <add|password|enable|disable>")
+		return errors.New("usage: server user <add|list|password|enable|disable|purge-all>")
 	}
 	switch args[0] {
 	case "add":
 		return runUserAddCommand(dataStore, args[1:])
+	case "list":
+		return runUserListCommand(dataStore, args[1:])
 	case "password":
 		return runUserPasswordCommand(dataStore, args[1:])
 	case "enable", "disable":
 		return runUserStatusCommand(dataStore, args[0], args[1:])
+	case "purge-all":
+		return runUserPurgeAllCommand(dataStore, dataDir, args[1:])
 	default:
-		return errors.New("usage: server user <add|password|enable|disable>")
+		return errors.New("usage: server user <add|list|password|enable|disable|purge-all>")
 	}
 }
 
@@ -153,6 +216,7 @@ func runUserAddCommand(dataStore *store.Store, args []string) error {
 	flags := flag.NewFlagSet("user add", flag.ContinueOnError)
 	username := flags.String("username", "", "login username")
 	displayName := flags.String("display-name", "", "display name")
+	role := flags.String("role", "user", "user role: user or admin")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -173,11 +237,35 @@ func runUserAddCommand(dataStore *store.Store, args []string) error {
 	if err != nil {
 		return err
 	}
-	user, err := dataStore.CreateUser(context.Background(), *username, *displayName, hash)
+	user, err := dataStore.CreateUserWithRole(
+		context.Background(), *username, *displayName, hash, *role,
+	)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Created user %s (%s)\n", user.Username, user.ID)
+	fmt.Printf("Created %s %s (%s)\n", user.Role, user.Username, user.ID)
+	return nil
+}
+
+func runUserListCommand(dataStore *store.Store, args []string) error {
+	flags := flag.NewFlagSet("user list", flag.ContinueOnError)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("user list does not accept positional arguments")
+	}
+	users, err := dataStore.ListUsers(context.Background())
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		fmt.Println("No users")
+		return nil
+	}
+	for _, user := range users {
+		fmt.Printf("%s\t%s\t%s\t%s\n", user.Username, user.Role, user.Status, user.DisplayName)
+	}
 	return nil
 }
 
@@ -227,6 +315,54 @@ func runUserStatusCommand(dataStore *store.Store, action string, args []string) 
 	return nil
 }
 
+func runUserPurgeAllCommand(dataStore *store.Store, dataDir string, args []string) error {
+	flags := flag.NewFlagSet("user purge-all", flag.ContinueOnError)
+	confirm := flags.Bool("confirm", false, "confirm deletion of every user and workspace")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !*confirm {
+		return errors.New("user purge-all requires --confirm")
+	}
+	paths, deleted, err := dataStore.DeleteAllUsers(context.Background())
+	if err != nil {
+		return err
+	}
+	removed, removeErr := removeStoredFiles(dataDir, paths)
+	if removeErr != nil {
+		return fmt.Errorf(
+			"deleted %d users and %d attachment records, but file cleanup was incomplete: %w",
+			deleted, len(paths), removeErr,
+		)
+	}
+	fmt.Printf("Deleted %d users and removed %d stored attachments\n", deleted, removed)
+	return nil
+}
+
+func removeStoredFiles(dataDir string, paths []string) (int, error) {
+	root := filepath.Clean(dataDir)
+	removed := 0
+	var firstErr error
+	for _, storagePath := range paths {
+		fullPath := filepath.Clean(filepath.Join(root, storagePath))
+		relative, err := filepath.Rel(root, fullPath)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("invalid stored path %q", storagePath)
+			}
+			continue
+		}
+		if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		removed++
+	}
+	return removed, firstErr
+}
+
 func promptLine(reader *bufio.Reader, label, current string) string {
 	if strings.TrimSpace(current) != "" {
 		return strings.TrimSpace(current)
@@ -240,7 +376,7 @@ func promptPassword() (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", errors.New("password prompt requires a terminal")
 	}
-	fmt.Print("Password (minimum 12 characters): ")
+	fmt.Print("Password (minimum 6 characters): ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {

@@ -14,7 +14,15 @@ import (
 func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionFromContext(r.Context())
 	archived := r.URL.Query().Get("archived") == "true"
-	conversations, err := s.store.ListConversationsByArchive(r.Context(), session.User.ID, 100, archived)
+	var conversations []store.Conversation
+	var err error
+	if session.User.Role == "admin" {
+		conversations, err = s.store.ListAllConversationsByArchive(r.Context(), 200, archived)
+	} else {
+		conversations, err = s.store.ListConversationsByArchive(
+			r.Context(), session.User.ID, 100, archived,
+		)
+	}
 	if err != nil {
 		s.internalError(w, "list conversations", err)
 		return
@@ -64,10 +72,31 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
 
 	effort := normalizeRequestedEffort(request.ReasoningEffort, s.cfg.Provider.DefaultReasoningEffort)
 	if !provider.SupportsEffort(model, effort) {
+		if strings.TrimSpace(request.ReasoningEffort) == "" {
+			effort = fallbackReasoningEffort(model, s.cfg.Provider.DefaultReasoningEffort)
+		}
+	}
+	if !provider.SupportsEffort(model, effort) {
 		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The selected model does not support this reasoning effort.")
 		return
 	}
-	conversation, err := s.store.CreateConversation(r.Context(), session.User.ID, request.Title, model.ID, effort)
+	conversation, err := s.store.CreateConversationWithLimit(
+		r.Context(),
+		session.User.ID,
+		request.Title,
+		model.ID,
+		effort,
+		s.cfg.Lifecycle.MaxActiveConversations,
+	)
+	if errors.Is(err, store.ErrConversationLimit) {
+		writeError(
+			w,
+			http.StatusConflict,
+			"conversation_limit_reached",
+			"All active conversations are protected. Unpin or retain one before creating another.",
+		)
+		return
+	}
 	if err != nil {
 		s.internalError(w, "create conversation", err)
 		return
@@ -77,7 +106,9 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getConversation(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionFromContext(r.Context())
-	conversation, err := s.store.ConversationByID(r.Context(), session.User.ID, r.PathValue("id"))
+	conversation, err := s.readableConversation(
+		r.Context(), session, r.PathValue("id"), false,
+	)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "Conversation not found.")
 		return
@@ -94,11 +125,23 @@ type updateConversationRequest struct {
 	Model           *string `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
 	Archived        *bool   `json:"archived"`
+	Pinned          *bool   `json:"pinned"`
 }
 
 func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 	var request updateConversationRequest
 	if !readJSON(w, r, &request) {
+		return
+	}
+	if request.Pinned != nil &&
+		(request.Title != nil || request.Model != nil ||
+			request.ReasoningEffort != nil || request.Archived != nil) {
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"invalid_conversation_update",
+			"Pinning must be updated separately from other conversation fields.",
+		)
 		return
 	}
 	session, _ := sessionFromContext(r.Context())
@@ -116,10 +159,67 @@ func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "conversation_busy", "This conversation is currently generating a response.")
 		return
 	}
-	if request.Archived != nil && request.Title == nil && request.Model == nil && request.ReasoningEffort == nil {
-		conversation, archiveErr := s.store.SetConversationArchived(
-			r.Context(), session.User.ID, current.ID, *request.Archived,
+	if request.Pinned != nil &&
+		request.Title == nil &&
+		request.Model == nil &&
+		request.ReasoningEffort == nil &&
+		request.Archived == nil {
+		conversation, pinErr := s.store.SetConversationPinned(
+			r.Context(),
+			session.User.ID,
+			current.ID,
+			*request.Pinned,
+			s.cfg.Lifecycle.MaxPinnedConversations,
 		)
+		if errors.Is(pinErr, store.ErrPinLimit) {
+			writeError(
+				w,
+				http.StatusConflict,
+				"pin_limit_reached",
+				"Each user can pin at most ten conversations.",
+			)
+			return
+		}
+		if pinErr != nil {
+			s.internalError(w, "set conversation pin state", pinErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"conversation": conversation, "reasoningEffortReset": false,
+		})
+		return
+	}
+	if request.Archived != nil &&
+		request.Title == nil &&
+		request.Model == nil &&
+		request.ReasoningEffort == nil &&
+		request.Pinned == nil {
+		conversation, archiveErr := s.store.SetConversationArchivedWithPolicy(
+			r.Context(),
+			session.User.ID,
+			current.ID,
+			*request.Archived,
+			s.cfg.Lifecycle.MaxActiveConversations,
+			s.cfg.Lifecycle.MaxStorageBytes,
+		)
+		if errors.Is(archiveErr, store.ErrConversationLimit) {
+			writeError(
+				w,
+				http.StatusConflict,
+				"conversation_limit_reached",
+				"Retain another active conversation before restoring this one.",
+			)
+			return
+		}
+		if errors.Is(archiveErr, store.ErrStorageQuota) {
+			writeError(
+				w,
+				http.StatusInsufficientStorage,
+				"storage_quota_exceeded",
+				"Restoring this conversation would exceed your active storage allowance.",
+			)
+			return
+		}
 		if archiveErr != nil {
 			s.internalError(w, "set conversation archive state", archiveErr)
 			return
@@ -159,7 +259,7 @@ func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The selected model does not support this reasoning effort.")
 			return
 		}
-		effort = "auto"
+		effort = fallbackReasoningEffort(model, s.cfg.Provider.DefaultReasoningEffort)
 		reset = true
 	}
 	conversation, err := s.store.UpdateConversation(r.Context(), session.User.ID, current.ID, title, model.ID, effort)
@@ -168,7 +268,14 @@ func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.Archived != nil {
-		conversation, err = s.store.SetConversationArchived(r.Context(), session.User.ID, current.ID, *request.Archived)
+		conversation, err = s.store.SetConversationArchivedWithPolicy(
+			r.Context(),
+			session.User.ID,
+			current.ID,
+			*request.Archived,
+			s.cfg.Lifecycle.MaxActiveConversations,
+			s.cfg.Lifecycle.MaxStorageBytes,
+		)
 		if err != nil {
 			s.internalError(w, "set conversation archive state", err)
 			return
@@ -220,4 +327,29 @@ func normalizeRequestedEffort(requested, fallback string) string {
 		return "auto"
 	}
 	return value
+}
+
+func fallbackReasoningEffort(model provider.Model, configured string) string {
+	candidates := []string{
+		strings.ToLower(strings.TrimSpace(configured)),
+		strings.ToLower(strings.TrimSpace(model.DefaultReasoningEffort)),
+		"high",
+		"medium",
+		"max",
+		"auto",
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if provider.SupportsEffort(model, candidate) {
+			return candidate
+		}
+	}
+	return "auto"
 }

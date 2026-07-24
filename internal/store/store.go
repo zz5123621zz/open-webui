@@ -22,6 +22,9 @@ var (
 	ErrDuplicateRequest    = errors.New("duplicate request")
 	ErrNotLatestMessage    = errors.New("message is not the latest response")
 	ErrConversationChanged = errors.New("conversation changed while preparing context")
+	ErrConversationLimit   = errors.New("active conversation limit reached")
+	ErrPinLimit            = errors.New("pinned conversation limit reached")
+	ErrStorageQuota        = errors.New("storage allowance exceeded")
 )
 
 type Store struct {
@@ -33,6 +36,7 @@ type User struct {
 	Username       string `json:"username"`
 	DisplayName    string `json:"displayName"`
 	PreferredModel string `json:"preferredModel,omitempty"`
+	Role           string `json:"role"`
 	Status         string `json:"-"`
 	PasswordHash   string `json:"-"`
 	CreatedAt      int64  `json:"createdAt"`
@@ -143,6 +147,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("record schema v2: %w", err)
 		}
 	}
+	var hasV3 int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 3`).Scan(&hasV3); err != nil {
+		return fmt.Errorf("inspect schema v3: %w", err)
+	}
+	if hasV3 == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV3); err != nil {
+			return fmt.Errorf("apply schema v3: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(version, applied_at) VALUES(3, ?)
+		`, time.Now().Unix()); err != nil {
+			return fmt.Errorf("record schema v3: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}
@@ -150,13 +168,21 @@ func (s *Store) migrate(ctx context.Context) error {
 }
 
 func (s *Store) CreateUser(ctx context.Context, username, displayName, passwordHash string) (User, error) {
+	return s.CreateUserWithRole(ctx, username, displayName, passwordHash, "user")
+}
+
+func (s *Store) CreateUserWithRole(ctx context.Context, username, displayName, passwordHash, role string) (User, error) {
 	username = strings.TrimSpace(username)
 	displayName = strings.TrimSpace(displayName)
+	role = strings.ToLower(strings.TrimSpace(role))
 	if username == "" || len(username) > 64 {
 		return User{}, errors.New("username must contain 1 to 64 characters")
 	}
 	if displayName == "" || len(displayName) > 100 {
 		return User{}, errors.New("display name must contain 1 to 100 characters")
+	}
+	if role != "user" && role != "admin" {
+		return User{}, errors.New("role must be user or admin")
 	}
 	id, err := ids.New()
 	if err != nil {
@@ -164,9 +190,9 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, passwordH
 	}
 	now := time.Now().Unix()
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO users(id, username, password_hash, display_name, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, 'active', ?, ?)
-	`, id, username, passwordHash, displayName, now, now)
+		INSERT INTO users(id, username, password_hash, display_name, role, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, 'active', ?, ?)
+	`, id, username, passwordHash, displayName, role, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return User{}, ErrUsernameExists
@@ -175,19 +201,20 @@ func (s *Store) CreateUser(ctx context.Context, username, displayName, passwordH
 	}
 	return User{
 		ID: id, Username: username, DisplayName: displayName, Status: "active",
-		PasswordHash: passwordHash, CreatedAt: now, UpdatedAt: now,
+		PasswordHash: passwordHash, Role: role, CreatedAt: now, UpdatedAt: now,
 	}, nil
 }
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
 	var user User
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, password_hash, display_name, COALESCE(preferred_model, ''), status, created_at, updated_at
+		SELECT id, username, password_hash, display_name, COALESCE(preferred_model, ''),
+		       role, status, created_at, updated_at
 		FROM users
 		WHERE username = ? COLLATE NOCASE
 	`, strings.TrimSpace(username)).Scan(
 		&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
-		&user.PreferredModel, &user.Status, &user.CreatedAt, &user.UpdatedAt,
+		&user.PreferredModel, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -282,14 +309,15 @@ func (s *Store) SessionByToken(ctx context.Context, rawToken string) (Session, e
 	var expiresUnix int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT s.id, s.expires_at,
-		       u.id, u.username, u.password_hash, u.display_name, COALESCE(u.preferred_model, ''), u.status, u.created_at, u.updated_at
+		       u.id, u.username, u.password_hash, u.display_name,
+		       COALESCE(u.preferred_model, ''), u.role, u.status, u.created_at, u.updated_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'
 	`, tokenHash[:], time.Now().Unix()).Scan(
 		&session.ID, &expiresUnix,
 		&session.User.ID, &session.User.Username, &session.User.PasswordHash,
-		&session.User.DisplayName, &session.User.PreferredModel, &session.User.Status,
+		&session.User.DisplayName, &session.User.PreferredModel, &session.User.Role, &session.User.Status,
 		&session.User.CreatedAt, &session.User.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -307,11 +335,12 @@ func (s *Store) SessionByToken(ctx context.Context, rawToken string) (Session, e
 func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
 	var user User
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, password_hash, display_name, COALESCE(preferred_model, ''), status, created_at, updated_at
+		SELECT id, username, password_hash, display_name, COALESCE(preferred_model, ''),
+		       role, status, created_at, updated_at
 		FROM users WHERE id = ?
 	`, id).Scan(
 		&user.ID, &user.Username, &user.PasswordHash, &user.DisplayName,
-		&user.PreferredModel, &user.Status, &user.CreatedAt, &user.UpdatedAt,
+		&user.PreferredModel, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrNotFound
@@ -320,6 +349,34 @@ func (s *Store) UserByID(ctx context.Context, id string) (User, error) {
 		return User{}, fmt.Errorf("lookup user by id: %w", err)
 	}
 	return user, nil
+}
+
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, username, display_name, COALESCE(preferred_model, ''),
+		       role, status, created_at, updated_at
+		FROM users
+		ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, username COLLATE NOCASE
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	users := make([]User, 0)
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(
+			&user.ID, &user.Username, &user.DisplayName, &user.PreferredModel,
+			&user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return users, nil
 }
 
 func (s *Store) DeleteSession(ctx context.Context, sessionID, userID string) error {
@@ -335,4 +392,39 @@ func (s *Store) DeleteSessions(ctx context.Context, userID string) error {
 func (s *Store) DeleteExpiredSessions(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix())
 	return err
+}
+
+func (s *Store) DeleteAllUsers(ctx context.Context) ([]string, int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, `SELECT storage_path FROM attachments`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list user attachment paths: %w", err)
+	}
+	paths := make([]string, 0)
+	for rows.Next() {
+		var storagePath string
+		if err := rows.Scan(&storagePath); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		paths = append(paths, storagePath)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM users`)
+	if err != nil {
+		return nil, 0, fmt.Errorf("delete all users: %w", err)
+	}
+	deleted, _ := result.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return nil, 0, err
+	}
+	return paths, deleted, nil
 }

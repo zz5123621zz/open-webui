@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -21,8 +22,8 @@ const (
 )
 
 func HashPassword(password string) (string, error) {
-	if len(password) < 12 {
-		return "", errors.New("password must be at least 12 characters")
+	if !utf8.ValidString(password) || utf8.RuneCountInString(password) < 6 {
+		return "", errors.New("password must be at least 6 characters")
 	}
 	if len(password) > 1024 {
 		return "", errors.New("password is too long")

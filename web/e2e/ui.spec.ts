@@ -4,6 +4,7 @@ const user = {
   id: 'user-1',
   username: 'alice',
   displayName: 'Alice',
+  role: 'user',
   preferredModel: 'gpt-personal',
   createdAt: Date.now(),
   updatedAt: Date.now()
@@ -17,8 +18,8 @@ const model = {
   inputModalities: ['text', 'image'],
   supportsWebSearch: true,
   imageGenerationMode: 'responses_tool',
-  reasoningEfforts: ['low', 'medium', 'high'],
-  defaultReasoningEffort: 'medium',
+  reasoningEfforts: ['medium', 'high', 'max'],
+  defaultReasoningEffort: 'high',
   capabilitiesComplete: true,
   selectable: true
 };
@@ -29,6 +30,7 @@ const onePixelPNG =
 async function mockAPI(page: Page) {
   let loggedIn = false;
   let conversationCreated = false;
+  let conversationReasoningEffort = 'high';
   let checkpointReady = false;
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -51,6 +53,20 @@ async function mockAPI(page: Page) {
       return json(200, { user, csrfToken: 'csrf-test' });
     }
     if (path === '/api/v1/models') return json(200, { models: [model] });
+    if (path === '/api/v1/me/storage') {
+      return json(200, {
+        storage: {
+          usedBytes: 64 * 1024 * 1024,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 12 * 1024 * 1024,
+          activeConversations: conversationCreated ? 1 : 0,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
     if (path === '/api/v1/attachments/generated-1/content') {
       return route.fulfill({
         status: 200,
@@ -59,7 +75,21 @@ async function mockAPI(page: Page) {
       });
     }
     if (path === '/api/v1/conversations' && request.method() === 'GET') {
-      return json(200, { conversations: [] });
+      return json(200, {
+        conversations: conversationCreated
+          ? [
+              {
+                id: 'conversation-1',
+                ownerId: user.id,
+                title: 'New chat',
+                model: model.id,
+                reasoningEffort: conversationReasoningEffort,
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+              }
+            ]
+          : []
+      });
     }
     if (path === '/api/v1/conversations' && request.method() === 'POST') {
       const body = request.postDataJSON() as {
@@ -67,8 +97,9 @@ async function mockAPI(page: Page) {
         reasoningEffort: string;
       };
       expect(body.model).toBe(model.id);
-      expect(body.reasoningEffort).toBe('low');
+      expect(body.reasoningEffort).toBe('high');
       conversationCreated = true;
+      conversationReasoningEffort = body.reasoningEffort;
       return json(201, {
         conversation: {
           id: 'conversation-1',
@@ -81,12 +112,20 @@ async function mockAPI(page: Page) {
       });
     }
     if (path === '/api/v1/conversations/conversation-1' && request.method() === 'PATCH') {
+      const body = request.postDataJSON() as {
+        title?: string;
+        reasoningEffort?: string;
+        pinned?: boolean;
+      };
+      if (body.reasoningEffort) conversationReasoningEffort = body.reasoningEffort;
       return json(200, {
         conversation: {
           id: 'conversation-1',
-          title: '搜索并总结今天值得关注的科技新闻',
+          ownerId: user.id,
+          title: body.title || 'New chat',
           model: model.id,
-          reasoningEffort: 'auto',
+          reasoningEffort: conversationReasoningEffort,
+          pinnedAt: body.pinned ? Date.now() : undefined,
           createdAt: Date.now(),
           updatedAt: Date.now()
         }
@@ -136,8 +175,8 @@ async function mockAPI(page: Page) {
         conversationId: 'conversation-1',
         role: 'assistant',
         model: model.id,
-        reasoningEffortRequested: 'low',
-        reasoningEffortSent: 'low',
+        reasoningEffortRequested: 'medium',
+        reasoningEffortSent: 'medium',
         status: 'streaming',
         parentMessageId: 'message-user',
         createdAt: now + 1,
@@ -262,20 +301,20 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: /GPT Personal/ }).click();
     await page.getByLabel('搜索模型').fill('gpt-personal');
     await expect(page.getByRole('option', { name: /GPT Personal/ })).toContainText(
-      '图片输入 · 联网 · 图片生成 · 推理: low/medium/high'
+      '图片输入 · 联网 · 图片生成 · 推理: 低/中/高'
     );
     await page.getByRole('option', { name: /GPT Personal/ }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '关于' }).click();
-    await expect(page.getByRole('heading', { name: 'Personal Chat' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'La4RainGPT' })).toBeVisible();
     await expect(page.getByText('它不是端到端加密服务')).toBeVisible();
     await page.getByRole('button', { name: '关闭', exact: true }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '账户与安全' }).click();
     await expect(page.getByRole('heading', { name: '账户与安全' })).toBeVisible();
-    await expect(page.getByLabel('新密码', { exact: true })).toHaveAttribute('minlength', '12');
+    await expect(page.getByLabel('新密码', { exact: true })).toHaveAttribute('minlength', '6');
     await page.getByRole('button', { name: '关闭', exact: true }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
@@ -288,7 +327,14 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '中文' }).click();
   }
 
-  await page.getByLabel('推理强度').selectOption('low');
+  await page.getByRole('button', { name: '新对话' }).click();
+  await expect(page.locator('.conversation-item')).toHaveCount(1);
+  await page.getByRole('button', { name: '新对话' }).click();
+  await expect(page.locator('.conversation-item')).toHaveCount(1);
+
+  await page.getByRole('button', { name: '推理强度' }).click();
+  await page.getByRole('option', { name: /^低/ }).click();
+  await expect(page.getByRole('button', { name: '推理强度' })).toContainText('推理 · 低');
   await page.getByRole('button', { name: /生成图片/ }).first().click();
   await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '发送' }).click();
@@ -312,4 +358,70 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.evaluate(() => (window as typeof window & { __owuiXSS?: boolean }).__owuiXSS)
   ).toBeUndefined();
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
+});
+
+test('administrator can inspect another user chat without mutation controls', async ({ page }) => {
+  const admin = {
+    ...user,
+    id: 'admin-1',
+    username: 'admin',
+    displayName: 'Administrator',
+    role: 'admin'
+  };
+  const otherConversation = {
+    id: 'conversation-other',
+    ownerId: 'user-other',
+    ownerUsername: 'rainsaa',
+    ownerDisplayName: 'rainsaa',
+    title: '旅行计划',
+    model: model.id,
+    reasoningEffort: 'high',
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  await page.route('**/api/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body)
+      });
+    if (path === '/api/v1/me') return respond({ user: admin, csrfToken: 'admin-csrf' });
+    if (path === '/api/v1/models') return respond({ models: [model] });
+    if (path === '/api/v1/me/storage') {
+      return respond({
+        storage: {
+          usedBytes: 0,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 0,
+          activeConversations: 0,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/conversations') {
+      return respond({ conversations: [otherConversation] });
+    }
+    if (path === '/api/v1/conversations/conversation-other/messages') {
+      return respond({ messages: [] });
+    }
+    if (path === '/api/v1/conversations/conversation-other/context-checkpoints') {
+      return respond({ checkpoints: [] });
+    }
+    return route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { code: 'not_found', message: 'Not found.' } })
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('管理员只读查看')).toBeVisible();
+  await expect(page.getByLabel('聊天消息')).toBeDisabled();
+  await expect(page.getByRole('button', { name: '推理强度' })).toBeDisabled();
+  await expect(page.locator('.conversation-actions')).toHaveCount(0);
 });

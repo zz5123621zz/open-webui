@@ -132,6 +132,170 @@ func TestUserAndSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdministratorRolePersistsAcrossSessionsAndLists(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	admin, err := dataStore.CreateUserWithRole(ctx, "admin", "Administrator", "hash", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.CreateUser(ctx, "member", "Member", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.CreateSession(ctx, admin.ID, "admin-token", "test-agent", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	session, err := dataStore.SessionByToken(ctx, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.User.Role != "admin" {
+		t.Fatalf("session role = %q, want admin", session.User.Role)
+	}
+	users, err := dataStore.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 || users[0].Username != "admin" || users[0].Role != "admin" {
+		t.Fatalf("ListUsers() = %#v", users)
+	}
+}
+
+func TestEmptyConversationReuseLimitAndPinProtection(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "lifecycle", "Lifecycle", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBlank, err := dataStore.CreateConversationWithLimit(
+		ctx, user.ID, "New chat", "gpt-one", "high", 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBlank, err := dataStore.CreateConversationWithLimit(
+		ctx, user.ID, "New chat", "gpt-two", "medium", 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondBlank.ID != firstBlank.ID || secondBlank.Model != "gpt-two" {
+		t.Fatalf("empty conversation was not reused: first=%#v second=%#v", firstBlank, secondBlank)
+	}
+
+	first, err := dataStore.UpdateConversation(
+		ctx, user.ID, firstBlank.ID, "First", "gpt-two", "medium",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.SetConversationPinned(ctx, user.ID, first.ID, true, 1); err != nil {
+		t.Fatal(err)
+	}
+	second, err := dataStore.CreateConversationWithLimit(
+		ctx, user.ID, "Second", "gpt-two", "medium", 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.SetConversationPinned(ctx, user.ID, second.ID, true, 1); !errors.Is(err, ErrPinLimit) {
+		t.Fatalf("second pin error = %v, want ErrPinLimit", err)
+	}
+	if _, err := dataStore.db.ExecContext(
+		ctx, `UPDATE conversations SET updated_at = 1 WHERE id = ?`, second.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	third, err := dataStore.CreateConversationWithLimit(
+		ctx, user.ID, "Third", "gpt-two", "medium", 2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ID == "" {
+		t.Fatal("third conversation was not created")
+	}
+	if _, err := dataStore.ConversationByID(ctx, user.ID, first.ID); err != nil {
+		t.Fatalf("pinned conversation was retained unexpectedly: %v", err)
+	}
+	retained, err := dataStore.OwnedConversationByID(ctx, user.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained.ArchivedAt == 0 || retained.RetentionReason != "conversation_limit" {
+		t.Fatalf("automatically retained conversation = %#v", retained)
+	}
+	active, err := dataStore.ListConversations(ctx, user.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 2 || active[0].ID != first.ID {
+		t.Fatalf("active conversations = %#v", active)
+	}
+}
+
+func TestStorageQuotaExcludesRetainedAndPurgeRemovesIt(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "quota", "Quota", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := dataStore.CreateConversation(ctx, user.ID, "Images", "gpt", "high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachment := Attachment{
+		ID: "attachment-one", UserID: user.ID, ConversationID: conversation.ID,
+		Kind: "upload", MediaType: "image/png", ByteSize: 60,
+		SHA256: "hash-one", StoragePath: "uploads/quota/one.png",
+	}
+	if _, err := dataStore.CreateAttachmentWithinQuota(ctx, attachment, 100); err != nil {
+		t.Fatal(err)
+	}
+	second := attachment
+	second.ID = "attachment-two"
+	second.ByteSize = 50
+	second.SHA256 = "hash-two"
+	second.StoragePath = "uploads/quota/two.png"
+	if _, err := dataStore.CreateAttachmentWithinQuota(ctx, second, 100); !errors.Is(err, ErrStorageQuota) {
+		t.Fatalf("quota error = %v, want ErrStorageQuota", err)
+	}
+	if _, err := dataStore.SetConversationArchivedWithPolicy(
+		ctx, user.ID, conversation.ID, true, 30, 100,
+	); err != nil {
+		t.Fatal(err)
+	}
+	status, err := dataStore.StorageStatus(ctx, user.ID, 100, 30, 10, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.UsedBytes != 0 || status.RetainedBytes != 60 {
+		t.Fatalf("retained storage status = %#v", status)
+	}
+	if _, err := dataStore.SetConversationArchivedWithPolicy(
+		ctx, user.ID, conversation.ID, false, 30, 50,
+	); !errors.Is(err, ErrStorageQuota) {
+		t.Fatalf("restore quota error = %v, want ErrStorageQuota", err)
+	}
+	if _, err := dataStore.db.ExecContext(
+		ctx, `UPDATE conversations SET archived_at = 1 WHERE id = ?`, conversation.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	paths, deleted, err := dataStore.PurgeExpiredRetained(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 || len(paths) != 1 || paths[0] != attachment.StoragePath {
+		t.Fatalf("purge result paths=%#v deleted=%d", paths, deleted)
+	}
+	if _, err := dataStore.OwnedConversationByID(ctx, user.ID, conversation.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("purged conversation lookup error = %v", err)
+	}
+}
+
 func TestConversationQueriesAreUserScoped(t *testing.T) {
 	ctx := context.Background()
 	dataStore := openTestStore(t)

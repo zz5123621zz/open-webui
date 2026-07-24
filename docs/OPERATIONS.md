@@ -104,11 +104,14 @@ sudo docker compose ps
 curl --fail --silent http://127.0.0.1:3001/readyz
 ```
 
-交互式创建两名用户：
+交互式创建普通用户或管理员（密码至少 6 位）：
 
 ```bash
 sudo docker compose exec app /app/server user add \
-  --username USERNAME --display-name 'DISPLAY NAME'
+  --username USERNAME --display-name 'DISPLAY NAME' --role user
+sudo docker compose exec app /app/server user add \
+  --username ADMIN --display-name 'Administrator' --role admin
+sudo docker compose exec app /app/server user list
 ```
 
 不提供注册接口。重复执行只会尝试创建另一个管理员指定的用户。账户维护
@@ -120,8 +123,18 @@ sudo docker compose exec app /app/server user disable --username USERNAME
 sudo docker compose exec app /app/server user enable --username USERNAME
 ```
 
+如果明确需要重置全部用户和工作区，应先完成备份，再执行：
+
+```bash
+sudo docker compose exec app /app/server user purge-all --confirm
+```
+
 重置密码和停用账户都会撤销该用户的所有现有 Session。登录后的用户也可
 在“账户与安全”中自行改密或注销全部设备。
+
+默认生命周期边界由 Compose 配置：每用户 3 GB 活跃附件、30 个活跃会话、
+10 个置顶会话以及 7 天临时留档。临时留档附件不计入 3 GB，但仍占用 VPS
+物理磁盘，并由每小时维护任务在到期后永久清理。
 
 ## 4. Nginx
 

@@ -25,6 +25,7 @@ type Config struct {
 	Provider          Provider
 	Jobs              Jobs
 	Tools             Tools
+	Lifecycle         Lifecycle
 }
 
 type Provider struct {
@@ -55,6 +56,36 @@ type Jobs struct {
 type Tools struct {
 	WebSearchEnabled       bool
 	ImageGenerationEnabled bool
+}
+
+type Lifecycle struct {
+	MaxStorageBytes       int64
+	MaxActiveConversations int
+	MaxPinnedConversations int
+	RetentionTTL           time.Duration
+	MaintenanceInterval    time.Duration
+}
+
+func (l Lifecycle) Normalized() Lifecycle {
+	if l.MaxStorageBytes <= 0 {
+		l.MaxStorageBytes = 3 * 1024 * 1024 * 1024
+	}
+	if l.MaxActiveConversations <= 0 {
+		l.MaxActiveConversations = 30
+	}
+	if l.MaxPinnedConversations <= 0 {
+		l.MaxPinnedConversations = 10
+	}
+	if l.MaxPinnedConversations > l.MaxActiveConversations {
+		l.MaxPinnedConversations = l.MaxActiveConversations
+	}
+	if l.RetentionTTL <= 0 {
+		l.RetentionTTL = 7 * 24 * time.Hour
+	}
+	if l.MaintenanceInterval <= 0 {
+		l.MaintenanceInterval = time.Hour
+	}
+	return l
 }
 
 func Load() (Config, error) {
@@ -115,7 +146,7 @@ func Load() (Config, error) {
 		ModelContextOverrides:     make(map[string]int),
 		DedicatedImageModels:      make(map[string]string),
 		ModelsTimeout:             5 * time.Second,
-		DefaultReasoningEffort:    strings.ToLower(env("AI_DEFAULT_REASONING_EFFORT", "auto")),
+		DefaultReasoningEffort:    strings.ToLower(env("AI_DEFAULT_REASONING_EFFORT", "high")),
 		UnknownModelContextTokens: 128000,
 		ImagePromptMaxBytes:       8000,
 		RequestBodyMaxBytes:       50 * 1024 * 1024,
@@ -229,6 +260,38 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	maxStorageBytes, err := int64Env(
+		"USER_MAX_STORAGE_BYTES", 3*1024*1024*1024, 64*1024*1024, 1024*1024*1024*1024,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	maxActiveConversations, err := intEnv("USER_MAX_ACTIVE_CONVERSATIONS", 30, 1, 200)
+	if err != nil {
+		return Config{}, err
+	}
+	maxPinnedConversations, err := intEnv("USER_MAX_PINNED_CONVERSATIONS", 10, 0, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxPinnedConversations > maxActiveConversations {
+		return Config{}, fmt.Errorf("USER_MAX_PINNED_CONVERSATIONS cannot exceed active conversation limit")
+	}
+	retentionHours, err := intEnv("CONVERSATION_RETENTION_HOURS", 7*24, 24, 24*365)
+	if err != nil {
+		return Config{}, err
+	}
+	maintenanceMinutes, err := intEnv("MAINTENANCE_INTERVAL_MINUTES", 60, 5, 24*60)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Lifecycle = Lifecycle{
+		MaxStorageBytes:        maxStorageBytes,
+		MaxActiveConversations: maxActiveConversations,
+		MaxPinnedConversations: maxPinnedConversations,
+		RetentionTTL:           time.Duration(retentionHours) * time.Hour,
+		MaintenanceInterval:    time.Duration(maintenanceMinutes) * time.Minute,
+	}
 
 	return cfg, nil
 }
@@ -290,6 +353,18 @@ func intEnv(name string, fallback, minimum, maximum int) (int, error) {
 		return fallback, nil
 	}
 	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, minimum, maximum)
+	}
+	return value, nil
+}
+
+func int64Env(name string, fallback, minimum, maximum int64) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < minimum || value > maximum {
 		return 0, fmt.Errorf("%s must be between %d and %d", name, minimum, maximum)
 	}

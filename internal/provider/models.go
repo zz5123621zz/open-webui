@@ -369,6 +369,12 @@ func SupportsEffort(model Model, effort string) bool {
 	if effort == "auto" {
 		return true
 	}
+	// The standard OpenAI-compatible /models response does not carry
+	// reasoning capabilities. In that fallback mode, let the provider make
+	// the final validation instead of disabling every explicit effort.
+	if !model.CapabilitiesComplete {
+		return normalizeEffort(effort) != ""
+	}
 	for _, supported := range model.ReasoningEfforts {
 		if supported == effort {
 			return true
