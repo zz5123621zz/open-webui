@@ -66,6 +66,7 @@
   let scrollElement: HTMLDivElement;
   let textareaElement: HTMLTextAreaElement;
   let fileElement: HTMLInputElement;
+  let dialogElement: HTMLDivElement;
   let scrollQueued = false;
   let editingTitleId = '';
   let editingTitle = '';
@@ -76,7 +77,7 @@
   let theme: Theme =
     savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system'
       ? savedTheme
-      : 'system';
+      : 'light';
   let resolvedTheme: 'light' | 'dark' = 'light';
 
   $: activeConversation =
@@ -336,10 +337,12 @@
     }
   }
 
-  function openDialog(value: 'security' | 'about') {
+  async function openDialog(value: 'security' | 'about') {
     profileOpen = false;
     accountError = '';
     dialog = value;
+    await tick();
+    dialogElement?.focus();
   }
 
   async function openConversation(id: string) {
@@ -1000,18 +1003,18 @@
 
 {#if phase === 'boot'}
   <main class="boot-screen">
-    <div class="brand-mark large"><span>✦</span></div>
+    <div class="brand-mark large"><Icon name="sparkles" size={25} /></div>
     <div class="boot-bar"><i></i></div>
   </main>
 {:else if phase === 'login'}
   <main class="login-screen">
     <button class="login-locale" on:click={toggleLocale}>
-      <span aria-hidden="true">文</span>{$locale === 'zh-CN' ? 'English' : '中文'}
+      <Icon name="globe" size={16} />{$locale === 'zh-CN' ? 'English' : '中文'}
     </button>
     <div class="login-ambient ambient-one"></div>
     <div class="login-ambient ambient-two"></div>
     <section class="login-card">
-      <div class="brand-mark"><span>✦</span></div>
+      <div class="brand-mark"><Icon name="sparkles" size={21} /></div>
       <h1>{t('欢迎回来', 'Welcome back')}</h1>
       <p class="login-subtitle">{t('登录你的私人 AI 空间', 'Sign in to your private AI space')}</p>
       <form on:submit|preventDefault={submitLogin}>
@@ -1034,8 +1037,11 @@
             placeholder={t('输入密码', 'Enter your password')}
           />
         </label>
-        {#if loginError}<div class="form-error">{loginError}</div>{/if}
-        <button class="primary-button" type="submit"><span>{t('登录', 'Sign in')}</span><i></i></button>
+        {#if loginError}<div class="form-error" role="alert">{loginError}</div>{/if}
+        <button class="primary-button" type="submit">
+          <span>{t('登录', 'Sign in')}</span>
+          <Icon name="send" size={17} />
+        </button>
       </form>
       <p class="login-note">
         {t('账户由服务器管理员创建 · 不开放注册', 'Accounts are created by the server administrator · Registration is closed')}
@@ -1055,7 +1061,7 @@
     <aside class:open={sidebarOpen} class="sidebar">
       <div class="sidebar-top">
         <div class="sidebar-brand">
-          <div class="brand-mark small"><span>✦</span></div>
+          <div class="brand-mark small"><Icon name="sparkles" size={15} /></div>
           <span>Personal Chat</span>
         </div>
         <button
@@ -1063,11 +1069,11 @@
           aria-label={t('关闭', 'Close')}
           on:click={() => (sidebarOpen = false)}
         >
-          ×
+          <Icon name="close" size={20} />
         </button>
       </div>
       <button class="new-chat" on:click={newConversation} disabled={generating || !selectableModels.length}>
-        <span class="plus">＋</span>
+        <span class="plus"><Icon name="plus" size={18} /></span>
         <span>{t('新对话', 'New chat')}</span>
         <kbd>⌘ K</kbd>
       </button>
@@ -1080,19 +1086,12 @@
           <div
             class:active={conversation.id === activeConversationId}
             class="conversation-item"
-            role="button"
-            tabindex="0"
-            on:click={() => openConversation(conversation.id)}
-            on:keydown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') void openConversation(conversation.id);
-            }}
           >
-            <span class="conversation-icon">◇</span>
             {#if editingTitleId === conversation.id}
+              <span class="conversation-icon"><Icon name="chat" size={16} /></span>
               <input
                 class="rename-input"
                 bind:value={editingTitle}
-                on:click|stopPropagation
                 on:blur={() => finishRename(conversation)}
                 on:keydown={(event) => {
                   if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur();
@@ -1100,27 +1099,38 @@
                 }}
               />
             {:else}
-              <span class="conversation-title">{conversation.title}</span>
+              <button
+                class="conversation-main"
+                type="button"
+                on:click={() => openConversation(conversation.id)}
+                aria-current={conversation.id === activeConversationId ? 'page' : undefined}
+              >
+                <span class="conversation-icon"><Icon name="chat" size={16} /></span>
+                <span class="conversation-title">{conversation.title}</span>
+              </button>
             {/if}
             <span class="conversation-actions">
               <button
                 type="button"
                 class="mini-action"
+                aria-label={showArchived ? t('恢复', 'Restore') : t('归档', 'Archive')}
                 title={showArchived ? t('恢复', 'Restore') : t('归档', 'Archive')}
                 on:click={(event) => setArchived(event, conversation, !showArchived)}
-              >{showArchived ? '↥' : '⌄'}</button>
+              ><Icon name={showArchived ? 'restore' : 'archive'} size={15} /></button>
               <button
                 type="button"
                 class="mini-action"
+                aria-label={t('重命名', 'Rename')}
                 title={t('重命名', 'Rename')}
                 on:click={(event) => beginRename(event, conversation)}
-              >✎</button>
+              ><Icon name="edit" size={15} /></button>
               <button
                 type="button"
                 class="mini-action danger"
+                aria-label={t('删除', 'Delete')}
                 title={t('删除', 'Delete')}
                 on:click={(event) => removeConversation(event, conversation)}
-              >×</button>
+              ><Icon name="trash" size={15} /></button>
             </span>
           </div>
         {/each}
@@ -1140,25 +1150,28 @@
             <strong>{user?.displayName}</strong>
             <small>@{user?.username}</small>
           </span>
-          <span>⋯</span>
+          <Icon name="more" size={18} />
         </button>
         {#if profileOpen}
           <div class="profile-menu">
             <button on:click={toggleTheme}>
-              <span>{theme === 'system' ? '◑' : resolvedTheme === 'dark' ? '☀' : '◐'}</span>
+              <Icon
+                name={theme === 'system' ? 'theme' : resolvedTheme === 'dark' ? 'sun' : 'moon'}
+                size={17}
+              />
               {themeLabel()}
             </button>
             <button on:click={toggleArchiveView}>
-              <span>{showArchived ? '◇' : '⌄'}</span>
+              <Icon name={showArchived ? 'chat' : 'archive'} size={17} />
               {showArchived ? t('返回对话记录', 'Back to chats') : t('已归档对话', 'Archived chats')}
             </button>
             <button on:click={toggleLocale}>
-              <span>文</span>{$locale === 'zh-CN' ? 'English' : '中文'}
+              <Icon name="globe" size={17} />{$locale === 'zh-CN' ? 'English' : '中文'}
             </button>
-            <button on:click={refreshModels}><span>↻</span>{t('刷新模型目录', 'Refresh model catalog')}</button>
-            <button on:click={() => openDialog('security')}><span>⌁</span>{t('账户与安全', 'Account & security')}</button>
-            <button on:click={() => openDialog('about')}><span>ⓘ</span>{t('关于', 'About')}</button>
-            <button class="logout-button" on:click={doLogout}><span>↗</span>{t('退出登录', 'Sign out')}</button>
+            <button on:click={refreshModels}><Icon name="refresh" size={17} />{t('刷新模型目录', 'Refresh model catalog')}</button>
+            <button on:click={() => openDialog('security')}><Icon name="shield" size={17} />{t('账户与安全', 'Account & security')}</button>
+            <button on:click={() => openDialog('about')}><Icon name="info" size={17} />{t('关于', 'About')}</button>
+            <button class="logout-button" on:click={doLogout}><Icon name="logout" size={17} />{t('退出登录', 'Sign out')}</button>
           </div>
         {/if}
       </div>
@@ -1171,7 +1184,7 @@
           aria-label={t('打开侧边栏', 'Open sidebar')}
           on:click={() => (sidebarOpen = true)}
         >
-          ☰
+          <Icon name="menu" size={20} />
         </button>
         <div class="selectors">
           {#if modelPickerOpen}
@@ -1191,13 +1204,13 @@
               disabled={generating || showArchived || !selectableModels.length}
             >
               <span>{activeModel?.name || activeConversation?.model || draftModel || t('选择模型', 'Select model')}</span>
-              <i>⌄</i>
+              <Icon name="chevron-down" size={15} />
             </button>
             {#if modelPickerOpen}
               <div class="model-picker-panel">
                 <label class="model-search">
                   <span class="sr-only">{t('搜索模型', 'Search models')}</span>
-                  <b aria-hidden="true">⌕</b>
+                  <span class="model-search-icon"><Icon name="search" size={17} /></span>
                   <input
                     bind:value={modelSearch}
                     placeholder={t('按名称或模型 ID 搜索', 'Search by name or model ID')}
@@ -1230,7 +1243,7 @@
                         <small>{modelCapabilityLabel(model)}</small>
                       </span>
                       {#if model.id === (activeConversation?.model || draftModel)}
-                        <span class="model-check">✓</span>
+                        <span class="model-check"><Icon name="check" size={17} /></span>
                       {/if}
                     </button>
                   {/each}
@@ -1262,7 +1275,7 @@
                   </option>
                 {/each}
               </select>
-              <i>⌄</i>
+              <span class="select-chevron"><Icon name="chevron-down" size={13} /></span>
             </label>
           {/if}
         </div>
@@ -1271,18 +1284,28 @@
           aria-label={t('切换主题', 'Change theme')}
           on:click={toggleTheme}
         >
-          {theme === 'system' ? '◑' : resolvedTheme === 'dark' ? '☀' : '◐'}
+          <Icon
+            name={theme === 'system' ? 'theme' : resolvedTheme === 'dark' ? 'sun' : 'moon'}
+            size={19}
+          />
         </button>
       </header>
 
-      <div class="messages-scroll" bind:this={scrollElement}>
+      <div
+        class="messages-scroll"
+        bind:this={scrollElement}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label={t('对话内容', 'Conversation')}
+      >
         {#if loadingMessages}
           <div class="message-skeleton">
             <i></i><i></i><i></i>
           </div>
         {:else if messages.length === 0}
           <section class="welcome">
-            <div class="welcome-glyph"><span>✦</span></div>
+            <div class="welcome-glyph"><Icon name="sparkles" size={23} /></div>
             <h2>{t('今天想聊点什么？', 'What would you like to talk about?')}</h2>
             <p>
               {t(
@@ -1296,7 +1319,7 @@
                 resizeComposer();
                 textareaElement?.focus();
               }}>
-                <span>⌁</span>
+                <span><Icon name="plan" size={18} /></span>
                 <strong>{t('规划灵感', 'Plan something')}</strong>
                 <small>{t('安排一次轻松的周末约会', 'Plan a relaxed weekend date')}</small>
               </button>
@@ -1308,7 +1331,7 @@
                 resizeComposer();
                 textareaElement?.focus();
               }}>
-                <span>⌕</span>
+                <span><Icon name="search" size={18} /></span>
                 <strong>{t('联网搜索', 'Web search')}</strong>
                 <small>{t('总结今天的科技新闻', 'Summarize today’s tech news')}</small>
               </button>
@@ -1336,7 +1359,7 @@
               {#each checkpointsAfter(checkpoints, message.id) as checkpoint (checkpoint.id)}
                 <details class="context-checkpoint">
                   <summary>
-                    <span>✦</span>
+                    <span><Icon name="sparkles" size={13} /></span>
                     {t('较早上下文已摘要', 'Earlier context summarized')}
                     <small>{checkpoint.estimatedTokensBefore.toLocaleString()} → {checkpoint.estimatedTokensAfter.toLocaleString()} tokens</small>
                   </summary>
@@ -1357,7 +1380,11 @@
       </div>
 
       <div class="composer-zone">
-        {#if contextStatus}<div class="context-status"><span>✦</span>{contextStatus}</div>{/if}
+        {#if contextStatus}
+          <div class="context-status" role="status">
+            <span><Icon name="sparkles" size={14} /></span>{contextStatus}
+          </div>
+        {/if}
         {#if checkpoints.length >= 2}
           <div class="context-advice">
             {t(
@@ -1367,9 +1394,12 @@
           </div>
         {/if}
         {#if workspaceError}
-          <div class="workspace-error">
+          <div class="workspace-error" role="alert">
+            <Icon name="alert" size={16} />
             <span>{workspaceError}</span>
-            <button aria-label={t('关闭', 'Close')} on:click={() => (workspaceError = '')}>×</button>
+            <button aria-label={t('关闭', 'Close')} on:click={() => (workspaceError = '')}>
+              <Icon name="close" size={15} />
+            </button>
           </div>
         {/if}
         <div class:busy={generating} class:image-mode={generateImage} class="composer">
@@ -1381,7 +1411,7 @@
                   <button
                     aria-label={t('移除图片', 'Remove image')}
                     on:click={() => removeUpload(attachment)}
-                  >×</button>
+                  ><Icon name="close" size={14} /></button>
                 </div>
               {/each}
             </div>
@@ -1397,6 +1427,9 @@
                 ? t('描述你想生成的图片', 'Describe the image you want to create')
                 : t('给 AI 发送消息', 'Message AI')}
             rows="1"
+            aria-label={generateImage
+              ? t('图片生成描述', 'Image generation prompt')
+              : t('聊天消息', 'Chat message')}
             disabled={generating || showArchived}
           ></textarea>
           <div class="composer-toolbar">
@@ -1465,14 +1498,14 @@
                 class="send-button stop"
                 aria-label={t('停止生成', 'Stop generating')}
                 on:click={stopGeneration}
-              ><i></i></button>
+              ><Icon name="stop" size={17} /></button>
             {:else}
               <button
                 class="send-button"
                 aria-label={t('发送', 'Send')}
                 on:click={send}
                 disabled={showArchived || uploading || (!text.trim() && uploads.length === 0)}
-              >↑</button>
+              ><Icon name="send" size={18} /></button>
             {/if}
           </div>
         </div>
@@ -1492,6 +1525,7 @@
       ></button>
       <div
         class="account-dialog"
+        bind:this={dialogElement}
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"
@@ -1501,9 +1535,9 @@
           class="dialog-close"
           aria-label={t('关闭', 'Close')}
           on:click={() => (dialog = '')}
-        >×</button>
+        ><Icon name="close" size={20} /></button>
         {#if dialog === 'security'}
-          <div class="dialog-icon">⌁</div>
+          <div class="dialog-icon"><Icon name="lock" size={23} /></div>
           <h2 id="dialog-title">{t('账户与安全', 'Account & security')}</h2>
           <p class="dialog-lead">
             {t(
@@ -1544,7 +1578,7 @@
                 disabled={accountPending}
               />
             </label>
-            {#if accountError}<div class="account-error">{accountError}</div>{/if}
+            {#if accountError}<div class="account-error" role="alert">{accountError}</div>{/if}
             <button class="dialog-primary" type="submit" disabled={accountPending}>
               {accountPending
                 ? t('正在更新…', 'Updating…')
@@ -1556,7 +1590,7 @@
             {t('注销此账户的全部会话', 'Sign this account out everywhere')}
           </button>
         {:else}
-          <div class="dialog-icon">✦</div>
+          <div class="dialog-icon"><Icon name="sparkles" size={23} /></div>
           <h2 id="dialog-title">Personal Chat</h2>
           <p class="dialog-lead">
             {t(

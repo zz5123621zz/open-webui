@@ -159,7 +159,8 @@
       <div class="typing"><span>{t('正在思考', 'Thinking')}</span><i></i><i></i><i></i></div>
     {/if}
     {#if message.status === 'error' || message.status === 'interrupted'}
-      <div class="message-error">
+      <div class="message-error" role="alert">
+        <Icon name="alert" size={15} />
         {message.status === 'interrupted'
           ? t('回答被中断', 'Response interrupted')
           : t('回答失败', 'Response failed')}
@@ -169,8 +170,14 @@
     {#if message.role === 'assistant' && message.status !== 'streaming'}
       <div class="message-footer">
         {#if message.parts.some((part) => part.type === 'text' && part.text)}
-          <button class="copy-answer" title={t('复制回答', 'Copy response')} on:click={copyAnswer}>
-            {copied ? `✓ ${t('已复制', 'Copied')}` : `▣ ${t('复制', 'Copy')}`}
+          <button
+            class="copy-answer"
+            aria-label={t('复制回答', 'Copy response')}
+            title={t('复制回答', 'Copy response')}
+            on:click={copyAnswer}
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={14} />
+            {copied ? t('已复制', 'Copied') : t('复制', 'Copy')}
           </button>
         {/if}
         {#if canRegenerate}
@@ -179,9 +186,13 @@
             title={message.status === 'completed'
               ? t('重新生成', 'Regenerate')
               : t('重试', 'Retry')}
+            aria-label={message.status === 'completed'
+              ? t('重新生成', 'Regenerate')
+              : t('重试', 'Retry')}
             on:click={() => dispatch('regenerate', { message })}
           >
-            ↻ {message.status === 'completed'
+            <Icon name="retry" size={14} />
+            {message.status === 'completed'
               ? t('重新生成', 'Regenerate')
               : t('重试', 'Retry')}
           </button>
