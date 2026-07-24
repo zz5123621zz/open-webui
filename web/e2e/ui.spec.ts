@@ -327,8 +327,14 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '中文' }).click();
   }
 
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
   await page.getByRole('button', { name: '新对话' }).click();
   await expect(page.locator('.conversation-item')).toHaveCount(1);
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
   await page.getByRole('button', { name: '新对话' }).click();
   await expect(page.locator('.conversation-item')).toHaveCount(1);
 
