@@ -327,7 +327,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
 
   if (testInfo.project.name === 'desktop') {
     await page.getByRole('button', { name: /GPT 5.6 Sol/ }).click();
-    await expect(page.getByText('Sol > Terra > Luna')).toBeVisible();
+    await expect(page.getByText('Sol > Terra > Luna', { exact: true })).toBeVisible();
     await page.getByLabel('搜索模型').fill('gpt-5.6-sol');
     await expect(page.getByRole('option', { name: /GPT 5.6 Sol/ })).toContainText(
       '旗舰档'
