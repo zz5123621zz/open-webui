@@ -4,7 +4,7 @@
 
 生产入口：`https://chat.la4rain.com`
 生产镜像：
-`ghcr.io/zz5123621zz/owui-personal-slim@sha256:e1b6c062006eba8fb2efb5f9e410fce2d4353d07c578fbf7b9a069bca0702683`
+`ghcr.io/zz5123621zz/owui-personal-slim@sha256:77b4e2ad51d0f62d5b17b845b92f8b5ff5bbcb9833a6e2f02df44b4ddf5ba21d`
 
 本报告只把已经由 CI、当前 VPS 配置或真实 CPA 请求证明的项目记为通过。
 
@@ -24,7 +24,11 @@ GitHub Actions 在 PR 和 `main` 上执行，VPS 没有运行 Go 测试、Go 编
 | Trivy HIGH/CRITICAL 扫描和 SARIF 上传 | 通过 |
 
 初始实现由 PR #1 合并。CPA 图片完成状态兼容修复由 PR #2 合并；其
-`main` 发布运行 `30105690928` 全部成功。第三方 Actions 均固定到 commit。
+功能验收镜像为
+`sha256:e1b6c062006eba8fb2efb5f9e410fce2d4353d07c578fbf7b9a069bca0702683`。
+备份运维和本报告由 PR #3 合并，最终 `main` 发布运行 `30106660479`
+全部成功并部署为上述生产 digest。PR #3 没有修改运行时 Go 或前端源码。
+第三方 Actions 均固定到 commit。
 
 ## VPS 部署
 
