@@ -168,6 +168,10 @@
         'The current model does not support image generation. Choose another model.'
       ],
       image_prompt_required: ['请输入图片描述。', 'Enter a prompt for the image.'],
+      image_prompt_too_long: [
+        '图片描述超过 CPA 的 8000 字节限制，请精简后重试。',
+        'The image prompt exceeds CPA’s 8000-byte limit. Shorten it and try again.'
+      ],
       image_generation_attachments_unsupported: [
         '生成图片模式暂不支持同时上传参考图。',
         'Image generation mode does not support uploaded reference images yet.'

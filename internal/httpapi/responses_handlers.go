@@ -740,11 +740,20 @@ func jobErrorDetails(err error) (int, string, string) {
 }
 
 func providerStartError(err error) (string, int, string) {
+	if errors.Is(err, provider.ErrImagePromptTooLong) {
+		return "image_prompt_too_long", http.StatusRequestEntityTooLarge,
+			"The image prompt exceeds the provider's 8000-byte limit."
+	}
 	if isContextWindowError(err) {
 		return "context_too_large", http.StatusRequestEntityTooLarge, "The conversation is still too large after compaction."
 	}
 	var upstream *provider.HTTPError
 	if errors.As(err, &upstream) {
+		if upstream.StatusCode == http.StatusBadRequest &&
+			strings.Contains(strings.ToLower(upstream.Message), "prompt length exceeds") {
+			return "image_prompt_too_long", http.StatusRequestEntityTooLarge,
+				"The image prompt exceeds the provider's 8000-byte limit."
+		}
 		switch upstream.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return "provider_authentication_failed", http.StatusBadGateway, "The provider credential was rejected."

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 )
 
 type ImageGenerationRequest struct {
@@ -21,9 +22,17 @@ type ImageGenerationResult struct {
 }
 
 func (c *Client) GenerateImage(ctx context.Context, request ImageGenerationRequest) (ImageGenerationResult, error) {
+	prompt := compactImagePrompt(request.Prompt)
+	promptBytes := len(prompt)
+	if c.imagePromptMax > 0 && promptBytes > c.imagePromptMax {
+		return ImageGenerationResult{}, fmt.Errorf(
+			"%w: prompt is %d bytes after whitespace compaction (maximum %d)",
+			ErrImagePromptTooLong, promptBytes, c.imagePromptMax,
+		)
+	}
 	body, err := json.Marshal(map[string]any{
 		"model":           request.Model,
-		"prompt":          request.Prompt,
+		"prompt":          prompt,
 		"n":               1,
 		"response_format": "b64_json",
 	})
@@ -78,23 +87,100 @@ func (c *Client) GenerateImage(ctx context.Context, request ImageGenerationReque
 	}, nil
 }
 
+// compactImagePrompt removes layout-only whitespace while preserving spaces
+// between ASCII words. CPA's Imagine endpoint measures its 8000-byte prompt
+// limit after UTF-8 encoding, so Chinese prompts can exceed the boundary long
+// before the application's normal message limit.
+func compactImagePrompt(prompt string) string {
+	var builder strings.Builder
+	builder.Grow(len(prompt))
+	var previous rune
+	pendingSpace := false
+	for _, current := range strings.TrimSpace(prompt) {
+		if unicode.IsSpace(current) {
+			pendingSpace = builder.Len() > 0
+			continue
+		}
+		if pendingSpace && asciiWordRune(previous) && asciiWordRune(current) {
+			builder.WriteByte(' ')
+		}
+		current = compactPromptPunctuation(current)
+		builder.WriteRune(current)
+		previous = current
+		pendingSpace = false
+	}
+	return builder.String()
+}
+
+func compactPromptPunctuation(value rune) rune {
+	switch value {
+	case '，', '、':
+		return ','
+	case '。':
+		return '.'
+	case '：':
+		return ':'
+	case '；':
+		return ';'
+	case '！':
+		return '!'
+	case '？':
+		return '?'
+	case '（':
+		return '('
+	case '）':
+		return ')'
+	case '【':
+		return '['
+	case '】':
+		return ']'
+	case '“', '”':
+		return '"'
+	case '‘', '’':
+		return '\''
+	default:
+		return value
+	}
+}
+
+func asciiWordRune(value rune) bool {
+	return value <= unicode.MaxASCII && (unicode.IsLetter(value) || unicode.IsDigit(value))
+}
+
 func decodeHTTPError(statusCode int, raw []byte) error {
 	var payload struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &payload)
-	code := strings.TrimSpace(payload.Error.Code)
+
+	var nested struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+	var flatError string
+	_ = json.Unmarshal(payload.Error, &nested)
+	_ = json.Unmarshal(payload.Error, &flatError)
+
+	code := strings.TrimSpace(nested.Code)
 	if code == "" {
-		code = strings.TrimSpace(payload.Error.Type)
+		code = strings.TrimSpace(nested.Type)
+	}
+	if code == "" {
+		code = strings.TrimSpace(payload.Code)
 	}
 	if code == "" {
 		code = "provider_http_error"
 	}
-	message := strings.TrimSpace(payload.Error.Message)
+	message := strings.TrimSpace(nested.Message)
+	if message == "" {
+		message = strings.TrimSpace(flatError)
+	}
+	if message == "" {
+		message = strings.TrimSpace(payload.Message)
+	}
 	if message == "" {
 		message = http.StatusText(statusCode)
 	}

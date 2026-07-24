@@ -25,6 +25,9 @@ func TestLoadDevelopmentConfig(t *testing.T) {
 	if got := cfg.Provider.DedicatedImageModels["grok-4.5"]; got != "grok-imagine-image-quality" {
 		t.Fatalf("default Grok image route = %q", got)
 	}
+	if cfg.Provider.ImagePromptMaxBytes != 8000 {
+		t.Fatalf("image prompt limit = %d, want 8000", cfg.Provider.ImagePromptMaxBytes)
+	}
 }
 
 func TestLoadSecretFile(t *testing.T) {
@@ -100,6 +103,21 @@ func TestLoadParsesImageModelRoutes(t *testing.T) {
 	}
 	if got := cfg.Provider.DedicatedImageModels["grok-chat"]; got != "grok-image" {
 		t.Fatalf("dedicated image route = %q", got)
+	}
+}
+
+func TestLoadParsesImagePromptLimit(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("AI_IMAGE_PROMPT_MAX_BYTES", "12000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider.ImagePromptMaxBytes != 12000 {
+		t.Fatalf("image prompt limit = %d", cfg.Provider.ImagePromptMaxBytes)
 	}
 }
 
