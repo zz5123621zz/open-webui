@@ -5,6 +5,7 @@ import type {
   ContextCheckpoint,
   Message,
   Model,
+  StorageStatus,
   StreamEvent,
   User
 } from './types';
@@ -102,6 +103,11 @@ export async function getModels(): Promise<Model[]> {
   return body.models;
 }
 
+export async function getStorageStatus(): Promise<StorageStatus> {
+  const body = await request<{ storage: StorageStatus }>('/api/v1/me/storage');
+  return body.storage;
+}
+
 export async function getConversations(archived = false): Promise<Conversation[]> {
   const body = await request<{ conversations: Conversation[] }>(
     `/api/v1/conversations${archived ? '?archived=true' : ''}`
@@ -123,14 +129,18 @@ export async function createConversation(
 
 export async function updateConversation(
   id: string,
-  patch: Partial<Pick<Conversation, 'title' | 'model' | 'reasoningEffort' | 'archived'>>
+  patch: Partial<
+    Pick<Conversation, 'title' | 'model' | 'reasoningEffort' | 'archived' | 'pinnedAt'>
+  > & { pinned?: boolean }
 ): Promise<Conversation> {
   return (await updateConversationWithMeta(id, patch)).conversation;
 }
 
 export async function updateConversationWithMeta(
   id: string,
-  patch: Partial<Pick<Conversation, 'title' | 'model' | 'reasoningEffort' | 'archived'>>
+  patch: Partial<
+    Pick<Conversation, 'title' | 'model' | 'reasoningEffort' | 'archived' | 'pinnedAt'>
+  > & { pinned?: boolean }
 ): Promise<{ conversation: Conversation; reasoningEffortReset?: boolean }> {
   return request<{ conversation: Conversation; reasoningEffortReset?: boolean }>(
     `/api/v1/conversations/${id}`,

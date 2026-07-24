@@ -5,7 +5,7 @@ workspace and login screen.
 
 ## Product intent
 
-- A private two-person AI chat tool, not a marketing page or dashboard.
+- A private three-account AI chat tool, not a marketing page or dashboard.
 - Content-first, quiet and trustworthy. The interface should recede while long
   answers, citations, images and tool progress remain easy to scan.
 - Mobile-first at 375 px, then adapt at 768 / 1024 / 1440 px.
@@ -71,6 +71,15 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
   focus as well as hover.
 - Model picker: searchable sheet/popover with capability descriptions and a
   visible selected check.
+- Reasoning picker: visually paired with the model picker. It exposes three
+  plain-language levels (low/medium/high), includes a short speed/quality
+  description, and discloses the CPA `medium`/`high`/`max` mapping.
+- Conversation lifecycle: pin is immediately visible; temporary retention is
+  named as a seven-day recoverable state rather than a permanent archive.
+- Storage: the sidebar shows the signed-in user's active 3 GB allowance and
+  active/pinned conversation counts without turning the chat into a dashboard.
+- Administrator view: cross-user conversations show their owner and a persistent
+  read-only banner; mutation controls and the composer are disabled.
 - Messages: user text on a subtle blue surface; assistant responses on the canvas
   without a heavy bubble. Tool calls are compact status cards, not oversized
   panels.

@@ -475,8 +475,34 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.conversation-icon.pinned,
+.mini-action.active {
+  color: var(--primary);
+}
+
+.conversation-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
 .conversation-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-copy small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-actions {
@@ -527,6 +553,70 @@ button:disabled {
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.storage-card {
+  display: grid;
+  gap: 7px;
+  margin: 8px 2px 10px;
+  padding: 10px 11px;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.storage-heading,
+.storage-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.storage-heading span {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.storage-heading strong {
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.storage-track {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-hover);
+}
+
+.storage-track i {
+  display: block;
+  min-width: 2px;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 180ms ease;
+}
+
+.storage-track.warning i {
+  background: var(--danger);
+}
+
+.storage-meta,
+.storage-card > small {
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.storage-card > small {
+  padding-top: 1px;
+  border-top: 1px solid var(--border);
 }
 
 .sidebar-footer {
@@ -689,6 +779,172 @@ button:disabled {
   border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-lg);
+}
+
+.effort-picker {
+  position: relative;
+  z-index: 13;
+}
+
+.effort-picker-trigger {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  font-weight: 610;
+  white-space: nowrap;
+}
+
+.effort-picker-trigger:hover,
+.effort-picker-trigger[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: var(--primary-soft);
+}
+
+.effort-picker-trigger:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.effort-picker-trigger .effort-icon {
+  display: grid;
+  position: static;
+  color: var(--primary);
+  pointer-events: none;
+}
+
+.effort-picker-trigger > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.effort-picker-panel {
+  position: absolute;
+  top: 50px;
+  left: 50%;
+  z-index: 14;
+  width: min(330px, calc(100vw - 32px));
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+}
+
+.picker-heading {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px 9px;
+}
+
+.picker-heading strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.picker-heading small,
+.effort-picker-panel > p {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.effort-options {
+  display: grid;
+  gap: 3px;
+}
+
+.effort-options > button {
+  display: flex;
+  width: 100%;
+  min-height: 62px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  color: var(--text);
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  background: transparent;
+  text-align: left;
+}
+
+.effort-options > button:hover,
+.effort-options > button.selected {
+  background: var(--primary-soft);
+}
+
+.effort-options > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.effort-option-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--border));
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.effort-option-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.effort-option-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.effort-option-copy small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.effort-option-copy code {
+  color: var(--text-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+}
+
+.effort-picker-panel > p {
+  margin: 7px 10px 5px;
+}
+
+.readonly-banner {
+  display: flex;
+  min-height: 38px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 16px;
+  color: var(--text-soft);
+  border-bottom: 1px solid var(--border);
+  background: var(--primary-soft);
+  font-size: 11px;
+  font-weight: 590;
+}
+
+.readonly-banner .app-icon {
+  color: var(--primary);
 }
 
 .model-search {
@@ -1605,6 +1861,29 @@ button:disabled {
     max-height: calc(100dvh - 148px - env(safe-area-inset-top));
   }
 
+  .effort-picker {
+    min-width: 0;
+  }
+
+  .effort-picker-trigger {
+    width: min(32vw, 128px);
+    min-width: 108px;
+    padding: 0 8px;
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .effort-picker-panel {
+    position: fixed;
+    top: calc(56px + env(safe-area-inset-top));
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: calc(100dvh - 72px - env(safe-area-inset-top));
+    overflow-y: auto;
+    transform: none;
+  }
+
   .effort-select {
     width: min(31vw, 124px);
     min-width: 104px;
@@ -1764,6 +2043,11 @@ button:disabled {
 }
 
 @media (max-width: 430px) {
+  .effort-picker-trigger {
+    width: min(32vw, 118px);
+    min-width: 104px;
+  }
+
   .effort-select {
     width: min(32vw, 116px);
     min-width: 104px;
@@ -1822,6 +2106,13 @@ button:disabled {
 
   .model-picker-trigger {
     max-width: 112px;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .effort-picker-trigger {
+    width: 104px;
+    min-width: 98px;
     padding-right: 6px;
     padding-left: 6px;
   }

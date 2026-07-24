@@ -96,11 +96,11 @@ func (s *Server) saveGeneratedImage(ctx context.Context, userID, conversationID,
 	}
 	tempPath = ""
 
-	attachment, err := s.store.CreateAttachment(ctx, store.Attachment{
+	attachment, err := s.store.CreateAttachmentWithinQuota(ctx, store.Attachment{
 		ID: attachmentID, UserID: userID, ConversationID: conversationID, MessageID: messageID,
 		Kind: "generated", MediaType: mediaType, ByteSize: written,
 		SHA256: hex.EncodeToString(hasher.Sum(nil)), StoragePath: relativePath,
-	})
+	}, s.cfg.Lifecycle.MaxStorageBytes)
 	if err != nil {
 		_ = os.Remove(destination)
 		return generatedImage{}, err

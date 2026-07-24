@@ -45,6 +45,7 @@ type activeResponse struct {
 }
 
 func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client, logger *slog.Logger) *Server {
+	cfg.Lifecycle = cfg.Lifecycle.Normalized()
 	server := &Server{
 		cfg: cfg, store: dataStore, models: modelClient,
 		jobs: jobs.NewScheduler(
@@ -79,6 +80,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/v1/auth/logout-all", s.auth(s.origin(s.csrf(http.HandlerFunc(s.logoutAll)))))
 	s.mux.Handle("GET /api/v1/me", s.auth(http.HandlerFunc(s.me)))
 	s.mux.Handle("PUT /api/v1/me/password", s.auth(s.origin(s.csrf(http.HandlerFunc(s.changePassword)))))
+	s.mux.Handle("GET /api/v1/me/storage", s.auth(http.HandlerFunc(s.storageStatus)))
 	s.mux.Handle("GET /api/v1/models", s.auth(http.HandlerFunc(s.listModels)))
 
 	s.mux.Handle("GET /api/v1/conversations", s.auth(http.HandlerFunc(s.listConversations)))

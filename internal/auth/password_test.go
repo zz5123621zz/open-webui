@@ -27,7 +27,16 @@ func TestPasswordRoundTrip(t *testing.T) {
 }
 
 func TestHashPasswordRejectsShortPassword(t *testing.T) {
-	if _, err := HashPassword("12345678901"); err == nil {
+	if _, err := HashPassword("12345"); err == nil {
 		t.Fatal("HashPassword() error = nil")
+	}
+	if _, err := HashPassword("短密码"); err == nil {
+		t.Fatal("HashPassword() accepted fewer than 6 Unicode characters")
+	}
+}
+
+func TestHashPasswordAcceptsSixCharacters(t *testing.T) {
+	if _, err := HashPassword("123456"); err != nil {
+		t.Fatalf("HashPassword() error = %v", err)
 	}
 }

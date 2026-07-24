@@ -8,6 +8,7 @@
     | 'close'
     | 'copy'
     | 'edit'
+    | 'eye'
     | 'globe'
     | 'image'
     | 'image-plus'
@@ -18,6 +19,8 @@
     | 'moon'
     | 'more'
     | 'plan'
+    | 'pin'
+    | 'pin-off'
     | 'plus'
     | 'refresh'
     | 'restore'
@@ -75,6 +78,9 @@
   {:else if name === 'edit'}
     <path d="m4 20 4.3-1 10-10a2.1 2.1 0 0 0-3-3l-10 10Z" />
     <path d="m14 7 3 3" />
+  {:else if name === 'eye'}
+    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+    <circle cx="12" cy="12" r="2.5" />
   {:else if name === 'globe'}
     <circle cx="12" cy="12" r="9" />
     <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
@@ -109,6 +115,12 @@
   {:else if name === 'plan'}
     <path d="M6 4h12v16H6z" />
     <path d="M9 8h6M9 12h6M9 16h4" />
+  {:else if name === 'pin'}
+    <path d="m9 3 6 0-.8 5.1 3.3 3.3v1.1h-11v-1.1l3.3-3.3Z" />
+    <path d="M12 12.5V21" />
+  {:else if name === 'pin-off'}
+    <path d="M3 3l18 18" />
+    <path d="m9.8 3h5.2l-.8 5.1 3.3 3.3v1.1h-5M8.7 12.5H6.5v-1.1l2.1-2.1M12 15.8V21" />
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14" />
   {:else if name === 'refresh' || name === 'retry'}

@@ -2,6 +2,7 @@ export interface User {
   id: string;
   username: string;
   displayName: string;
+  role: 'user' | 'admin';
   preferredModel?: string;
   createdAt: number;
   updatedAt: number;
@@ -23,13 +24,29 @@ export interface Model {
 
 export interface Conversation {
   id: string;
+  ownerId?: string;
+  ownerUsername?: string;
+  ownerDisplayName?: string;
   title: string;
   model: string;
   reasoningEffort: string;
   createdAt: number;
   updatedAt: number;
   archivedAt?: number;
+  pinnedAt?: number;
+  retentionReason?: 'manual' | 'conversation_limit';
   archived?: boolean;
+}
+
+export interface StorageStatus {
+  usedBytes: number;
+  limitBytes: number;
+  retainedBytes: number;
+  activeConversations: number;
+  maxActiveConversations: number;
+  pinnedConversations: number;
+  maxPinnedConversations: number;
+  retentionDays: number;
 }
 
 export interface MessagePart {

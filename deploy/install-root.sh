@@ -81,6 +81,11 @@ if [ ! -e "$DEPLOY_ROOT/.env" ]; then
     printf 'AI_MODEL_DENYLIST=\n'
     printf 'AI_UNKNOWN_MODEL_CONTEXT_TOKENS=128000\n'
     printf 'AI_MODEL_CONTEXT_OVERRIDES_JSON={}\n'
+    printf 'USER_MAX_STORAGE_BYTES=3221225472\n'
+    printf 'USER_MAX_ACTIVE_CONVERSATIONS=30\n'
+    printf 'USER_MAX_PINNED_CONVERSATIONS=10\n'
+    printf 'CONVERSATION_RETENTION_HOURS=168\n'
+    printf 'MAINTENANCE_INTERVAL_MINUTES=60\n'
   } >"$DEPLOY_ROOT/.env"
 else
   echo "Keeping existing $DEPLOY_ROOT/.env"

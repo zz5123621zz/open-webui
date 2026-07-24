@@ -1,25 +1,29 @@
-# Personal Chat Slim
+# La4RainGPT
 
 面向少量固定用户的私人 AI 聊天界面。项目从 Open WebUI `v0.10.2`
 fork，保留其成熟的聊天产品思路和视觉语言，运行时替换为轻量的
 Svelte 静态前端、Go 单进程后端与 SQLite。
 
-当前目标是两名用户共享一个 CPA Provider 账户，但会话、消息和图片严格
-按应用用户隔离。浏览器永远不会收到 CPA 密钥。
+当前由两名普通用户和一名管理员共享一个 CPA Provider 账户。普通用户的
+会话、消息和图片严格隔离；管理员可只读查看全部会话以便排障。浏览器永远
+不会收到 CPA 密钥。
 
 ## 已实现
 
-- 管理员创建用户；Argon2id 密码与服务端 Session
+- 管理员创建用户；普通用户/管理员角色；Argon2id 密码与服务端 Session
 - 用户自助改密/注销全部设备；管理员可停用、启用或重置账户
 - 用户隔离的会话、消息、上传及生成图片
-- CPA 动态模型目录、可搜索能力面板与 Conversation 级推理强度；新对话创建前即可选择强度
+- CPA 动态模型目录、可搜索能力面板与 Conversation 级低/中/高推理强度，
+  分别发送 `medium`/`high`/`max`
 - OpenAI Responses SSE 文本与推理摘要
 - Web Search 和 Image Generation 工具状态；上传图片与生成图片是两个明确模式
 - PNG、JPEG、WebP 上传；生成图原质量落盘
 - GPT 默认走 Responses `image_generation`；Grok 4.5 默认路由到 CPA
   `grok-imagine-image-quality` 的 `/v1/images/generations`
 - Markdown、代码高亮/复制、KaTeX、引用来源
-- 停止、失败重试、重新生成、归档/恢复
+- 停止、失败重试、重新生成、置顶与七天临时留档/恢复
+- 每用户 3 GB 活跃附件空间、最多 30 个活跃会话和 10 个置顶会话；置顶
+  会话不参与自动留档
 - 应用管理的 Context Checkpoint
 - 中文/English 界面、亮色/暗色/系统主题
 - 50 MiB CPA 请求硬边界；大请求通过临时文件编译

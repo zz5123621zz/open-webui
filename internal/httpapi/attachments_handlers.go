@@ -137,13 +137,22 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	tempPath = ""
 
-	attachment, err := s.store.CreateAttachment(r.Context(), store.Attachment{
+	attachment, err := s.store.CreateAttachmentWithinQuota(r.Context(), store.Attachment{
 		ID: attachmentID, UserID: session.User.ID, Kind: "upload",
 		OriginalName: safeOriginalName(filePart.FileName()), MediaType: mediaType,
 		ByteSize: written, SHA256: hex.EncodeToString(hasher.Sum(nil)), StoragePath: relativePath,
-	})
+	}, s.cfg.Lifecycle.MaxStorageBytes)
 	if err != nil {
 		_ = os.Remove(destination)
+		if errors.Is(err, store.ErrStorageQuota) {
+			writeError(
+				w,
+				http.StatusInsufficientStorage,
+				"storage_quota_exceeded",
+				"Your active workspace has reached its 3 GB storage allowance. Retain or delete a conversation before uploading more images.",
+			)
+			return
+		}
 		s.internalError(w, "save upload record", err)
 		return
 	}
@@ -155,7 +164,13 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) attachmentContent(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionFromContext(r.Context())
-	attachment, err := s.store.AttachmentByID(r.Context(), session.User.ID, r.PathValue("id"))
+	var attachment store.Attachment
+	var err error
+	if session.User.Role == "admin" {
+		attachment, err = s.store.AttachmentByIDAny(r.Context(), r.PathValue("id"))
+	} else {
+		attachment, err = s.store.AttachmentByID(r.Context(), session.User.ID, r.PathValue("id"))
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
