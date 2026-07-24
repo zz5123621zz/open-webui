@@ -2,7 +2,7 @@
 # Backend CI — Python formatting checks via Ruff
 # Runs on pushes and PRs to main/dev when backend files change
 # ─────────────────────────────────────────────────────────────────────────────
-name: Python CI
+name: Python CI (upstream, disabled)
 
 on:
   push:

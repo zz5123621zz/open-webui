@@ -1,0 +1,303 @@
+import { expect, test, type Page } from '@playwright/test';
+
+const user = {
+  id: 'user-1',
+  username: 'alice',
+  displayName: 'Alice',
+  preferredModel: 'gpt-personal',
+  createdAt: Date.now(),
+  updatedAt: Date.now()
+};
+
+const model = {
+  id: 'gpt-personal',
+  name: 'GPT Personal',
+  description: 'Mock CPA model',
+  contextWindow: 200000,
+  inputModalities: ['text', 'image'],
+  supportsWebSearch: true,
+  reasoningEfforts: ['low', 'medium', 'high'],
+  defaultReasoningEffort: 'medium',
+  capabilitiesComplete: true,
+  selectable: true
+};
+
+const onePixelPNG =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+async function mockAPI(page: Page) {
+  let loggedIn = false;
+  let conversationCreated = false;
+  let checkpointReady = false;
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    const json = (status: number, body: unknown) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body)
+      });
+
+    if (path === '/api/v1/me') {
+      return loggedIn
+        ? json(200, { user, csrfToken: 'csrf-test' })
+        : json(401, { error: { code: 'unauthorized', message: 'Sign in.' } });
+    }
+    if (path === '/api/v1/auth/login') {
+      loggedIn = true;
+      return json(200, { user, csrfToken: 'csrf-test' });
+    }
+    if (path === '/api/v1/models') return json(200, { models: [model] });
+    if (path === '/api/v1/attachments/generated-1/content') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from(onePixelPNG, 'base64')
+      });
+    }
+    if (path === '/api/v1/conversations' && request.method() === 'GET') {
+      return json(200, { conversations: [] });
+    }
+    if (path === '/api/v1/conversations' && request.method() === 'POST') {
+      conversationCreated = true;
+      return json(201, {
+        conversation: {
+          id: 'conversation-1',
+          title: 'New chat',
+          model: model.id,
+          reasoningEffort: 'auto',
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+      });
+    }
+    if (path === '/api/v1/conversations/conversation-1' && request.method() === 'PATCH') {
+      return json(200, {
+        conversation: {
+          id: 'conversation-1',
+          title: '搜索并总结今天值得关注的科技新闻',
+          model: model.id,
+          reasoningEffort: 'auto',
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        }
+      });
+    }
+    if (
+      path === '/api/v1/conversations/conversation-1/context-checkpoints' &&
+      request.method() === 'GET'
+    ) {
+      return json(200, {
+        checkpoints: checkpointReady
+          ? [
+              {
+                id: 'checkpoint-1',
+                conversationId: 'conversation-1',
+                boundaryMessageId: 'message-user',
+                model: model.id,
+                summaryText:
+                  '## 长期用户偏好\n无\n## 当前话题状态\n正在总结科技新闻',
+                sourceFirstMessageId: 'message-user',
+                sourceLastMessageId: 'message-user',
+                estimatedTokensBefore: 160000,
+                estimatedTokensAfter: 92000,
+                sourceBytes: 4096,
+                status: 'completed',
+                createdAt: Date.now()
+              }
+            ]
+          : []
+      });
+    }
+    if (path.endsWith('/responses') && request.method() === 'POST' && conversationCreated) {
+      checkpointReady = true;
+      const now = Date.now();
+      const userMessage = {
+        id: 'message-user',
+        conversationId: 'conversation-1',
+        role: 'user',
+        status: 'completed',
+        createdAt: now,
+        parts: [{ type: 'text', text: '搜索并总结今天值得关注的科技新闻' }]
+      };
+      const assistant = {
+        id: 'message-assistant',
+        conversationId: 'conversation-1',
+        role: 'assistant',
+        model: model.id,
+        reasoningEffortRequested: 'auto',
+        status: 'streaming',
+        parentMessageId: 'message-user',
+        createdAt: now + 1,
+        parts: []
+      };
+      const final = {
+        ...assistant,
+        status: 'completed',
+        outputTokens: 128,
+        parts: [
+          {
+            type: 'reasoning',
+            text: '我会先检索可靠来源，再归纳共同趋势。',
+            data: { durationMs: 1200 }
+          },
+          {
+            type: 'tool',
+            data: {
+              callId: 'search-1',
+              type: 'web_search',
+              status: 'completed',
+              durationMs: 842,
+              data: { query: 'today technology news' }
+            }
+          },
+          {
+            type: 'text',
+            text: '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>'
+          },
+          {
+            type: 'citations',
+            data: {
+              citations: [{ url: 'https://example.com/news', title: 'Example Technology' }]
+            }
+          },
+          {
+            type: 'tool',
+            data: {
+              callId: 'image-1',
+              type: 'image_generation',
+              status: 'completed',
+              durationMs: 2100
+            }
+          },
+          { type: 'image', attachmentId: 'generated-1' }
+        ]
+      };
+      const sse = [
+        ['response.queued', { position: 1, timeoutSeconds: 60 }],
+        ['response.started', { requestId: 'request-1', userMessage, assistantMessage: assistant }],
+        [
+          'response.context',
+          {
+            status: 'completed',
+            checkpointId: 'checkpoint-1',
+            boundaryMessageId: 'message-user'
+          }
+        ],
+        ['response.reasoning.delta', { delta: '我会先检索可靠来源，再归纳共同趋势。' }],
+        [
+          'response.tool',
+          {
+            callId: 'search-1',
+            type: 'web_search',
+            status: 'completed',
+            durationMs: 842,
+            data: { query: 'today technology news' }
+          }
+        ],
+        [
+          'response.text.delta',
+          {
+            delta:
+              '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>'
+          }
+        ],
+        [
+          'response.tool',
+          {
+            callId: 'image-1',
+            type: 'image_generation',
+            status: 'completed',
+            durationMs: 2100
+          }
+        ],
+        [
+          'response.image',
+          { attachmentId: 'generated-1', url: '/api/v1/attachments/generated-1/content' }
+        ],
+        ['response.completed', { message: final }]
+      ]
+        .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        .join('');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: { 'Cache-Control': 'no-cache' },
+        body: sse
+      });
+    }
+    return json(404, { error: { code: 'not_found', message: 'Not found.' } });
+  });
+}
+
+test('login and streaming chat are visually usable', async ({ page }, testInfo) => {
+  await mockAPI(page);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();
+  if (testInfo.project.name === 'desktop') {
+    await page.getByRole('button', { name: 'English' }).click();
+    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+    await page.getByRole('button', { name: '中文' }).click();
+  }
+  await page.screenshot({ path: testInfo.outputPath('login.png'), fullPage: true });
+
+  await page.getByLabel('用户名').fill('alice');
+  await page.getByLabel('密码').fill('correct horse battery');
+  await page.getByRole('button', { name: '登录' }).click();
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+
+  if (testInfo.project.name === 'desktop') {
+    await page.getByRole('button', { name: /GPT Personal/ }).click();
+    await page.getByLabel('搜索模型').fill('gpt-personal');
+    await expect(page.getByRole('option', { name: /GPT Personal/ })).toContainText(
+      '图片输入 · 联网 · 推理: low/medium/high'
+    );
+    await page.getByRole('option', { name: /GPT Personal/ }).click();
+
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: '关于' }).click();
+    await expect(page.getByRole('heading', { name: 'Personal Chat' })).toBeVisible();
+    await expect(page.getByText('它不是端到端加密服务')).toBeVisible();
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: '账户与安全' }).click();
+    await expect(page.getByRole('heading', { name: '账户与安全' })).toBeVisible();
+    await expect(page.getByLabel('新密码', { exact: true })).toHaveAttribute('minlength', '12');
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
+
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: 'English' }).click();
+    await expect(page.getByRole('heading', { name: 'What would you like to talk about?' })).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.lang))
+      .toBe('en');
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: '中文' }).click();
+  }
+
+  await page.getByRole('button', { name: /联网搜索/ }).click();
+  await page.getByRole('button', { name: '发送' }).click();
+  await expect(page.getByText('今日科技摘要')).toBeVisible();
+  await expect(page.locator('.reasoning summary')).toContainText('1.2 秒');
+  await expect(page.getByText('网页搜索')).toBeVisible();
+  await expect(page.getByText('图像生成')).toBeVisible();
+  await expect(page.locator('img.message-image')).toBeVisible();
+  await expect
+    .poll(() =>
+      page.locator('img.message-image').evaluate((image: HTMLImageElement) => image.naturalWidth)
+    )
+    .toBeGreaterThan(0);
+  await page.getByText('查看安全参数').click();
+  await expect(page.locator('.tool-details pre')).toContainText('today technology news');
+  await expect(page.getByText('Example Technology')).toBeVisible();
+  await expect(page.getByText('较早上下文已摘要')).toBeVisible();
+  await expect(page.getByText('安全渲染')).toBeVisible();
+  await expect(page.locator('.markdown [onmouseover], .markdown script')).toHaveCount(0);
+  expect(
+    await page.evaluate(() => (window as typeof window & { __owuiXSS?: boolean }).__owuiXSS)
+  ).toBeUndefined();
+  await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
+});

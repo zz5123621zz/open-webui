@@ -1,33 +1,26 @@
+.PHONY: check test test-race web-check web-build e2e compose-check
 
-ifneq ($(shell which docker-compose 2>/dev/null),)
-    DOCKER_COMPOSE := docker-compose
-else
-    DOCKER_COMPOSE := docker compose
-endif
+check: test web-check web-build compose-check
 
-install:
-	$(DOCKER_COMPOSE) up -d
+test:
+	go test ./...
+	go vet ./...
 
-remove:
-	@chmod +x confirm_remove.sh
-	@./confirm_remove.sh
+test-race:
+	go test -race ./...
 
-start:
-	$(DOCKER_COMPOSE) start
-startAndBuild: 
-	$(DOCKER_COMPOSE) up -d --build
+web-check:
+	npm --prefix web ci --no-audit --no-fund
+	npm --prefix web audit --audit-level=moderate
+	npm --prefix web run check
 
-stop:
-	$(DOCKER_COMPOSE) stop
+web-build:
+	npm --prefix web run build
 
-update:
-	# Calls the LLM update script
-	chmod +x update_ollama_models.sh
-	@./update_ollama_models.sh
-	@git pull
-	$(DOCKER_COMPOSE) down
-	# Make sure the ollama-webui container is stopped before rebuilding
-	@docker stop open-webui || true
-	$(DOCKER_COMPOSE) up --build -d
-	$(DOCKER_COMPOSE) start
+e2e:
+	npm --prefix web run test:e2e
 
+compose-check:
+	@test -n "$(APP_IMAGE)" || (echo "APP_IMAGE is required" >&2; exit 1)
+	@test -n "$(AI_DEFAULT_MODEL)" || (echo "AI_DEFAULT_MODEL is required" >&2; exit 1)
+	docker compose -f compose.yaml config --quiet

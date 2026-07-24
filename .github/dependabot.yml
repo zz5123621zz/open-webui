@@ -1,25 +1,19 @@
 version: 2
 updates:
-  - package-ecosystem: uv
-    directory: '/'
+  - package-ecosystem: gomod
+    directory: /
     schedule:
       interval: monthly
-    target-branch: dev
-
-  - package-ecosystem: pip
-    directory: '/backend'
-    schedule:
-      interval: monthly
-    target-branch: dev
-
-  - package-ecosystem: github-actions
-    directory: '/'
-    schedule:
-      interval: monthly
-    target-branch: dev
+    target-branch: main
 
   - package-ecosystem: npm
-    directory: '/'
+    directory: /web
     schedule:
       interval: monthly
-    target-branch: dev
+    target-branch: main
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: main

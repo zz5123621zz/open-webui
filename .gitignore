@@ -219,6 +219,15 @@ build/Release
 node_modules/
 jspm_packages/
 
+# Personal slim deployment state and credentials
+data/
+secrets/*
+!secrets/.gitkeep
+web/test-results/
+web/playwright-report/
+internal/httpapi/static/*
+!internal/httpapi/static/placeholder.txt
+
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
