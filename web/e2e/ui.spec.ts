@@ -5,15 +5,15 @@ const user = {
   username: 'alice',
   displayName: 'Alice',
   role: 'user',
-  preferredModel: 'gpt-personal',
+  preferredModel: 'gpt-5.6-sol',
   createdAt: Date.now(),
   updatedAt: Date.now()
 };
 
 const model = {
-  id: 'gpt-personal',
-  name: 'GPT Personal',
-  description: 'Mock CPA model',
+  id: 'gpt-5.6-sol',
+  name: 'GPT 5.6 Sol',
+  description: 'Latest frontier agentic coding model.',
   contextWindow: 200000,
   inputModalities: ['text', 'image'],
   supportsWebSearch: true,
@@ -160,8 +160,15 @@ async function mockAPI(page: Page) {
     if (path.endsWith('/responses') && request.method() === 'POST' && conversationCreated) {
       const body = request.postDataJSON() as { generateImage: boolean };
       expect(body.generateImage).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 1700));
       checkpointReady = true;
       const now = Date.now();
+      const responseText =
+        '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>\n\n' +
+        Array.from(
+          { length: 28 },
+          (_, index) => `补充说明 ${index + 1}：这是用于验证长回答滚动行为的内容。`
+        ).join('\n\n');
       const userMessage = {
         id: 'message-user',
         conversationId: 'conversation-1',
@@ -204,7 +211,7 @@ async function mockAPI(page: Page) {
           },
           {
             type: 'text',
-            text: '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>'
+            text: responseText
           },
           {
             type: 'citations',
@@ -227,6 +234,7 @@ async function mockAPI(page: Page) {
       const sse = [
         ['response.queued', { position: 1, timeoutSeconds: 60 }],
         ['response.started', { requestId: 'request-1', userMessage, assistantMessage: assistant }],
+        ['response.stage', { stage: 'preparing_context' }],
         [
           'response.context',
           {
@@ -236,6 +244,16 @@ async function mockAPI(page: Page) {
           }
         ],
         ['response.reasoning.delta', { delta: '我会先检索可靠来源，再归纳共同趋势。' }],
+        ['response.stage', { stage: 'searching' }],
+        [
+          'response.tool',
+          {
+            callId: 'search-1',
+            type: 'web_search',
+            status: 'in_progress',
+            data: { query: 'today technology news' }
+          }
+        ],
         [
           'response.tool',
           {
@@ -249,8 +267,7 @@ async function mockAPI(page: Page) {
         [
           'response.text.delta',
           {
-            delta:
-              '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>'
+            delta: responseText
           }
         ],
         [
@@ -294,16 +311,31 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
 
   await page.getByLabel('用户名').fill('alice');
   await page.getByLabel('密码').fill('correct horse battery');
+  await page.getByRole('checkbox', { name: /记住密码/ }).check();
   await page.getByRole('button', { name: '登录' }).click();
   await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('personal-chat-remember-username')))
+    .toBe('alice');
+
+  const initialSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
+  expect(initialSuggestions).toHaveLength(3);
+  await page.getByRole('button', { name: '换一批' }).click();
+  const refreshedSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
+  expect(refreshedSuggestions).toHaveLength(3);
+  expect(refreshedSuggestions.some((value) => initialSuggestions.includes(value))).toBe(false);
 
   if (testInfo.project.name === 'desktop') {
-    await page.getByRole('button', { name: /GPT Personal/ }).click();
-    await page.getByLabel('搜索模型').fill('gpt-personal');
-    await expect(page.getByRole('option', { name: /GPT Personal/ })).toContainText(
-      '图片输入 · 联网 · 图片生成 · 推理: 低/中/高'
+    await page.getByRole('button', { name: /GPT 5.6 Sol/ }).click();
+    await expect(page.getByText('Sol > Terra > Luna')).toBeVisible();
+    await page.getByLabel('搜索模型').fill('gpt-5.6-sol');
+    await expect(page.getByRole('option', { name: /GPT 5.6 Sol/ })).toContainText(
+      '旗舰档'
     );
-    await page.getByRole('option', { name: /GPT Personal/ }).click();
+    await expect(page.getByRole('option', { name: /GPT 5.6 Sol/ })).toContainText(
+      'GPT 5.6 系列智能最高'
+    );
+    await page.getByRole('option', { name: /GPT 5.6 Sol/ }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '关于' }).click();
@@ -341,12 +373,17 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.getByRole('button', { name: '推理强度' }).click();
   await page.getByRole('option', { name: /^低/ }).click();
   await expect(page.getByRole('button', { name: '推理强度' })).toContainText('推理 · 低');
-  await page.getByRole('button', { name: /生成图片/ }).first().click();
+  await page.getByLabel('聊天消息').fill('请生成一张未来城市的概念图');
+  await page.locator('.image-mode-button').click();
   await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '发送' }).click();
+  await expect(page.locator('.context-status')).toContainText('正在发送请求');
+  await expect(page.locator('.context-status')).toContainText('1 s', { timeout: 2500 });
   await expect(page.getByText('今日科技摘要')).toBeVisible();
   await expect(page.locator('.reasoning summary')).toContainText('1.2 秒');
   await expect(page.getByText('网页搜索')).toBeVisible();
+  await expect(page.getByText('搜索内容')).toBeVisible();
+  await expect(page.getByText('today technology news')).toBeVisible();
   await expect(page.getByText('图像生成')).toBeVisible();
   await expect(page.locator('img.message-image')).toBeVisible();
   await expect
@@ -354,15 +391,29 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
       page.locator('img.message-image').evaluate((image: HTMLImageElement) => image.naturalWidth)
     )
     .toBeGreaterThan(0);
-  await page.getByText('查看安全参数').click();
-  await expect(page.locator('.tool-details pre')).toContainText('today technology news');
-  await expect(page.getByText('Example Technology')).toBeVisible();
+  await page.getByText('查看搜索来源').click();
+  await expect(page.locator('.tool-source-list')).toContainText('Example Technology');
+  await expect(page.locator('.citation-row')).toContainText('Example Technology');
   await expect(page.getByText('较早上下文已摘要')).toBeVisible();
   await expect(page.getByText('安全渲染')).toBeVisible();
   await expect(page.locator('.markdown [onmouseover], .markdown script')).toHaveCount(0);
   expect(
     await page.evaluate(() => (window as typeof window & { __owuiXSS?: boolean }).__owuiXSS)
   ).toBeUndefined();
+  const feed = page.locator('.messages-scroll');
+  await feed.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event('scroll'));
+  });
+  await expect(page.getByRole('button', { name: '查看最新回答' })).toBeVisible();
+  await page.getByRole('button', { name: '查看最新回答' }).click();
+  await expect
+    .poll(() =>
+      feed.evaluate(
+        (element) => element.scrollHeight - element.scrollTop - element.clientHeight
+      )
+    )
+    .toBeLessThanOrEqual(2);
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
 });
 

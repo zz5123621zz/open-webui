@@ -40,7 +40,8 @@ func TestStartResponseStreamsImageThroughTemporaryRequestFile(t *testing.T) {
 		RequestTempDir: tempDir,
 	}, "test")
 	request := ResponsesRequest{
-		Model: "gpt-test", SafetyIdentifier: "stable-pseudonymous-user",
+		Model: "gpt-test", Instructions: "Keep visible summaries in the user's language.",
+		SafetyIdentifier: "stable-pseudonymous-user",
 		Stream: true, Store: false,
 		Input: []ResponseInput{{
 			Role: "user",
@@ -64,6 +65,9 @@ func TestStartResponseStreamsImageThroughTemporaryRequestFile(t *testing.T) {
 	}
 	if received["safety_identifier"] != "stable-pseudonymous-user" {
 		t.Fatalf("safety_identifier = %#v", received["safety_identifier"])
+	}
+	if received["instructions"] != request.Instructions {
+		t.Fatalf("instructions = %#v", received["instructions"])
 	}
 	input := received["input"].([]any)[0].(map[string]any)
 	content := input["content"].([]any)

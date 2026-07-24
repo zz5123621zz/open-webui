@@ -9,6 +9,9 @@
   export let message: Message;
   export let locale: Locale = 'zh-CN';
   export let canRegenerate = false;
+  export let streamingStage = '';
+  export let streamNow = Date.now();
+  export let elapsedSeconds = 0;
   let copied = false;
   const dispatch = createEventDispatcher<{ regenerate: { message: Message } }>();
 
@@ -23,35 +26,126 @@
 
   function toolDescription(part: MessagePart): string {
     const status = String(part.data?.status || '');
-    const duration = Number(part.data?.durationMs || 0);
+    const type = String(part.data?.type || '');
+    const startedAt = Number(part.data?.clientStartedAt || 0);
+    const duration =
+      status === 'in_progress' && startedAt > 0
+        ? Math.max(0, streamNow - startedAt)
+        : Number(part.data?.durationMs || 0);
     const suffix =
       duration > 0
         ? ` · ${(duration / 1000).toFixed(duration >= 1000 ? 1 : 2)} ${t('秒', 's')}`
         : '';
-    if (status === 'completed') return `${t('已完成', 'Completed')}${suffix}`;
+    if (status === 'completed') {
+      const label =
+        type === 'web_search'
+          ? t('搜索完成', 'Search complete')
+          : type === 'image_generation'
+            ? t('图片生成完成', 'Image complete')
+            : t('执行完成', 'Completed');
+      return `${label}${suffix}`;
+    }
     if (status === 'failed') {
       return `${t('失败', 'Failed')}${part.data?.errorCode ? ` · ${part.data.errorCode}` : ''}${suffix}`;
     }
-    return t('运行中', 'Running');
+    const running =
+      type === 'web_search'
+        ? t('正在搜索网页', 'Searching the web')
+        : type === 'image_generation'
+          ? t('正在生成图片', 'Generating the image')
+          : t('正在执行工具', 'Running tool');
+    return duration > 0
+      ? `${running} · ${t('已运行', 'Running for')} ${Math.floor(duration / 1000)} s`
+      : running;
   }
 
   function reasoningDuration(part: MessagePart): string {
+    if (message.status === 'streaming') {
+      const completedDuration = Number(part.data?.clientDurationMs || 0);
+      if (completedDuration > 0) {
+        return `${(completedDuration / 1000).toFixed(completedDuration >= 1000 ? 1 : 2)} ${t('秒', 's')}`;
+      }
+      const startedAt = Number(part.data?.clientStartedAt || 0);
+      const seconds =
+        startedAt > 0
+          ? Math.max(0, Math.floor((streamNow - startedAt) / 1000))
+          : elapsedSeconds;
+      return `${t('已运行', 'Running for')} ${seconds} s`;
+    }
     const duration = Number(part.data?.durationMs || 0);
     if (duration <= 0) return '';
     return `${(duration / 1000).toFixed(duration >= 1000 ? 1 : 2)} ${t('秒', 's')}`;
   }
 
-  function toolQuery(part: MessagePart): string {
+  type ToolDetail = { label: string; value: string; url?: string };
+
+  function toolDetails(part: MessagePart): ToolDetail[] {
     const data = part.data?.data;
-    if (!data || typeof data !== 'object') return '';
-    const query = (data as Record<string, unknown>).query;
-    return typeof query === 'string' ? query : '';
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
+    const action = data as Record<string, unknown>;
+    const details: ToolDetail[] = [];
+    if (typeof action.query === 'string' && action.query.trim()) {
+      details.push({
+        label: t('搜索内容', 'Search query'),
+        value: action.query.trim()
+      });
+    }
+    if (typeof action.url === 'string') {
+      const url = safeHTTPURL(action.url);
+      if (url) {
+        details.push({
+          label: t('访问网页', 'Visited page'),
+          value: citationLabel({ url }),
+          url
+        });
+      }
+    }
+    if (typeof action.pattern === 'string' && action.pattern.trim()) {
+      details.push({
+        label: t('页内查找', 'Find on page'),
+        value: action.pattern.trim()
+      });
+    }
+    if (action.explicit === true) {
+      details.push({
+        label: t('任务方式', 'Task mode'),
+        value: t(
+          '由你主动发起 · 图片质量自动选择',
+          'Started by you · image quality selected automatically'
+        )
+      });
+    }
+    return details;
   }
 
-  function toolData(part: MessagePart): string {
-    const data = part.data?.data;
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return '';
-    return JSON.stringify(data, null, 2);
+  function safeHTTPURL(value: string): string {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function toolSources(part: MessagePart): Array<{ url: string; title?: string }> {
+    if (String(part.data?.type || '') !== 'web_search') return [];
+    const webParts = message.parts.filter(
+      (candidate) => candidate.type === 'tool' && candidate.data?.type === 'web_search'
+    );
+    if (webParts.at(-1) !== part) return [];
+    const seen = new Set<string>();
+    const result: Array<{ url: string; title?: string }> = [];
+    for (const candidate of message.parts) {
+      if (candidate.type !== 'citations') continue;
+      for (const citation of citations(candidate)) {
+        const url = safeHTTPURL(citation.url);
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        result.push({ ...citation, url });
+        if (result.length === 5) return result;
+      }
+    }
+    return result;
   }
 
   function citations(part: MessagePart): Array<{ url: string; title?: string }> {
@@ -117,6 +211,8 @@
           />
         </a>
       {:else if part.type === 'tool'}
+        {@const details = toolDetails(part)}
+        {@const sources = toolSources(part)}
         <div
           class="tool-card"
           class:completed={part.data?.status === 'completed'}
@@ -131,11 +227,35 @@
           <div>
             <strong>{toolLabel(part)}</strong>
             <span>{toolDescription(part)}</span>
-            {#if toolQuery(part)}<small>{toolQuery(part)}</small>{/if}
-            {#if toolData(part)}
+            {#if details.length}
+              <div class="tool-targets">
+                {#each details as detail}
+                  <small>
+                    <b>{detail.label}</b>
+                    {#if detail.url}
+                      <a href={detail.url} target="_blank" rel="noopener noreferrer">
+                        {detail.value}
+                      </a>
+                    {:else}
+                      <span>{detail.value}</span>
+                    {/if}
+                  </small>
+                {/each}
+              </div>
+            {/if}
+            {#if sources.length}
               <details class="tool-details">
-                <summary>{t('查看安全参数', 'View sanitized parameters')}</summary>
-                <pre>{toolData(part)}</pre>
+                <summary>
+                  {t('查看搜索来源', 'View search sources')} · {sources.length}
+                </summary>
+                <div class="tool-source-list">
+                  {#each sources as source}
+                    <a href={source.url} target="_blank" rel="noopener noreferrer">
+                      <Icon name="globe" size={13} />
+                      {citationLabel(source)}
+                    </a>
+                  {/each}
+                </div>
               </details>
             {/if}
           </div>
@@ -156,7 +276,20 @@
     {/each}
 
     {#if message.status === 'streaming' && message.parts.length === 0}
-      <div class="typing"><span>{t('正在思考', 'Thinking')}</span><i></i><i></i><i></i></div>
+      <div class="thinking-progress" role="status">
+        <span class="thinking-progress-icon"><Icon name="sparkles" size={15} /></span>
+        <span class="thinking-progress-copy">
+          <strong>{streamingStage || t('正在思考', 'Thinking')}</strong>
+          <small>
+            {t('已运行', 'Running for')} {elapsedSeconds} s
+            · {t(
+              '等待期间仅展示安全的处理阶段',
+              'Only safe processing stages are shown while you wait'
+            )}
+          </small>
+        </span>
+        <span class="tool-spinner" aria-hidden="true"></span>
+      </div>
     {/if}
     {#if message.status === 'error' || message.status === 'interrupted'}
       <div class="message-error" role="alert">

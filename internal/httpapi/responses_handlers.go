@@ -26,6 +26,7 @@ import (
 const (
 	maxProviderEventBytes = 50 * 1024 * 1024
 	sseHeartbeatInterval  = 15 * time.Second
+	responseInstructions  = "Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Keep reasoning summaries concise and useful, but never reveal private chain-of-thought; describe only the approach, checks, and current progress."
 )
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
@@ -330,6 +331,14 @@ func (s *Server) streamAssistantResponse(
 		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
 		return
 	}
+	initialStage := "preparing_context"
+	if generateImage && model.ImageGenerationMode == "dedicated" {
+		initialStage = "generating_image"
+	}
+	if err := stream.send("response.stage", map[string]string{"stage": initialStage}); err != nil {
+		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
+		return
+	}
 	stopHeartbeat := stream.startHeartbeat(r.Context(), sseHeartbeatInterval, cancelResponse)
 	defer stopHeartbeat()
 
@@ -378,6 +387,10 @@ func (s *Server) streamAssistantResponse(
 		return
 	}
 	configureImageGenerationRequest(&providerRequest, generateImage)
+	if err := stream.send("response.stage", map[string]string{"stage": "waiting_for_model"}); err != nil {
+		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
+		return
+	}
 	newAccumulator := func() responseAccumulator {
 		return responseAccumulator{
 			saveImage: func(encoded string) (generatedImage, error) {
@@ -405,6 +418,7 @@ func (s *Server) streamAssistantResponse(
 	contextRetry := isContextWindowError(startErr) ||
 		(startErr == nil && isContextWindowCode(accumulator.failureCode) && !accumulator.hasVisibleOutput())
 	if contextRetry {
+		_ = stream.send("response.stage", map[string]string{"stage": "preparing_context"})
 		forced, forceErr := s.contexts.ForcePrepare(
 			r.Context(), userID, conversation, model, sentEffort, history, assistantMessage.ID,
 			func(status string, data map[string]any) error {
@@ -429,6 +443,7 @@ func (s *Server) streamAssistantResponse(
 			return
 		}
 		configureImageGenerationRequest(&providerRequest, generateImage)
+		_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
 		accumulator = newAccumulator()
 		startErr, consumeErr = runProvider(providerRequest, &accumulator)
 	}
@@ -885,7 +900,8 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 		tools = append(tools, map[string]any{"type": "image_generation"})
 	}
 	return provider.ResponsesRequest{
-		Model: conversation.Model, SafetyIdentifier: s.providerSafetyIdentifier(userID),
+		Model: conversation.Model, Instructions: responseInstructions,
+		SafetyIdentifier: s.providerSafetyIdentifier(userID),
 		Input: input, Stream: true, Store: false,
 		Reasoning: provider.ReasoningOptions{Effort: effort, Summary: "auto"},
 		Tools:     tools, ToolChoice: "auto",

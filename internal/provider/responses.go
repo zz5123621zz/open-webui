@@ -15,6 +15,7 @@ import (
 
 type ResponsesRequest struct {
 	Model            string           `json:"model"`
+	Instructions     string           `json:"instructions,omitempty"`
 	SafetyIdentifier string           `json:"safety_identifier,omitempty"`
 	Input            []ResponseInput  `json:"input"`
 	Stream           bool             `json:"stream"`
@@ -161,6 +162,14 @@ func writeResponsesRequest(output io.Writer, request ResponsesRequest) error {
 	}
 	if err := writeJSON(request.Model); err != nil {
 		return err
+	}
+	if strings.TrimSpace(request.Instructions) != "" {
+		if err := write(`,"instructions":`); err != nil {
+			return err
+		}
+		if err := writeJSON(request.Instructions); err != nil {
+			return err
+		}
 	}
 	if request.SafetyIdentifier != "" {
 		if err := write(`,"safety_identifier":`); err != nil {

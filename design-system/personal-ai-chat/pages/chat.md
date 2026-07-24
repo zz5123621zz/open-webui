@@ -60,6 +60,12 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
 - Icon-only buttons require descriptive `aria-label` text and visible focus rings.
 - Streaming status uses `role=status`; errors use `role=alert`; the conversation
   feed uses `role=log` with polite live updates.
+- Streaming follows the latest token only while the reader remains near the
+  bottom. Wheel/touch intent to inspect earlier content pauses following and
+  exposes a 44 px "jump to latest" control; never scroll-jack the reader.
+- Before first text, show truthful system stages (sending, context preparation,
+  waiting for model, reasoning, search, image generation, composing) with a
+  tabular elapsed-seconds counter. Never invent chain-of-thought.
 - Hover is enhancement only. Pressed, disabled, loading and selected states must
   remain clear on touch devices.
 - Motion is limited to 160–240 ms opacity/transform transitions and is disabled
@@ -71,6 +77,9 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
   focus as well as hover.
 - Model picker: searchable sheet/popover with capability descriptions and a
   visible selected check.
+- Model picker descriptions lead with product positioning rather than a raw
+  capability dump: GPT 5.6 is explicitly ordered Sol > Terra > Luna, while Grok
+  models are described within their own family. Technical IDs remain secondary.
 - Reasoning picker: visually paired with the model picker. It exposes three
   plain-language levels (low/medium/high), includes a short speed/quality
   description, and discloses the CPA `medium`/`high`/`max` mapping.
@@ -83,7 +92,14 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
 - Messages: user text on a subtle blue surface; assistant responses on the canvas
   without a heavy bubble. Tool calls are compact status cards, not oversized
   panels.
+- Web/tool cards use localized action labels, display the actual allowlisted
+  query/page/pattern, and link up to five sanitized result sources. Raw JSON and
+  the ambiguous "security parameters" disclosure are not user-facing.
 - Composer: solid white surface, blue focus ring, explicit upload and image-mode
   actions, 44 px send/stop control, and nearby recoverable error feedback.
+- Empty chats draw three non-repeating suggestions from a 30-item pool and offer
+  an explicit refresh control; image suggestions appear only for capable models.
+- "Remember password" delegates storage to the browser credential manager. Only
+  the preference and username may be retained in local storage.
 - Mobile dialogs: bottom sheets with safe-area padding and an explicit close
   button; desktop dialogs remain centered.

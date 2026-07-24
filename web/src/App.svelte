@@ -33,11 +33,29 @@
     MessagePart,
     Model,
     StorageStatus,
-    StreamEvent,
     User
   } from './lib/types';
 
   type Phase = 'boot' | 'login' | 'ready';
+  type GenerationStage =
+    | 'sending'
+    | 'queued'
+    | 'preparing_context'
+    | 'waiting_for_model'
+    | 'reasoning'
+    | 'searching'
+    | 'generating_image'
+    | 'answering';
+  type SuggestionIcon = 'plan' | 'search' | 'image-plus' | 'sparkles' | 'upload';
+  type Suggestion = {
+    id: string;
+    icon: SuggestionIcon;
+    chineseTitle: string;
+    englishTitle: string;
+    chinesePrompt: string;
+    englishPrompt: string;
+    mode?: 'image';
+  };
 
   let phase: Phase = 'boot';
   let user: User | null = null;
@@ -56,6 +74,9 @@
   let loadingMessages = false;
   let workspaceError = '';
   let loginError = '';
+  let loginUsername = localStorage.getItem('personal-chat-remember-username') || '';
+  let loginPassword = '';
+  let rememberPassword = localStorage.getItem('personal-chat-remember-password') === 'true';
   let contextStatus = '';
   let sidebarOpen = false;
   let profileOpen = false;
@@ -70,6 +91,9 @@
   let fileElement: HTMLInputElement;
   let dialogElement: HTMLDivElement;
   let scrollQueued = false;
+  let scrollStateQueued = false;
+  let followStream = true;
+  let showJumpToLatest = false;
   let editingTitleId = '';
   let editingTitle = '';
   let modelPickerOpen = false;
@@ -77,6 +101,11 @@
   let modelSearch = '';
   let storageStatus: StorageStatus | null = null;
   let creatingConversation = false;
+  let generationStage: GenerationStage | '' = '';
+  let generationStartedAt = 0;
+  let generationNow = Date.now();
+  let generationTimer: number | undefined;
+  let visibleSuggestions: Suggestion[] = [];
   const reasoningChoices = [
     {
       value: 'medium',
@@ -100,6 +129,193 @@
       englishDescription: 'For complex tasks; may take longer'
     }
   ] as const;
+  const suggestionPool: Suggestion[] = [
+    {
+      id: 'weekend-date', icon: 'plan',
+      chineseTitle: '周末约会', englishTitle: 'Weekend date',
+      chinesePrompt: '帮我规划一个轻松、有一点惊喜感的周末约会安排',
+      englishPrompt: 'Plan a relaxed weekend date with one small surprise'
+    },
+    {
+      id: 'city-trip', icon: 'plan',
+      chineseTitle: '城市短途旅行', englishTitle: 'City break',
+      chinesePrompt: '为我们规划一次两天一夜的城市短途旅行，并给出时间表和预算',
+      englishPrompt: 'Plan a two-day city break with a schedule and budget'
+    },
+    {
+      id: 'weekly-meals', icon: 'plan',
+      chineseTitle: '一周菜单', englishTitle: 'Weekly meals',
+      chinesePrompt: '设计一份简单好做的一周晚餐菜单，并整理采购清单',
+      englishPrompt: 'Create an easy weekly dinner plan and a shopping list'
+    },
+    {
+      id: 'study-plan', icon: 'plan',
+      chineseTitle: '学习计划', englishTitle: 'Study plan',
+      chinesePrompt: '把我想学的内容拆成一个循序渐进的四周学习计划',
+      englishPrompt: 'Turn what I want to learn into a progressive four-week study plan'
+    },
+    {
+      id: 'fitness-routine', icon: 'plan',
+      chineseTitle: '轻量运动计划', englishTitle: 'Gentle fitness plan',
+      chinesePrompt: '帮我制定一份适合初学者、每次三十分钟的居家运动计划',
+      englishPrompt: 'Create a beginner-friendly 30-minute home workout plan'
+    },
+    {
+      id: 'decision-matrix', icon: 'sparkles',
+      chineseTitle: '帮我做决定', englishTitle: 'Compare options',
+      chinesePrompt: '我有几个选择，请先问清楚需求，再用表格帮我权衡利弊',
+      englishPrompt: 'Ask about my needs, then compare my options in a decision table'
+    },
+    {
+      id: 'message-polish', icon: 'sparkles',
+      chineseTitle: '润色一段话', englishTitle: 'Polish a message',
+      chinesePrompt: '帮我把下面这段话改得自然、真诚，不要显得过于正式：',
+      englishPrompt: 'Rewrite this message so it sounds natural and sincere, not too formal:'
+    },
+    {
+      id: 'email-draft', icon: 'sparkles',
+      chineseTitle: '起草邮件', englishTitle: 'Draft an email',
+      chinesePrompt: '帮我写一封简洁礼貌的邮件，先向我确认收件人、目的和语气',
+      englishPrompt: 'Draft a concise, polite email after asking about the recipient, goal, and tone'
+    },
+    {
+      id: 'story-outline', icon: 'sparkles',
+      chineseTitle: '故事大纲', englishTitle: 'Story outline',
+      chinesePrompt: '根据我给出的主题，设计人物、冲突和三幕式故事大纲',
+      englishPrompt: 'Create characters, conflict, and a three-act outline from my theme'
+    },
+    {
+      id: 'social-caption', icon: 'sparkles',
+      chineseTitle: '社交文案', englishTitle: 'Social caption',
+      chinesePrompt: '为我写三种不同语气的社交平台文案，避免夸张和网络套话',
+      englishPrompt: 'Write three social captions in different tones without hype or clichés'
+    },
+    {
+      id: 'translate-natural', icon: 'sparkles',
+      chineseTitle: '自然翻译', englishTitle: 'Natural translation',
+      chinesePrompt: '把我接下来提供的内容翻译得自然，并解释容易误译的表达',
+      englishPrompt: 'Translate my next text naturally and explain phrases that are easy to mistranslate'
+    },
+    {
+      id: 'explain-simple', icon: 'sparkles',
+      chineseTitle: '通俗解释', englishTitle: 'Explain simply',
+      chinesePrompt: '用生活中的比喻解释我接下来提出的概念，再给一个具体例子',
+      englishPrompt: 'Explain my next concept with an everyday analogy and a concrete example'
+    },
+    {
+      id: 'meeting-summary', icon: 'sparkles',
+      chineseTitle: '整理会议记录', englishTitle: 'Meeting notes',
+      chinesePrompt: '把我粘贴的会议记录整理成结论、待办事项、负责人和截止时间',
+      englishPrompt: 'Turn my meeting notes into decisions, actions, owners, and deadlines'
+    },
+    {
+      id: 'long-summary', icon: 'sparkles',
+      chineseTitle: '总结长文', englishTitle: 'Summarize a document',
+      chinesePrompt: '总结我接下来提供的长文，分为核心观点、依据和仍需确认的问题',
+      englishPrompt: 'Summarize my document into key ideas, evidence, and open questions'
+    },
+    {
+      id: 'brainstorm', icon: 'sparkles',
+      chineseTitle: '一起头脑风暴', englishTitle: 'Brainstorm ideas',
+      chinesePrompt: '围绕我的目标给出十个不同方向的想法，并挑出最值得尝试的三个',
+      englishPrompt: 'Generate ten directions for my goal and select the three most promising'
+    },
+    {
+      id: 'tech-news', icon: 'search',
+      chineseTitle: '今日科技动态', englishTitle: 'Today in tech',
+      chinesePrompt: '搜索并总结今天值得关注的科技新闻，附上来源和发布日期',
+      englishPrompt: 'Search and summarize today’s notable tech news with sources and dates'
+    },
+    {
+      id: 'topic-research', icon: 'search',
+      chineseTitle: '快速调研', englishTitle: 'Quick research',
+      chinesePrompt: '联网调研我接下来给出的主题，区分事实、观点和仍有争议的部分',
+      englishPrompt: 'Research my next topic online, separating facts, opinions, and disputed claims'
+    },
+    {
+      id: 'product-compare', icon: 'search',
+      chineseTitle: '产品对比', englishTitle: 'Product comparison',
+      chinesePrompt: '搜索并对比我指定的两款产品，重点看真实差异、价格和适用人群',
+      englishPrompt: 'Research and compare two products by real differences, price, and ideal users'
+    },
+    {
+      id: 'travel-research', icon: 'search',
+      chineseTitle: '旅行攻略', englishTitle: 'Travel research',
+      chinesePrompt: '搜索目的地的近期信息，整理交通、住宿区域、注意事项和参考来源',
+      englishPrompt: 'Research current destination information: transport, areas to stay, cautions, and sources'
+    },
+    {
+      id: 'fact-check', icon: 'search',
+      chineseTitle: '核实一条说法', englishTitle: 'Fact-check a claim',
+      chinesePrompt: '联网核实我接下来提供的说法，给出原始来源、时间和可信度判断',
+      englishPrompt: 'Fact-check my next claim with primary sources, dates, and a confidence assessment'
+    },
+    {
+      id: 'latest-guide', icon: 'search',
+      chineseTitle: '查找最新教程', englishTitle: 'Find a current guide',
+      chinesePrompt: '搜索这个主题的最新官方教程，并整理成可以照着执行的步骤：',
+      englishPrompt: 'Find the latest official guide for this topic and turn it into actionable steps:'
+    },
+    {
+      id: 'code-review', icon: 'sparkles',
+      chineseTitle: '代码审查', englishTitle: 'Review code',
+      chinesePrompt: '审查我接下来贴出的代码，优先指出正确性、安全性和可维护性问题',
+      englishPrompt: 'Review my code for correctness, security, and maintainability'
+    },
+    {
+      id: 'debug-error', icon: 'sparkles',
+      chineseTitle: '排查报错', englishTitle: 'Debug an error',
+      chinesePrompt: '帮我排查这个报错：先判断最可能的原因，再给最小验证步骤',
+      englishPrompt: 'Debug this error by identifying likely causes and the smallest verification steps'
+    },
+    {
+      id: 'data-table', icon: 'sparkles',
+      chineseTitle: '整理成表格', englishTitle: 'Structure as a table',
+      chinesePrompt: '把我提供的杂乱信息整理成结构清晰的 Markdown 表格',
+      englishPrompt: 'Turn my unstructured information into a clear Markdown table'
+    },
+    {
+      id: 'photo-analysis', icon: 'upload',
+      chineseTitle: '看懂一张图片', englishTitle: 'Understand an image',
+      chinesePrompt: '我会上传一张图片，请描述关键内容并指出值得注意的细节',
+      englishPrompt: 'I will upload an image; describe its key content and notable details'
+    },
+    {
+      id: 'screenshot-help', icon: 'upload',
+      chineseTitle: '分析截图问题', englishTitle: 'Analyze a screenshot',
+      chinesePrompt: '我会上传一张截图，请定位界面中的问题并给出改进建议',
+      englishPrompt: 'I will upload a screenshot; identify UI issues and suggest improvements'
+    },
+    {
+      id: 'dream-illustration', icon: 'image-plus',
+      chineseTitle: '梦幻插画', englishTitle: 'Dreamlike illustration',
+      chinesePrompt: '生成一张温暖、梦幻、细节丰富的插画，构图自然，光线柔和',
+      englishPrompt: 'Create a warm, dreamlike, detailed illustration with natural composition and soft light',
+      mode: 'image'
+    },
+    {
+      id: 'poster-design', icon: 'image-plus',
+      chineseTitle: '海报概念图', englishTitle: 'Poster concept',
+      chinesePrompt: '生成一张简洁现代的海报概念图，留出清晰的标题空间',
+      englishPrompt: 'Create a clean modern poster concept with clear space for a title',
+      mode: 'image'
+    },
+    {
+      id: 'avatar-design', icon: 'image-plus',
+      chineseTitle: '头像创意', englishTitle: 'Avatar concept',
+      chinesePrompt: '生成一个辨识度高、背景简洁、适合作为头像的角色形象',
+      englishPrompt: 'Create a distinctive character portrait with a simple background for an avatar',
+      mode: 'image'
+    },
+    {
+      id: 'room-concept', icon: 'image-plus',
+      chineseTitle: '房间氛围图', englishTitle: 'Room concept',
+      chinesePrompt: '生成一张舒适明亮的房间氛围图，材质自然，空间真实可落地',
+      englishPrompt: 'Create a bright cozy room concept with natural materials and realistic proportions',
+      mode: 'image'
+    }
+  ];
+  visibleSuggestions = suggestionPool.slice(0, 3);
   type Theme = 'light' | 'dark' | 'system';
   const savedTheme = localStorage.getItem('personal-chat-theme');
   let theme: Theme =
@@ -129,6 +345,9 @@
       model.id.toLocaleLowerCase().includes(query);
   });
   $: t = (chinese: string, english: string) => translate($locale, chinese, english);
+  $: generationElapsedSeconds = generationStartedAt
+    ? Math.max(0, Math.floor((generationNow - generationStartedAt) / 1000))
+    : 0;
 
   onMount(() => {
     setLocale($locale);
@@ -136,8 +355,12 @@
     const updateSystemTheme = () => applyTheme();
     systemTheme.addEventListener('change', updateSystemTheme);
     applyTheme();
+    refreshSuggestions();
     void initialize();
-    return () => systemTheme.removeEventListener('change', updateSystemTheme);
+    return () => {
+      systemTheme.removeEventListener('change', updateSystemTheme);
+      stopGenerationClock();
+    };
   });
 
   async function initialize() {
@@ -290,6 +513,7 @@
       loadedModels.find((model) => model.id === initialDraftModel),
       draftReasoningEffort
     );
+    refreshSuggestions();
 
     const remembered = localStorage.getItem('personal-chat-conversation');
     const initial =
@@ -325,13 +549,46 @@
     }
   }
 
+  async function storeBrowserCredential(username: string, password: string) {
+    type PasswordCredentialFactory = new (data: {
+      id: string;
+      password: string;
+      name?: string;
+    }) => Credential;
+    const PasswordCredentialConstructor = (
+      window as unknown as { PasswordCredential?: PasswordCredentialFactory }
+    ).PasswordCredential;
+    if (
+      !window.isSecureContext ||
+      !PasswordCredentialConstructor ||
+      !navigator.credentials?.store
+    ) return;
+    try {
+      await navigator.credentials.store(
+        new PasswordCredentialConstructor({ id: username, password, name: username })
+      );
+    } catch {
+      // The browser may require its own password-manager prompt or user setting.
+    }
+  }
+
   async function submitLogin(event: SubmitEvent) {
     const form = event.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
+    const username = loginUsername.trim();
+    const password = loginPassword;
     loginError = '';
     form.classList.add('pending');
     try {
-      user = await login(String(data.get('username') || ''), String(data.get('password') || ''));
+      user = await login(username, password);
+      if (rememberPassword) {
+        localStorage.setItem('personal-chat-remember-password', 'true');
+        localStorage.setItem('personal-chat-remember-username', username);
+        void storeBrowserCredential(username, password);
+      } else {
+        localStorage.removeItem('personal-chat-remember-password');
+        localStorage.removeItem('personal-chat-remember-username');
+      }
+      loginPassword = '';
       await loadWorkspace();
       phase = 'ready';
     } catch (error) {
@@ -426,6 +683,9 @@
     sidebarOpen = false;
     try {
       [messages, checkpoints] = await Promise.all([getMessages(id), getContextCheckpoints(id)]);
+      if (messages.length === 0) refreshSuggestions();
+      followStream = true;
+      showJumpToLatest = false;
       await scrollToBottom(false);
     } catch (error) {
       workspaceError = errorMessage(error);
@@ -461,6 +721,9 @@
       messages = [];
       checkpoints = [];
       contextStatus = '';
+      followStream = true;
+      showJumpToLatest = false;
+      refreshSuggestions();
       localStorage.setItem('personal-chat-conversation', conversation.id);
       sidebarOpen = false;
       await refreshStorage();
@@ -568,6 +831,8 @@
     modelSearch = '';
     if (!activeConversation) {
       setDraftModel(model);
+      await tick();
+      refreshSuggestions();
       return;
     }
     if (generating) return;
@@ -583,6 +848,8 @@
           'The new model does not support the previous reasoning effort, so a supported default was selected.'
         );
       }
+      await tick();
+      refreshSuggestions();
     } catch (error) {
       workspaceError = errorMessage(error);
     }
@@ -637,35 +904,6 @@
     }
     workspaceError = '';
     generateImage = !generateImage;
-    textareaElement?.focus();
-  }
-
-  function prepareImagePrompt() {
-    if (activeConversationReadOnly) return;
-    if (!activeModel?.imageGenerationMode) {
-      workspaceError = localizedAPIError(
-        'model_image_generation_unsupported',
-        t('当前模型不支持图片生成。', 'The current model does not support image generation.')
-      );
-      return;
-    }
-    if (uploads.length > 0) {
-      workspaceError = localizedAPIError(
-        'image_generation_attachments_unsupported',
-        t(
-          '生成图片模式暂不支持同时上传参考图。',
-          'Image generation mode does not support uploaded reference images yet.'
-        )
-      );
-      return;
-    }
-    workspaceError = '';
-    generateImage = true;
-    text = t(
-      '请生成一张温暖、梦幻风格的插画',
-      'Create a warm, dreamlike illustration'
-    );
-    resizeComposer();
     textareaElement?.focus();
   }
 
@@ -752,6 +990,55 @@
     }
   }
 
+  function beginGenerationClock(stage: GenerationStage = 'sending') {
+    stopGenerationClock();
+    generationStartedAt = Date.now();
+    generationNow = generationStartedAt;
+    generationStage = stage;
+    generationTimer = window.setInterval(() => {
+      generationNow = Date.now();
+    }, 1000);
+  }
+
+  function stopGenerationClock() {
+    if (generationTimer !== undefined) {
+      window.clearInterval(generationTimer);
+      generationTimer = undefined;
+    }
+    generationStartedAt = 0;
+    generationStage = '';
+  }
+
+  function setGenerationStage(stage: string) {
+    const knownStages: GenerationStage[] = [
+      'sending',
+      'queued',
+      'preparing_context',
+      'waiting_for_model',
+      'reasoning',
+      'searching',
+      'generating_image',
+      'answering'
+    ];
+    if (knownStages.includes(stage as GenerationStage)) {
+      generationStage = stage as GenerationStage;
+    }
+  }
+
+  function generationStageLabel(stage: GenerationStage | ''): string {
+    const labels: Record<GenerationStage, [string, string]> = {
+      sending: ['正在发送请求', 'Sending request'],
+      queued: ['正在等待可用通道', 'Waiting for an available slot'],
+      preparing_context: ['正在整理对话上下文', 'Preparing conversation context'],
+      waiting_for_model: ['模型已收到请求，正在开始处理', 'The model received the request and is starting'],
+      reasoning: ['正在推理并整理思路', 'Reasoning and organizing the approach'],
+      searching: ['正在搜索并核对网页', 'Searching and checking web pages'],
+      generating_image: ['正在生成图片', 'Generating the image'],
+      answering: ['正在组织并输出回答', 'Composing and streaming the answer']
+    };
+    return stage ? t(...labels[stage]) : t('正在处理', 'Working');
+  }
+
   async function reconcileStreamFailure(
     conversationId: string,
     assistantId: string
@@ -788,6 +1075,9 @@
     if (!conversation) return;
 
     generating = true;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
     workspaceError = '';
     contextStatus = '';
     text = '';
@@ -807,11 +1097,13 @@
         outgoingGenerateImage,
         (item) => {
           if (item.event === 'response.queued') {
+            setGenerationStage('queued');
             contextStatus = t(
               `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
               `Request queued (position ${Number(item.data.position || 1)})`
             );
           } else if (item.event === 'response.started') {
+            setGenerationStage('preparing_context');
             contextStatus = '';
             const userMessage = item.data.userMessage as Message | undefined;
             const assistantMessage = item.data.assistantMessage as Message;
@@ -824,15 +1116,31 @@
               const title = titleFrom(outgoingText);
               void updateConversation(conversation.id, { title }).then(replaceConversation);
             }
+          } else if (item.event === 'response.stage') {
+            setGenerationStage(String(item.data.stage || ''));
           } else if (item.event === 'response.reasoning.delta') {
+            setGenerationStage('reasoning');
             appendTextPart(assistantId, 'reasoning', String(item.data.delta || ''));
           } else if (item.event === 'response.text.delta') {
+            setGenerationStage('answering');
+            finishLiveReasoning(assistantId);
             appendTextPart(assistantId, 'text', String(item.data.delta || ''));
           } else if (item.event === 'response.tool') {
+            finishLiveReasoning(assistantId);
+            if (item.data.status === 'in_progress') {
+              setGenerationStage(
+                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
+              );
+            } else {
+              setGenerationStage('waiting_for_model');
+            }
             updateToolPart(assistantId, item.data);
           } else if (item.event === 'response.image' && item.data.attachmentId) {
             appendImagePart(assistantId, String(item.data.attachmentId));
           } else if (item.event === 'response.context') {
+            setGenerationStage(
+              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
+            );
             contextStatus = contextLabel(String(item.data.status || ''));
             if (item.data.status === 'completed') void refreshCheckpoints(conversation.id);
           } else if (item.event === 'response.completed') {
@@ -871,6 +1179,7 @@
       }
     } finally {
       generating = false;
+      stopGenerationClock();
       abortController = null;
       activeAssistantId = '';
       contextStatus = '';
@@ -889,6 +1198,9 @@
   async function regenerate(message: Message) {
     if (generating || !activeConversation || activeConversationReadOnly) return;
     generating = true;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
     workspaceError = '';
     contextStatus = '';
     abortController = new AbortController();
@@ -899,25 +1211,43 @@
         crypto.randomUUID(),
         (item) => {
           if (item.event === 'response.queued') {
+            setGenerationStage('queued');
             contextStatus = t(
               `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
               `Request queued (position ${Number(item.data.position || 1)})`
             );
           } else if (item.event === 'response.started') {
+            setGenerationStage('preparing_context');
             contextStatus = '';
             const assistantMessage = item.data.assistantMessage as Message;
             assistantId = assistantMessage.id;
             activeAssistantId = assistantMessage.id;
             messages = [...messages, assistantMessage];
+          } else if (item.event === 'response.stage') {
+            setGenerationStage(String(item.data.stage || ''));
           } else if (item.event === 'response.reasoning.delta') {
+            setGenerationStage('reasoning');
             appendTextPart(assistantId, 'reasoning', String(item.data.delta || ''));
           } else if (item.event === 'response.text.delta') {
+            setGenerationStage('answering');
+            finishLiveReasoning(assistantId);
             appendTextPart(assistantId, 'text', String(item.data.delta || ''));
           } else if (item.event === 'response.tool') {
+            finishLiveReasoning(assistantId);
+            if (item.data.status === 'in_progress') {
+              setGenerationStage(
+                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
+              );
+            } else {
+              setGenerationStage('waiting_for_model');
+            }
             updateToolPart(assistantId, item.data);
           } else if (item.event === 'response.image' && item.data.attachmentId) {
             appendImagePart(assistantId, String(item.data.attachmentId));
           } else if (item.event === 'response.context') {
+            setGenerationStage(
+              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
+            );
             contextStatus = contextLabel(String(item.data.status || ''));
             if (item.data.status === 'completed') void refreshCheckpoints(activeConversation.id);
           } else if (item.event === 'response.completed') {
@@ -953,6 +1283,7 @@
       }
     } finally {
       generating = false;
+      stopGenerationClock();
       abortController = null;
       activeAssistantId = '';
       contextStatus = '';
@@ -974,7 +1305,14 @@
       const index = message.parts.findIndex((part) => part.type === type);
       let parts: MessagePart[];
       if (index < 0) {
-        parts = [...message.parts, { type, text: delta }];
+        parts = [
+          ...message.parts,
+          {
+            type,
+            text: delta,
+            data: type === 'reasoning' ? { clientStartedAt: Date.now() } : undefined
+          }
+        ];
       } else {
         parts = message.parts.map((part, current) =>
           current === index ? { ...part, text: (part.text || '') + delta } : part
@@ -992,11 +1330,38 @@
       const index = message.parts.findIndex(
         (part) => part.type === 'tool' && String(part.data?.callId || part.data?.type) === callId
       );
-      const next: MessagePart = { type: 'tool', data };
+      const previous = index >= 0 ? message.parts[index] : undefined;
+      const nextData = { ...data };
+      if (data.status === 'in_progress') {
+        nextData.clientStartedAt =
+          Number(previous?.data?.clientStartedAt || 0) || Date.now();
+      }
+      const next: MessagePart = { type: 'tool', data: nextData };
       const parts =
         index < 0
           ? [...message.parts, next]
           : message.parts.map((part, current) => (current === index ? next : part));
+      return { ...message, parts };
+    });
+  }
+
+  function finishLiveReasoning(messageId: string) {
+    if (!messageId) return;
+    const now = Date.now();
+    messages = messages.map((message) => {
+      if (message.id !== messageId) return message;
+      const parts = message.parts.map((part) => {
+        if (part.type !== 'reasoning' || part.data?.clientDurationMs) return part;
+        const startedAt = Number(part.data?.clientStartedAt || 0);
+        if (startedAt <= 0) return part;
+        return {
+          ...part,
+          data: {
+            ...part.data,
+            clientDurationMs: Math.max(1, now - startedAt)
+          }
+        };
+      });
       return { ...message, parts };
     });
   }
@@ -1046,17 +1411,43 @@
     controller?.abort();
   }
 
-  function queueScroll() {
+  function handleMessageScroll() {
+    if (!scrollElement || scrollStateQueued) return;
+    scrollStateQueued = true;
+    requestAnimationFrame(() => {
+      scrollStateQueued = false;
+      if (!scrollElement) return;
+      const distanceFromBottom =
+        scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight;
+      const nearBottom = distanceFromBottom <= 96;
+      followStream = nearBottom;
+      showJumpToLatest = !nearBottom;
+    });
+  }
+
+  function pauseStreamFollowing() {
+    if (!generating) return;
+    followStream = false;
+    showJumpToLatest = true;
+  }
+
+  function queueScroll(force = false) {
+    if (!force && !followStream) {
+      showJumpToLatest = true;
+      return;
+    }
     if (scrollQueued) return;
     scrollQueued = true;
     requestAnimationFrame(() => {
       scrollQueued = false;
-      void scrollToBottom(true);
+      void scrollToBottom(false);
     });
   }
 
   async function scrollToBottom(smooth: boolean) {
     await tick();
+    followStream = true;
+    showJumpToLatest = false;
     scrollElement?.scrollTo({
       top: scrollElement.scrollHeight,
       behavior: smooth ? 'smooth' : 'auto'
@@ -1113,27 +1504,89 @@
     return Math.min(100, Math.max(0, status.usedBytes / status.limitBytes * 100));
   }
 
-  function modelCapabilityLabel(model: Model): string {
-    if (!model.capabilitiesComplete) return t('能力待确认', 'Capabilities pending');
-    const capabilities: string[] = [];
-    if (model.inputModalities?.includes('image')) {
-      capabilities.push(t('图片输入', 'Image input'));
+  function refreshSuggestions() {
+    const current = new Set(visibleSuggestions.map((suggestion) => suggestion.id));
+    const supportsImage = Boolean(activeModel?.imageGenerationMode);
+    const available = suggestionPool.filter(
+      (suggestion) => suggestion.mode !== 'image' || supportsImage
+    );
+    const fresh = available.filter((suggestion) => !current.has(suggestion.id));
+    const candidates = fresh.length >= 3 ? [...fresh] : [...available];
+    for (let index = candidates.length - 1; index > 0; index -= 1) {
+      const swap = Math.floor(Math.random() * (index + 1));
+      [candidates[index], candidates[swap]] = [candidates[swap], candidates[index]];
     }
-    if (model.supportsWebSearch) {
-      capabilities.push(t('联网', 'Web search'));
-    }
-    if (model.imageGenerationMode) {
-      capabilities.push(t('图片生成', 'Image generation'));
-    }
-    if (model.reasoningEfforts?.length) {
-      const visibleEfforts = reasoningChoices
-        .filter((choice) => supportsEffort(model, choice.value))
-        .map((choice) => t(choice.chinese, choice.english));
-      if (visibleEfforts.length) {
-        capabilities.push(`${t('推理', 'Reasoning')}: ${visibleEfforts.join('/')}`);
+    visibleSuggestions = candidates.slice(0, 3);
+  }
+
+  async function applySuggestion(suggestion: Suggestion) {
+    if (suggestion.mode === 'image') {
+      if (!activeModel?.imageGenerationMode) {
+        workspaceError = t(
+          '当前模型不支持图片生成，请先更换模型。',
+          'The current model cannot generate images. Choose another model first.'
+        );
+        return;
       }
+      generateImage = true;
+    } else {
+      generateImage = false;
     }
-    return capabilities.join(' · ') || t('文本聊天', 'Text chat');
+    workspaceError = '';
+    text = t(suggestion.chinesePrompt, suggestion.englishPrompt);
+    await tick();
+    resizeComposer();
+    textareaElement?.focus();
+  }
+
+  function modelTierInfo(model: Model) {
+    const id = model.id.toLocaleLowerCase();
+    if (id.includes('gpt-5.6-sol')) {
+      return {
+        chineseLabel: '旗舰档',
+        englishLabel: 'Flagship',
+        chineseDescription: 'GPT 5.6 系列智能最高（Sol > Terra > Luna），适合复杂推理、编程和高要求任务。',
+        englishDescription: 'The most capable GPT 5.6 tier (Sol > Terra > Luna), for complex reasoning, coding, and demanding work.'
+      };
+    }
+    if (id.includes('gpt-5.6-terra')) {
+      return {
+        chineseLabel: '均衡档',
+        englishLabel: 'Balanced',
+        chineseDescription: 'GPT 5.6 系列均衡档，智能仅次于 Sol，兼顾质量、速度与日常使用成本。',
+        englishDescription: 'The balanced GPT 5.6 tier, below Sol in capability while balancing quality, speed, and everyday cost.'
+      };
+    }
+    if (id.includes('gpt-5.6-luna')) {
+      return {
+        chineseLabel: '轻快档',
+        englishLabel: 'Fast',
+        chineseDescription: 'GPT 5.6 系列速度优先档，智能低于 Sol 和 Terra，适合简单问答、改写与快速草稿。',
+        englishDescription: 'The speed-first GPT 5.6 tier, below Sol and Terra in capability, for simple questions, rewriting, and quick drafts.'
+      };
+    }
+    if (id.includes('grok-4.5')) {
+      return {
+        chineseLabel: '长上下文档',
+        englishLabel: 'Long context',
+        chineseDescription: '偏重工程、代理工作流与超长资料分析；它属于 Grok 系列，不与 GPT 5.6 档位直接排序。',
+        englishDescription: 'Focused on engineering, agentic workflows, and very long context; it is a separate family from the GPT 5.6 ranking.'
+      };
+    }
+    if (id.includes('composer') && id.includes('fast')) {
+      return {
+        chineseLabel: '极速档',
+        englishLabel: 'Speed first',
+        chineseDescription: '优先响应速度，适合快速编程草稿和轻量代理任务；复杂任务建议选择更高智能档。',
+        englishDescription: 'Prioritizes response speed for quick coding drafts and light agent tasks; choose a stronger tier for complex work.'
+      };
+    }
+    return {
+      chineseLabel: '通用档',
+      englishLabel: 'General',
+      chineseDescription: '通用模型；具体能力与速度由 CPA 当前模型目录决定。',
+      englishDescription: model.description || 'A general model whose capability and speed follow the current CPA catalog.'
+    };
   }
 </script>
 
@@ -1153,11 +1606,15 @@
       <div class="brand-mark"><Icon name="sparkles" size={21} /></div>
       <h1>{t('欢迎回来', 'Welcome back')}</h1>
       <p class="login-subtitle">{t('登录你的私人 AI 空间', 'Sign in to your private AI space')}</p>
-      <form on:submit|preventDefault={submitLogin}>
+      <form
+        autocomplete={rememberPassword ? 'on' : 'off'}
+        on:submit|preventDefault={submitLogin}
+      >
         <label>
           <span>{t('用户名', 'Username')}</span>
           <input
             name="username"
+            bind:value={loginUsername}
             autocomplete="username"
             required
             placeholder={t('输入用户名', 'Enter your username')}
@@ -1168,10 +1625,23 @@
           <input
             name="password"
             type="password"
-            autocomplete="current-password"
+            bind:value={loginPassword}
+            autocomplete={rememberPassword ? 'current-password' : 'off'}
             required
             placeholder={t('输入密码', 'Enter your password')}
           />
+        </label>
+        <label class="remember-login">
+          <input name="rememberPassword" type="checkbox" bind:checked={rememberPassword} />
+          <span>
+            <strong>{t('记住密码', 'Remember password')}</strong>
+            <small>
+              {t(
+                '交由浏览器密码管理器安全保存，本网站不会把密码写入本地存储。',
+                'Saved securely by your browser password manager; this site never writes the password to local storage.'
+              )}
+            </small>
+          </span>
         </label>
         {#if loginError}<div class="form-error" role="alert">{loginError}</div>{/if}
         <button class="primary-button" type="submit">
@@ -1430,6 +1900,16 @@
                     }}
                   />
                 </label>
+                <div class="model-tier-guide">
+                  <strong>{t('GPT 5.6 智能档位', 'GPT 5.6 capability tiers')}</strong>
+                  <span>Sol &gt; Terra &gt; Luna</span>
+                  <small>
+                    {t(
+                      '其他系列按各自定位说明，不与 GPT 5.6 强行横向排序。',
+                      'Other families are described by their own positioning rather than forced into the GPT 5.6 ranking.'
+                    )}
+                  </small>
+                </div>
                 <div class="model-options" role="listbox" aria-label={t('聊天模型', 'Chat models')}>
                   {#if activeConversation && !activeModel}
                     <div class="model-unavailable">
@@ -1438,6 +1918,7 @@
                     </div>
                   {/if}
                   {#each filteredModels as model}
+                    {@const tier = modelTierInfo(model)}
                     <button
                       type="button"
                       role="option"
@@ -1446,9 +1927,12 @@
                       on:click={() => selectModel(model.id)}
                     >
                       <span class="model-option-copy">
-                        <strong>{model.name}</strong>
+                        <span class="model-option-heading">
+                          <strong>{model.name}</strong>
+                          <em>{t(tier.chineseLabel, tier.englishLabel)}</em>
+                        </span>
                         <code>{model.id}</code>
-                        <small>{modelCapabilityLabel(model)}</small>
+                        <small>{t(tier.chineseDescription, tier.englishDescription)}</small>
                       </span>
                       {#if model.id === (activeConversation?.model || draftModel)}
                         <span class="model-check"><Icon name="check" size={17} /></span>
@@ -1545,6 +2029,11 @@
       <div
         class="messages-scroll"
         bind:this={scrollElement}
+        on:scroll={handleMessageScroll}
+        on:wheel={(event) => {
+          if (event.deltaY < 0) pauseStreamFollowing();
+        }}
+        on:touchstart={pauseStreamFollowing}
         role="log"
         aria-live="polite"
         aria-relevant="additions text"
@@ -1564,38 +2053,21 @@
                 'I can help you write, analyze, search the web, and understand or generate images.'
               )}
             </p>
+            <div class="suggestion-heading">
+              <span>{t('试试这些', 'Try one of these')}</span>
+              <button type="button" on:click={refreshSuggestions}>
+                <Icon name="refresh" size={15} />
+                {t('换一批', 'Refresh')}
+              </button>
+            </div>
             <div class="suggestion-grid">
-              <button on:click={() => {
-                text = t('帮我规划一个轻松的周末约会安排', 'Help me plan a relaxed weekend date');
-                resizeComposer();
-                textareaElement?.focus();
-              }}>
-                <span><Icon name="plan" size={18} /></span>
-                <strong>{t('规划灵感', 'Plan something')}</strong>
-                <small>{t('安排一次轻松的周末约会', 'Plan a relaxed weekend date')}</small>
-              </button>
-              <button on:click={() => {
-                text = t(
-                  '搜索并总结今天值得关注的科技新闻',
-                  'Search for and summarize today’s notable tech news'
-                );
-                resizeComposer();
-                textareaElement?.focus();
-              }}>
-                <span><Icon name="search" size={18} /></span>
-                <strong>{t('联网搜索', 'Web search')}</strong>
-                <small>{t('总结今天的科技新闻', 'Summarize today’s tech news')}</small>
-              </button>
-              <button
-                title={!activeModel?.imageGenerationMode
-                  ? t('当前模型不支持图片生成', 'The current model does not support image generation')
-                  : t('进入图片生成模式', 'Enter image generation mode')}
-                on:click={prepareImagePrompt}
-              >
-                <span><Icon name="image-plus" size={18} /></span>
-                <strong>{t('生成图片', 'Generate an image')}</strong>
-                <small>{t('创作一张梦幻风格插画', 'Create a dreamlike illustration')}</small>
-              </button>
+              {#each visibleSuggestions as suggestion (suggestion.id)}
+                <button type="button" on:click={() => applySuggestion(suggestion)}>
+                  <span><Icon name={suggestion.icon} size={18} /></span>
+                  <strong>{t(suggestion.chineseTitle, suggestion.englishTitle)}</strong>
+                  <small>{t(suggestion.chinesePrompt, suggestion.englishPrompt)}</small>
+                </button>
+              {/each}
             </div>
           </section>
         {:else}
@@ -1604,6 +2076,13 @@
               <MessageView
                 {message}
                 locale={$locale}
+                streamingStage={message.id === activeAssistantId
+                  ? generationStageLabel(generationStage)
+                  : ''}
+                streamNow={generationNow}
+                elapsedSeconds={message.id === activeAssistantId
+                  ? generationElapsedSeconds
+                  : 0}
                 canRegenerate={message.role === 'assistant' &&
                   message.id === messages.at(-1)?.id &&
                   !generating &&
@@ -1634,9 +2113,21 @@
       </div>
 
       <div class="composer-zone">
-        {#if contextStatus}
+        {#if showJumpToLatest}
+          <button
+            type="button"
+            class="jump-to-latest"
+            on:click={() => scrollToBottom(true)}
+          >
+            <Icon name="chevron-down" size={15} />
+            {t('查看最新回答', 'Jump to latest')}
+          </button>
+        {/if}
+        {#if contextStatus || (generating && !activeAssistantId)}
           <div class="context-status" role="status">
-            <span><Icon name="sparkles" size={14} /></span>{contextStatus}
+            <span><Icon name="sparkles" size={14} /></span>
+            <strong>{contextStatus || generationStageLabel(generationStage)}</strong>
+            {#if generating}<time>{generationElapsedSeconds} s</time>{/if}
           </div>
         {/if}
         {#if checkpoints.length >= 2}
