@@ -22,6 +22,7 @@
     uploadAttachment
   } from './lib/api';
   import { locale, setLocale, translate } from './lib/i18n';
+  import Icon from './lib/Icon.svelte';
   import MessageView from './lib/MessageView.svelte';
   import type {
     Attachment,
@@ -44,8 +45,10 @@
   let messages: Message[] = [];
   let checkpoints: ContextCheckpoint[] = [];
   let draftModel = '';
+  let draftReasoningEffort = 'high';
   let text = '';
   let uploads: Attachment[] = [];
+  let generateImage = false;
   let uploading = false;
   let generating = false;
   let loadingMessages = false;
@@ -68,7 +71,6 @@
   let editingTitle = '';
   let modelPickerOpen = false;
   let modelSearch = '';
-  const defaultReasoningEffort = 'high';
   type Theme = 'light' | 'dark' | 'system';
   const savedTheme = localStorage.getItem('personal-chat-theme');
   let theme: Theme =
@@ -84,6 +86,8 @@
   $: effortOptions = Array.from(
     new Set(['auto', ...(activeModel?.reasoningEfforts || [])])
   );
+  $: selectedReasoningEffort =
+    activeConversation?.reasoningEffort || draftReasoningEffort;
   $: selectableModels = models.filter((model) => model.selectable);
   $: filteredModels = selectableModels.filter((model) => {
     const query = modelSearch.trim().toLocaleLowerCase();
@@ -121,6 +125,12 @@
   function errorMessage(error: unknown): string {
     if (error instanceof APIError) return localizedAPIError(error.code, error.message);
     if (error instanceof Error && error.name === 'AbortError') return '';
+    if (error instanceof TypeError) {
+      return t(
+        '网络连接中断，已尝试从服务器恢复最新状态。',
+        'The network connection was interrupted. The latest server state was restored when possible.'
+      );
+    }
     return error instanceof Error ? error.message : t('发生了未知错误。', 'An unknown error occurred.');
   }
 
@@ -153,6 +163,23 @@
         '当前模型不支持图片输入。',
         'The current model does not support image input.'
       ],
+      model_image_generation_unsupported: [
+        '当前模型不支持图片生成，请更换模型。',
+        'The current model does not support image generation. Choose another model.'
+      ],
+      image_prompt_required: ['请输入图片描述。', 'Enter a prompt for the image.'],
+      image_generation_attachments_unsupported: [
+        '生成图片模式暂不支持同时上传参考图。',
+        'Image generation mode does not support uploaded reference images yet.'
+      ],
+      generated_image_invalid: [
+        '图片服务返回了无法安全保存的图片。',
+        'The image service returned an image that could not be saved safely.'
+      ],
+      stream_incomplete: [
+        '连接在回答完成前中断，已尝试恢复最新状态。',
+        'The connection ended before completion. The latest state was restored when possible.'
+      ],
       too_many_requests: ['当前请求较多，请稍后再试。', 'The request queue is full. Try again shortly.'],
       provider_queue_timeout: ['排队等待超时，请重试。', 'The request timed out while queued. Try again.'],
       provider_request_too_large: [
@@ -165,6 +192,24 @@
     return message ? t(message[0], message[1]) : fallback;
   }
 
+  function effortForModel(model: Model | undefined, requested: string): string {
+    if (!model) return 'auto';
+    const supported = new Set(['auto', ...(model.reasoningEfforts || [])]);
+    if (supported.has(requested)) return requested;
+    if (model.defaultReasoningEffort && supported.has(model.defaultReasoningEffort)) {
+      return model.defaultReasoningEffort;
+    }
+    if (supported.has('high')) return 'high';
+    return 'auto';
+  }
+
+  function setDraftModel(modelId: string) {
+    draftModel = modelId;
+    const model = models.find((item) => item.id === modelId);
+    draftReasoningEffort = effortForModel(model, draftReasoningEffort);
+    if (!model?.imageGenerationMode) generateImage = false;
+  }
+
   async function loadWorkspace() {
     const [loadedModels, loadedConversations] = await Promise.all([
       getModels(),
@@ -172,13 +217,18 @@
     ]);
     models = loadedModels;
     conversations = loadedConversations;
-    draftModel =
+    const initialDraftModel =
       (user?.preferredModel &&
         loadedModels.find(
           (model) => model.selectable && model.id === user?.preferredModel
         )?.id) ||
       loadedModels.find((model) => model.selectable)?.id ||
       '';
+    draftModel = initialDraftModel;
+    draftReasoningEffort = effortForModel(
+      loadedModels.find((model) => model.id === initialDraftModel),
+      draftReasoningEffort
+    );
 
     const remembered = localStorage.getItem('personal-chat-conversation');
     const initial =
@@ -193,8 +243,13 @@
     try {
       const loaded = await getModels();
       models = loaded;
-      if (!activeConversation && !loaded.some((model) => model.selectable && model.id === draftModel)) {
-        draftModel = loaded.find((model) => model.selectable)?.id || '';
+      if (!activeConversation) {
+        const nextDraftModel = loaded.some(
+          (model) => model.selectable && model.id === draftModel
+        )
+          ? draftModel
+          : loaded.find((model) => model.selectable)?.id || '';
+        setDraftModel(nextDraftModel);
       }
     } catch (error) {
       workspaceError = errorMessage(error);
@@ -289,6 +344,9 @@
       return;
     }
     activeConversationId = id;
+    const conversation = conversations.find((item) => item.id === id);
+    const conversationModel = models.find((item) => item.id === conversation?.model);
+    if (!conversationModel?.imageGenerationMode) generateImage = false;
     localStorage.setItem('personal-chat-conversation', id);
     loadingMessages = true;
     workspaceError = '';
@@ -310,7 +368,7 @@
       const wasShowingArchived = showArchived;
       const conversation = await createConversation(
         activeConversation?.model || draftModel,
-        activeConversation?.reasoningEffort || defaultReasoningEffort
+        activeConversation?.reasoningEffort || draftReasoningEffort
       );
       showArchived = false;
       conversations = wasShowingArchived ? [conversation] : [conversation, ...conversations];
@@ -404,13 +462,16 @@
     modelPickerOpen = false;
     modelSearch = '';
     if (!activeConversation) {
-      draftModel = model;
+      setDraftModel(model);
       return;
     }
     if (generating) return;
     try {
       const result = await updateConversationWithMeta(activeConversation.id, { model });
       replaceConversation(result.conversation);
+      if (!models.find((item) => item.id === model)?.imageGenerationMode) {
+        generateImage = false;
+      }
       if (result.reasoningEffortReset) {
         contextStatus = t(
           '新模型不支持原推理强度，已重置为自动。',
@@ -429,14 +490,70 @@
   }
 
   async function changeEffort(event: Event) {
-    if (!activeConversation || generating) return;
+    if (generating) return;
     const reasoningEffort = (event.currentTarget as HTMLSelectElement).value;
+    if (!activeConversation) {
+      draftReasoningEffort = reasoningEffort;
+      return;
+    }
     try {
       const updated = await updateConversation(activeConversation.id, { reasoningEffort });
       replaceConversation(updated);
     } catch (error) {
       workspaceError = errorMessage(error);
     }
+  }
+
+  function toggleImageGeneration() {
+    if (generating || showArchived) return;
+    if (!activeModel?.imageGenerationMode) {
+      workspaceError = localizedAPIError(
+        'model_image_generation_unsupported',
+        t('当前模型不支持图片生成。', 'The current model does not support image generation.')
+      );
+      return;
+    }
+    if (uploads.length > 0) {
+      workspaceError = localizedAPIError(
+        'image_generation_attachments_unsupported',
+        t(
+          '生成图片模式暂不支持同时上传参考图。',
+          'Image generation mode does not support uploaded reference images yet.'
+        )
+      );
+      return;
+    }
+    workspaceError = '';
+    generateImage = !generateImage;
+    textareaElement?.focus();
+  }
+
+  function prepareImagePrompt() {
+    if (!activeModel?.imageGenerationMode) {
+      workspaceError = localizedAPIError(
+        'model_image_generation_unsupported',
+        t('当前模型不支持图片生成。', 'The current model does not support image generation.')
+      );
+      return;
+    }
+    if (uploads.length > 0) {
+      workspaceError = localizedAPIError(
+        'image_generation_attachments_unsupported',
+        t(
+          '生成图片模式暂不支持同时上传参考图。',
+          'Image generation mode does not support uploaded reference images yet.'
+        )
+      );
+      return;
+    }
+    workspaceError = '';
+    generateImage = true;
+    text = t(
+      '请生成一张温暖、梦幻风格的插画',
+      'Create a warm, dreamlike illustration'
+    );
+    resizeComposer();
+    textareaElement?.focus();
   }
 
   function replaceConversation(updated: Conversation) {
@@ -450,6 +567,16 @@
     const files = Array.from(input.files || []);
     input.value = '';
     if (!files.length) return;
+    if (generateImage) {
+      workspaceError = localizedAPIError(
+        'image_generation_attachments_unsupported',
+        t(
+          '生成图片模式暂不支持同时上传参考图。',
+          'Image generation mode does not support uploaded reference images yet.'
+        )
+      );
+      return;
+    }
     if (uploads.length + files.length > 4) {
       workspaceError = t('每条消息最多上传 4 张图片。', 'You can attach up to 4 images per message.');
       return;
@@ -501,9 +628,30 @@
     }
   }
 
+  async function reconcileStreamFailure(
+    conversationId: string,
+    assistantId: string
+  ): Promise<Message | undefined> {
+    for (const delay of [0, 250, 750, 1500, 2500]) {
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const latest = await getMessages(conversationId);
+        messages = latest;
+        const restored = latest.find((message) => message.id === assistantId);
+        if (restored && restored.status !== 'streaming' && restored.status !== 'pending') {
+          return restored;
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
   async function send() {
     const outgoingText = text.trim();
     const outgoingUploads = [...uploads];
+    const outgoingGenerateImage = generateImage;
     if (generating || uploading || (!outgoingText && outgoingUploads.length === 0)) return;
 
     let conversation = activeConversation;
@@ -515,6 +663,7 @@
     contextStatus = '';
     text = '';
     uploads = [];
+    generateImage = false;
     await tick();
     resizeComposer();
     abortController = new AbortController();
@@ -526,6 +675,7 @@
         outgoingText,
         outgoingUploads.map((attachment) => attachment.id),
         crypto.randomUUID(),
+        outgoingGenerateImage,
         (item) => {
           if (item.event === 'response.queued') {
             contextStatus = t(
@@ -572,14 +722,23 @@
       );
     } catch (error) {
       const message = errorMessage(error);
-      if (message) workspaceError = message;
       if (assistantId) {
-        messages = messages.map((item) =>
-          item.id === assistantId ? { ...item, status: 'interrupted' } : item
-        );
+        const restored = await reconcileStreamFailure(conversation.id, assistantId);
+        if (restored?.status === 'completed') {
+          workspaceError = '';
+        } else {
+          if (message) workspaceError = message;
+          if (!restored) {
+            messages = messages.map((item) =>
+              item.id === assistantId ? { ...item, status: 'interrupted' } : item
+            );
+          }
+        }
       } else {
+        if (message) workspaceError = message;
         text = outgoingText;
         uploads = outgoingUploads;
+        generateImage = outgoingGenerateImage;
       }
     } finally {
       generating = false;
@@ -647,11 +806,20 @@
       );
     } catch (error) {
       const value = errorMessage(error);
-      if (value) workspaceError = value;
       if (assistantId) {
-        messages = messages.map((item) =>
-          item.id === assistantId ? { ...item, status: 'interrupted' } : item
-        );
+        const restored = await reconcileStreamFailure(activeConversation.id, assistantId);
+        if (restored?.status === 'completed') {
+          workspaceError = '';
+        } else {
+          if (value) workspaceError = value;
+          if (!restored) {
+            messages = messages.map((item) =>
+              item.id === assistantId ? { ...item, status: 'interrupted' } : item
+            );
+          }
+        }
+      } else if (value) {
+        workspaceError = value;
       }
     } finally {
       generating = false;
@@ -813,6 +981,9 @@
     }
     if (model.supportsWebSearch) {
       capabilities.push(t('联网', 'Web search'));
+    }
+    if (model.imageGenerationMode) {
+      capabilities.push(t('图片生成', 'Image generation'));
     }
     if (model.reasoningEfforts?.length) {
       capabilities.push(
@@ -1074,11 +1245,12 @@
                 'Higher reasoning effort is usually slower and uses more quota; it is not a raw chain-of-thought switch.'
               )}
             >
-              <span class="effort-icon">✦</span>
+              <span class="sr-only">{t('推理强度', 'Reasoning effort')}</span>
+              <span class="effort-icon"><Icon name="sparkles" size={12} /></span>
               <select
-                value={activeConversation?.reasoningEffort || 'auto'}
+                value={selectedReasoningEffort}
                 on:change={changeEffort}
-                disabled={!activeConversation || generating || showArchived}
+                disabled={generating || showArchived}
               >
                 {#each effortOptions as effort}
                   <option value={effort}>
@@ -1136,15 +1308,13 @@
                 <strong>{t('联网搜索', 'Web search')}</strong>
                 <small>{t('总结今天的科技新闻', 'Summarize today’s tech news')}</small>
               </button>
-              <button on:click={() => {
-                text = t(
-                  '请生成一张温暖、梦幻风格的插画',
-                  'Create a warm, dreamlike illustration'
-                );
-                resizeComposer();
-                textareaElement?.focus();
-              }}>
-                <span>◇</span>
+              <button
+                title={!activeModel?.imageGenerationMode
+                  ? t('当前模型不支持图片生成', 'The current model does not support image generation')
+                  : t('进入图片生成模式', 'Enter image generation mode')}
+                on:click={prepareImagePrompt}
+              >
+                <span><Icon name="image-plus" size={18} /></span>
                 <strong>{t('生成图片', 'Generate an image')}</strong>
                 <small>{t('创作一张梦幻风格插画', 'Create a dreamlike illustration')}</small>
               </button>
@@ -1198,7 +1368,7 @@
             <button aria-label={t('关闭', 'Close')} on:click={() => (workspaceError = '')}>×</button>
           </div>
         {/if}
-        <div class:busy={generating} class="composer">
+        <div class:busy={generating} class:image-mode={generateImage} class="composer">
           {#if uploads.length}
             <div class="upload-strip">
               {#each uploads as attachment (attachment.id)}
@@ -1219,7 +1389,9 @@
             on:keydown={composerKeydown}
             placeholder={showArchived
               ? t('已归档对话为只读', 'Archived chats are read-only')
-              : t('给 AI 发送消息', 'Message AI')}
+              : generateImage
+                ? t('描述你想生成的图片', 'Describe the image you want to create')
+                : t('给 AI 发送消息', 'Message AI')}
             rows="1"
             disabled={generating || showArchived}
           ></textarea>
@@ -1243,11 +1415,42 @@
                 disabled={generating ||
                   showArchived ||
                   uploading ||
+                  generateImage ||
                   uploads.length >= 4 ||
                   (activeModel?.capabilitiesComplete &&
                     !activeModel.inputModalities?.includes('image'))}
               >
-                {uploading ? '◌' : '⊕'}<span>{t('图片', 'Image')}</span>
+                {#if uploading}
+                  <span class="toolbar-spinner" aria-hidden="true"></span>
+                {:else}
+                  <Icon name="upload" size={15} />
+                {/if}
+                <span>{t('上传图片', 'Upload image')}</span>
+              </button>
+              <button
+                class="toolbar-button image-mode-button"
+                class:active={generateImage}
+                aria-pressed={generateImage}
+                title={!activeModel?.imageGenerationMode
+                  ? t('当前模型不支持图片生成', 'The current model does not support image generation')
+                  : generateImage
+                    ? t('退出图片生成模式', 'Exit image generation mode')
+                    : t(
+                        '生成图片（质量由服务端自动选择）',
+                        'Generate an image (server selects quality automatically)'
+                      )}
+                on:click={toggleImageGeneration}
+                disabled={generating ||
+                  showArchived ||
+                  !activeModel?.imageGenerationMode ||
+                  uploads.length > 0}
+              >
+                <Icon name="image-plus" size={15} />
+                <span>
+                  {generateImage
+                    ? t('正在绘图', 'Image mode')
+                    : t('生成图片', 'Generate image')}
+                </span>
               </button>
               {#if activeModel?.supportsWebSearch}
                 <span class="capability-pill"><i></i>{t('可联网', 'Web enabled')}</span>

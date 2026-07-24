@@ -178,6 +178,7 @@ export async function streamResponse(
   text: string,
   attachmentIds: string[],
   requestId: string,
+  generateImage: boolean,
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
@@ -189,7 +190,7 @@ export async function streamResponse(
       Accept: 'text/event-stream',
       'X-CSRF-Token': csrfToken
     },
-    body: JSON.stringify({ text, attachmentIds, requestId }),
+    body: JSON.stringify({ text, attachmentIds, requestId, generateImage }),
     signal
   });
   await consumeEventStream(response, onEvent);
@@ -235,6 +236,7 @@ async function consumeEventStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let terminalEventReceived = false;
 
   const dispatch = (block: string) => {
     let event = 'message';
@@ -245,6 +247,9 @@ async function consumeEventStream(
     }
     if (!dataLines.length) return;
     try {
+      if (event === 'response.completed' || event === 'response.error') {
+        terminalEventReceived = true;
+      }
       onEvent({ event, data: JSON.parse(dataLines.join('\n')) });
     } catch {
       throw new APIError('服务端发送了无法解析的流事件。', 'invalid_stream_event');
@@ -264,6 +269,13 @@ async function consumeEventStream(
     if (done) break;
   }
   if (buffer.trim()) dispatch(buffer);
+  if (!terminalEventReceived) {
+    throw new APIError(
+      '连接在回答完成前中断。',
+      'stream_incomplete',
+      response.status
+    );
+  }
 }
 
 export function attachmentURL(id: string): string {

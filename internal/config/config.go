@@ -35,6 +35,8 @@ type Provider struct {
 	ModelAllowlist            []string
 	ModelDenylist             []string
 	ModelContextOverrides     map[string]int
+	ResponseImageModels       []string
+	DedicatedImageModels      map[string]string
 	ModelsTimeout             time.Duration
 	DefaultReasoningEffort    string
 	UnknownModelContextTokens int
@@ -110,6 +112,7 @@ func Load() (Config, error) {
 		ModelAllowlist:            splitCSV(os.Getenv("AI_MODEL_ALLOWLIST")),
 		ModelDenylist:             splitCSV(os.Getenv("AI_MODEL_DENYLIST")),
 		ModelContextOverrides:     make(map[string]int),
+		DedicatedImageModels:      make(map[string]string),
 		ModelsTimeout:             5 * time.Second,
 		DefaultReasoningEffort:    strings.ToLower(env("AI_DEFAULT_REASONING_EFFORT", "auto")),
 		UnknownModelContextTokens: 128000,
@@ -118,6 +121,29 @@ func Load() (Config, error) {
 	}
 	if cfg.Provider.Kind != "cpa" && cfg.Provider.Kind != "openai" {
 		return Config{}, fmt.Errorf("AI_PROVIDER must be cpa or openai")
+	}
+	responseImageModels := strings.TrimSpace(os.Getenv("AI_RESPONSE_IMAGE_MODELS"))
+	if responseImageModels == "" {
+		responseImageModels = cfg.Provider.DefaultModel
+	}
+	cfg.Provider.ResponseImageModels = splitCSV(responseImageModels)
+	dedicatedImageModels := strings.TrimSpace(os.Getenv("AI_DEDICATED_IMAGE_MODELS_JSON"))
+	if dedicatedImageModels == "" && cfg.Provider.Kind == "cpa" {
+		dedicatedImageModels = `{"grok-4.5":"grok-imagine-image-quality"}`
+	}
+	if dedicatedImageModels != "" {
+		if err := json.Unmarshal([]byte(dedicatedImageModels), &cfg.Provider.DedicatedImageModels); err != nil {
+			return Config{}, fmt.Errorf("AI_DEDICATED_IMAGE_MODELS_JSON must be a JSON object")
+		}
+		if len(cfg.Provider.DedicatedImageModels) > 64 {
+			return Config{}, fmt.Errorf("AI_DEDICATED_IMAGE_MODELS_JSON contains too many models")
+		}
+		for chatModel, imageModel := range cfg.Provider.DedicatedImageModels {
+			if strings.TrimSpace(chatModel) == "" || strings.TrimSpace(imageModel) == "" ||
+				len(chatModel) > 200 || len(imageModel) > 200 {
+				return Config{}, fmt.Errorf("AI_DEDICATED_IMAGE_MODELS_JSON contains an invalid entry")
+			}
+		}
 	}
 	if raw := strings.TrimSpace(os.Getenv("AI_MODELS_TIMEOUT_SECONDS")); raw != "" {
 		seconds, parseErr := strconv.Atoi(raw)

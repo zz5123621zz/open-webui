@@ -3,6 +3,7 @@
   import type { Message, MessagePart } from './types';
   import { attachmentURL } from './api';
   import { translate, type Locale } from './i18n';
+  import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
 
   export let message: Message;
@@ -81,14 +82,14 @@
 
 <article class:user={message.role === 'user'} class:assistant={message.role === 'assistant'} class="message">
   <div class="avatar" aria-hidden="true">
-    {#if message.role === 'user'}{t('你', 'You')}{:else}<span>✦</span>{/if}
+    {#if message.role === 'user'}{t('你', 'You')}{:else}<Icon name="sparkles" size={15} />{/if}
   </div>
   <div class="message-body">
     {#each message.parts as part}
       {#if part.type === 'reasoning' && part.text}
         <details class="reasoning" open={message.status === 'streaming'}>
           <summary>
-            <span class="reasoning-spark">✦</span>
+            <span class="reasoning-spark"><Icon name="sparkles" size={13} /></span>
             {t('推理摘要', 'Reasoning summary')}
             {#if reasoningDuration(part)}
               <span class="reasoning-duration">· {reasoningDuration(part)}</span>
@@ -121,7 +122,12 @@
           class:completed={part.data?.status === 'completed'}
           class:failed={part.data?.status === 'failed'}
         >
-          <div class="tool-icon">{part.data?.type === 'web_search' ? '⌕' : '◇'}</div>
+          <div class="tool-icon" aria-hidden="true">
+            <Icon
+              name={part.data?.type === 'web_search' ? 'search' : 'image'}
+              size={17}
+            />
+          </div>
           <div>
             <strong>{toolLabel(part)}</strong>
             <span>{toolDescription(part)}</span>

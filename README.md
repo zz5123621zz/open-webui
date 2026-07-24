@@ -12,15 +12,18 @@ Svelte 静态前端、Go 单进程后端与 SQLite。
 - 管理员创建用户；Argon2id 密码与服务端 Session
 - 用户自助改密/注销全部设备；管理员可停用、启用或重置账户
 - 用户隔离的会话、消息、上传及生成图片
-- CPA 动态模型目录、可搜索能力面板与 Conversation 级推理强度
+- CPA 动态模型目录、可搜索能力面板与 Conversation 级推理强度；新对话创建前即可选择强度
 - OpenAI Responses SSE 文本与推理摘要
-- Web Search 和 Image Generation 工具状态
+- Web Search 和 Image Generation 工具状态；上传图片与生成图片是两个明确模式
 - PNG、JPEG、WebP 上传；生成图原质量落盘
+- GPT 默认走 Responses `image_generation`；Grok 4.5 默认路由到 CPA
+  `grok-imagine-image-quality` 的 `/v1/images/generations`
 - Markdown、代码高亮/复制、KaTeX、引用来源
 - 停止、失败重试、重新生成、归档/恢复
 - 应用管理的 Context Checkpoint
 - 中文/English 界面、亮色/暗色/系统主题
 - 50 MiB CPA 请求硬边界；大请求通过临时文件编译
+- 浏览器 SSE 每 15 秒心跳，并在断流后重新同步服务端消息终态
 - 非 root、只读、`320m` 内存上限的 Docker Compose
 
 ## 本地检查

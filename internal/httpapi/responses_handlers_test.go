@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
 
 func TestSafeWebActionUsesStrictAllowlist(t *testing.T) {
@@ -197,5 +201,67 @@ func TestResponsePartsPreserveStreamOrderAndReasoningDuration(t *testing.T) {
 	}
 	if tool.Status != "in_progress" || tool.CallID != "search_1" {
 		t.Fatalf("interrupted tool snapshot = %#v", tool)
+	}
+}
+
+func TestSSEHeartbeatWritesComment(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	stream.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := stream.startHeartbeat(ctx, 2*time.Millisecond, cancel)
+	time.Sleep(8 * time.Millisecond)
+	stop()
+
+	if body := recorder.Body.String(); !strings.Contains(body, ": keepalive\n\n") {
+		t.Fatalf("heartbeat stream = %q", body)
+	}
+}
+
+func TestConfigureImageGenerationRequestRequiresOnlyImageTool(t *testing.T) {
+	request := provider.ResponsesRequest{
+		Tools: []map[string]any{
+			{"type": "web_search"},
+			{"type": "image_generation", "quality": "low"},
+		},
+		ToolChoice: "auto",
+	}
+	configureImageGenerationRequest(&request, true)
+
+	if request.ToolChoice != "required" || len(request.Tools) != 1 ||
+		request.Tools[0]["type"] != "image_generation" {
+		t.Fatalf("image request = %#v", request)
+	}
+	if _, exists := request.Tools[0]["quality"]; exists {
+		t.Fatalf("image request overrides quality: %#v", request.Tools[0])
+	}
+}
+
+func TestExplicitImageMarkerControlsRegenerationMode(t *testing.T) {
+	accumulator := responseAccumulator{
+		tools: []toolSnapshot{
+			{CallID: "search-1", Type: "web_search", Status: "completed"},
+			{CallID: "image-1", Type: "image_generation", Status: "completed"},
+		},
+		partOrder: []accumulatorPart{
+			{Type: "tool", Key: "search-1"},
+			{Type: "tool", Key: "image-1"},
+		},
+	}
+	accumulator.markExplicitImageGeneration()
+	parts := accumulator.parts()
+	message := store.Message{Parts: []store.MessagePart{
+		{Type: "tool", JSONContent: parts[0].JSONContent},
+		{Type: "tool", JSONContent: parts[1].JSONContent},
+		{Type: "image", AttachmentID: "generated-1"},
+	}}
+	if !messageRequestedImageGeneration(message) {
+		t.Fatal("explicit image request marker was not detected")
+	}
+	message.Parts[1].JSONContent = json.RawMessage(
+		`{"callId":"image-1","type":"image_generation","status":"completed"}`,
+	)
+	if messageRequestedImageGeneration(message) {
+		t.Fatal("ordinary image output was treated as explicit image mode")
 	}
 }

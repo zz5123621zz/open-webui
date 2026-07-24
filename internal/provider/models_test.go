@@ -26,6 +26,7 @@ func TestModelsUsesEnhancedCatalogAndFiltersHidden(t *testing.T) {
 	baseURL, _ := url.Parse(server.URL + "/v1")
 	cfg := NewTestConfig(baseURL)
 	cfg.ModelContextOverrides = map[string]int{"gpt-chat": 180000}
+	cfg.ResponseImageModels = []string{"gpt-chat"}
 	client := NewClient(cfg, "test")
 
 	catalog, err := client.Models(context.Background())
@@ -37,8 +38,46 @@ func TestModelsUsesEnhancedCatalogAndFiltersHidden(t *testing.T) {
 	}
 	model := catalog.Models[0]
 	if model.ID != "gpt-chat" || model.ContextWindow != 180000 ||
-		!model.SupportsWebSearch || !SupportsEffort(model, "high") {
+		!model.SupportsWebSearch || !SupportsEffort(model, "high") ||
+		model.ImageGenerationMode != "responses_tool" {
 		t.Fatalf("model = %#v", model)
+	}
+}
+
+func TestModelsMarksDedicatedImageRouteWithoutExposingModelID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{
+			"slug":"grok-4.5","display_name":"Grok 4.5","context_window":131072,
+			"input_modalities":["text","image"],"priority":1
+		}]}`))
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL + "/v1")
+	cfg := NewTestConfig(baseURL)
+	cfg.DedicatedImageModels = map[string]string{
+		"grok-4.5": "grok-imagine-image-quality",
+	}
+	client := NewClient(cfg, "test")
+
+	catalog, err := client.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Models) != 1 {
+		t.Fatalf("models = %#v", catalog.Models)
+	}
+	model := catalog.Models[0]
+	if model.ImageGenerationMode != "dedicated" ||
+		model.DedicatedImageModel != "grok-imagine-image-quality" {
+		t.Fatalf("model = %#v", model)
+	}
+	raw, err := json.Marshal(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "grok-imagine-image-quality") {
+		t.Fatalf("public model JSON leaked dedicated model: %s", raw)
 	}
 }
 
