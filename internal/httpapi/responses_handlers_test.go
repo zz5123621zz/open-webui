@@ -80,6 +80,67 @@ func TestWebSearchLifecycleAndOutputItemAreDeduplicated(t *testing.T) {
 	}
 }
 
+func TestImageGenerationDoneNormalizesGeneratingStatusAndSavesResult(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := &responseAccumulator{
+		saveImage: func(result string) (generatedImage, error) {
+			if result != "final-image-base64" {
+				t.Fatalf("image result = %q", result)
+			}
+			return generatedImage{
+				AttachmentID: "attachment_1",
+				URL:          "/api/v1/attachments/attachment_1/content",
+				MediaType:    "image/png",
+				ByteSize:     123,
+			}, nil
+		},
+	}
+	added := providerStreamEvent{
+		Type: "response.output_item.added",
+		Item: json.RawMessage(`{
+			"id":"image_1",
+			"type":"image_generation_call",
+			"status":"generating"
+		}`),
+	}
+	done := providerStreamEvent{
+		Type: "response.output_item.done",
+		Item: json.RawMessage(`{
+			"id":"image_1",
+			"type":"image_generation_call",
+			"status":"generating",
+			"result":"final-image-base64"
+		}`),
+	}
+	if err := accumulator.handle(stream, added); err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.handle(stream, done); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(accumulator.tools) != 1 || accumulator.tools[0].Status != "completed" {
+		t.Fatalf("tools = %#v", accumulator.tools)
+	}
+	if len(accumulator.images) != 1 || accumulator.images[0].AttachmentID != "attachment_1" {
+		t.Fatalf("images = %#v", accumulator.images)
+	}
+	parts := accumulator.parts()
+	types := make([]string, len(parts))
+	for index, part := range parts {
+		types[index] = part.Type
+	}
+	if want := []string{"tool", "image"}; !slices.Equal(types, want) {
+		t.Fatalf("part types = %v, want %v", types, want)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: response.image") ||
+		!strings.Contains(body, `"status":"completed"`) {
+		t.Fatalf("stream body = %s", body)
+	}
+}
+
 func TestResponsePartsPreserveStreamOrderAndReasoningDuration(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	stream := newSSEWriter(recorder)
