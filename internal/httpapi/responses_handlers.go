@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -22,7 +23,10 @@ import (
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
 
-const maxProviderEventBytes = 50 * 1024 * 1024
+const (
+	maxProviderEventBytes = 50 * 1024 * 1024
+	sseHeartbeatInterval  = 15 * time.Second
+)
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	session, _ := sessionFromContext(r.Context())
@@ -42,6 +46,7 @@ type createResponseRequest struct {
 	Text          string   `json:"text"`
 	AttachmentIDs []string `json:"attachmentIds"`
 	RequestID     string   `json:"requestId"`
+	GenerateImage bool     `json:"generateImage"`
 }
 
 type regenerateResponseRequest struct {
@@ -112,6 +117,20 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model_image_input_unsupported", "The selected model does not support image input.")
 		return
 	}
+	if request.GenerateImage {
+		if !s.cfg.Tools.ImageGenerationEnabled || model.ImageGenerationMode == "" {
+			writeError(w, http.StatusBadRequest, "model_image_generation_unsupported", "The selected model does not support image generation.")
+			return
+		}
+		if strings.TrimSpace(request.Text) == "" {
+			writeError(w, http.StatusBadRequest, "image_prompt_required", "Image generation requires a text prompt.")
+			return
+		}
+		if len(request.AttachmentIDs) > 0 {
+			writeError(w, http.StatusBadRequest, "image_generation_attachments_unsupported", "Image generation cannot include uploaded images yet.")
+			return
+		}
+	}
 	sentEffort := conversation.ReasoningEffort
 	if sentEffort == "auto" {
 		sentEffort = ""
@@ -153,7 +172,7 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 
 	s.streamAssistantResponse(
 		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
-		assistantMessage, &userMessage, nil, queuedStream,
+		assistantMessage, &userMessage, nil, queuedStream, request.GenerateImage, request.Text,
 	)
 }
 
@@ -209,6 +228,11 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The conversation reasoning effort is no longer supported.")
 		return
 	}
+	generateImage := messageRequestedImageGeneration(original)
+	if generateImage && (!s.cfg.Tools.ImageGenerationEnabled || model.ImageGenerationMode == "") {
+		writeError(w, http.StatusBadRequest, "model_image_generation_unsupported", "The selected model does not support image generation.")
+		return
+	}
 	sentEffort := conversation.ReasoningEffort
 	if sentEffort == "auto" {
 		sentEffort = ""
@@ -250,7 +274,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	s.streamAssistantResponse(
 		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
-		assistant, nil, history, queuedStream,
+		assistant, nil, history, queuedStream, generateImage, latestUserText(history),
 	)
 }
 
@@ -266,6 +290,8 @@ func (s *Server) streamAssistantResponse(
 	userMessage *store.Message,
 	history []store.Message,
 	stream *sseWriter,
+	generateImage bool,
+	imagePrompt string,
 ) {
 	responseContext, cancelResponse := context.WithCancel(r.Context())
 	r = r.WithContext(responseContext)
@@ -289,6 +315,16 @@ func (s *Server) streamAssistantResponse(
 	}
 	if err := stream.send("response.started", started); err != nil {
 		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
+		return
+	}
+	stopHeartbeat := stream.startHeartbeat(r.Context(), sseHeartbeatInterval, cancelResponse)
+	defer stopHeartbeat()
+
+	if generateImage && model.ImageGenerationMode == "dedicated" {
+		s.streamDedicatedImage(
+			r.Context(), stream, userID, conversation.ID, assistantMessage.ID,
+			model.DedicatedImageModel, imagePrompt, requestID,
+		)
 		return
 	}
 
@@ -328,6 +364,7 @@ func (s *Server) streamAssistantResponse(
 		_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
 		return
 	}
+	configureImageGenerationRequest(&providerRequest, generateImage)
 	newAccumulator := func() responseAccumulator {
 		return responseAccumulator{
 			saveImage: func(encoded string) (generatedImage, error) {
@@ -378,6 +415,7 @@ func (s *Server) streamAssistantResponse(
 			_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
 			return
 		}
+		configureImageGenerationRequest(&providerRequest, generateImage)
 		accumulator = newAccumulator()
 		startErr, consumeErr = runProvider(providerRequest, &accumulator)
 	}
@@ -407,6 +445,9 @@ func (s *Server) streamAssistantResponse(
 	if !accumulator.completed && status == "completed" {
 		status = "interrupted"
 		errorCode = "provider_stream_incomplete"
+	}
+	if generateImage {
+		accumulator.markExplicitImageGeneration()
 	}
 
 	parts := accumulator.parts()
@@ -441,6 +482,181 @@ func (s *Server) streamAssistantResponse(
 			"code": errorCode, "message": "The response ended before completion.", "messageRecord": finalMessage,
 		})
 	}
+}
+
+func configureImageGenerationRequest(request *provider.ResponsesRequest, generateImage bool) {
+	if !generateImage {
+		return
+	}
+	request.Tools = []map[string]any{{"type": "image_generation"}}
+	request.ToolChoice = "required"
+}
+
+func (s *Server) streamDedicatedImage(
+	ctx context.Context,
+	stream *sseWriter,
+	userID string,
+	conversationID string,
+	messageID string,
+	imageModel string,
+	prompt string,
+	requestID string,
+) {
+	callID, err := ids.New()
+	if err != nil {
+		_, _ = s.failAssistant(context.WithoutCancel(ctx), userID, messageID, "internal_error", nil)
+		_ = stream.send("response.error", map[string]string{
+			"code": "internal_error", "message": "The image request could not be initialized.",
+		})
+		return
+	}
+	startedAt := time.Now()
+	running := toolSnapshot{
+		CallID: callID, Type: "image_generation", Status: "in_progress",
+		Data: json.RawMessage(`{"explicit":true}`),
+	}
+	if err := stream.send("response.tool", running); err != nil {
+		_, _ = s.completeDedicatedImageFailure(
+			context.WithoutCancel(ctx), userID, messageID, running, "client_disconnected", "interrupted",
+		)
+		return
+	}
+
+	result, generationErr := s.models.GenerateImage(ctx, provider.ImageGenerationRequest{
+		Model: imageModel, Prompt: strings.TrimSpace(prompt),
+	})
+	if generationErr != nil {
+		code, _, message := providerStartError(generationErr)
+		status := "error"
+		if ctx.Err() != nil {
+			code = "client_disconnected"
+			message = "The image request ended before completion."
+			status = "interrupted"
+		} else if errors.Is(generationErr, provider.ErrBadResponse) {
+			code = "provider_invalid_response"
+			message = "The image provider returned an invalid response."
+		}
+		failed := running
+		failed.Status = "failed"
+		failed.DurationMS = time.Since(startedAt).Milliseconds()
+		failed.ErrorCode = code
+		finalMessage, _ := s.completeDedicatedImageFailure(
+			context.WithoutCancel(ctx), userID, messageID, failed, code, status,
+		)
+		_ = stream.send("response.tool", failed)
+		_ = stream.send("response.error", map[string]any{
+			"code": code, "message": message, "messageRecord": finalMessage,
+		})
+		s.logger.Info("provider response finished",
+			"request_id", requestID,
+			"user_id_hash", hashIdentifier(userID),
+			"provider_request_id", result.ResponseID,
+			"status", status,
+			"error_code", code,
+		)
+		return
+	}
+
+	generated, err := s.saveGeneratedImage(
+		context.WithoutCancel(ctx), userID, conversationID, messageID, result.Base64,
+	)
+	if err != nil {
+		failed := running
+		failed.Status = "failed"
+		failed.DurationMS = time.Since(startedAt).Milliseconds()
+		failed.ErrorCode = "generated_image_invalid"
+		finalMessage, _ := s.completeDedicatedImageFailure(
+			context.WithoutCancel(ctx), userID, messageID, failed,
+			"generated_image_invalid", "error",
+		)
+		_ = stream.send("response.tool", failed)
+		_ = stream.send("response.error", map[string]any{
+			"code": "generated_image_invalid",
+			"message": "The generated image could not be saved safely.",
+			"messageRecord": finalMessage,
+		})
+		return
+	}
+
+	completed := running
+	completed.Status = "completed"
+	completed.DurationMS = time.Since(startedAt).Milliseconds()
+	rawTool, _ := json.Marshal(completed)
+	finalMessage, storeErr := s.store.CompleteAssistant(
+		context.WithoutCancel(ctx), userID, messageID, store.AssistantResult{
+			ProviderResponseID: result.ResponseID,
+			Status:             "completed",
+			Parts: []store.NewMessagePart{
+				{Type: "tool", JSONContent: rawTool},
+				{Type: "image", AttachmentID: generated.AttachmentID},
+			},
+		},
+	)
+	if storeErr != nil {
+		s.logger.Error("store generated image response failed", "error", storeErr, "message_id", messageID)
+		_ = stream.send("response.error", map[string]string{
+			"code": "persistence_failed", "message": "The generated image could not be saved.",
+		})
+		return
+	}
+	_ = stream.send("response.tool", completed)
+	_ = stream.send("response.image", generated)
+	_ = stream.send("response.completed", map[string]any{"message": finalMessage})
+	s.logger.Info("provider response finished",
+		"request_id", requestID,
+		"user_id_hash", hashIdentifier(userID),
+		"provider_request_id", result.ResponseID,
+		"status", "completed",
+		"error_code", "",
+	)
+}
+
+func (s *Server) completeDedicatedImageFailure(
+	ctx context.Context,
+	userID string,
+	messageID string,
+	tool toolSnapshot,
+	code string,
+	status string,
+) (store.Message, error) {
+	rawTool, _ := json.Marshal(tool)
+	return s.store.CompleteAssistant(ctx, userID, messageID, store.AssistantResult{
+		Status: status, ErrorCode: code,
+		Parts: []store.NewMessagePart{{Type: "tool", JSONContent: rawTool}},
+	})
+}
+
+func messageRequestedImageGeneration(message store.Message) bool {
+	for _, part := range message.Parts {
+		if part.Type != "tool" {
+			continue
+		}
+		var snapshot struct {
+			Type string `json:"type"`
+			Data struct {
+				Explicit bool `json:"explicit"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(part.JSONContent, &snapshot) == nil &&
+			snapshot.Type == "image_generation" && snapshot.Data.Explicit {
+			return true
+		}
+	}
+	return false
+}
+
+func latestUserText(messages []store.Message) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role != "user" {
+			continue
+		}
+		for _, part := range messages[index].Parts {
+			if part.Type == "text" && strings.TrimSpace(part.TextContent) != "" {
+				return part.TextContent
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) startResponseWithNetworkRetry(ctx context.Context, request provider.ResponsesRequest) (*http.Response, error) {
@@ -634,7 +850,7 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 	if s.cfg.Tools.WebSearchEnabled && model.SupportsWebSearch {
 		tools = append(tools, map[string]any{"type": "web_search"})
 	}
-	if s.cfg.Tools.ImageGenerationEnabled {
+	if s.cfg.Tools.ImageGenerationEnabled && model.ImageGenerationMode == "responses_tool" {
 		tools = append(tools, map[string]any{"type": "image_generation"})
 	}
 	return provider.ResponsesRequest{
@@ -672,6 +888,7 @@ func containsString(values []string, target string) bool {
 type sseWriter struct {
 	writer     http.ResponseWriter
 	controller *http.ResponseController
+	mu         sync.Mutex
 }
 
 func newSSEWriter(w http.ResponseWriter) *sseWriter {
@@ -692,10 +909,55 @@ func (s *sseWriter) send(event string, data any) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := fmt.Fprintf(s.writer, "event: %s\ndata: %s\n\n", event, raw); err != nil {
 		return err
 	}
 	return s.controller.Flush()
+}
+
+func (s *sseWriter) comment(value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := fmt.Fprintf(s.writer, ": %s\n\n", value); err != nil {
+		return err
+	}
+	return s.controller.Flush()
+}
+
+func (s *sseWriter) startHeartbeat(
+	ctx context.Context,
+	interval time.Duration,
+	onFailure context.CancelFunc,
+) func() {
+	if interval <= 0 {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := s.comment("keepalive"); err != nil {
+					onFailure()
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 type providerStreamEvent struct {
@@ -807,6 +1069,14 @@ type responseAccumulator struct {
 	failureCode         string
 	saveImage           func(string) (generatedImage, error)
 	providerItems       []store.NewProviderItem
+}
+
+func (a *responseAccumulator) markExplicitImageGeneration() {
+	for index := range a.tools {
+		if a.tools[index].Type == "image_generation" {
+			a.tools[index].Data = json.RawMessage(`{"explicit":true}`)
+		}
+	}
 }
 
 type accumulatorPart struct {

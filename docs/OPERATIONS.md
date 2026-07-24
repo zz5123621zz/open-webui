@@ -6,8 +6,8 @@
 - Xray 会把该 SNI 的普通 TLS 流量回落到 Nginx
   `127.0.0.1:8443`。
 - fork 的 GitHub Actions 已发布 GHCR 镜像。
-- CPA `/v1/models` 和 `/v1/responses` 可通过同一个密钥访问，且没有关闭
-  Web Search 或 Image Generation。
+- CPA `/v1/models`、`/v1/responses` 和 `/v1/images/generations` 可通过
+  同一个密钥访问，且没有关闭 Web Search 或 Image Generation。
 
 ## 2. 创建部署目录
 
@@ -71,6 +71,18 @@ sudo chmod 0400 /opt/owui-personal-slim/secrets/*
 
 复制 `compose.yaml`、`.env.example`，把 `.env.example` 改名为 `.env`。
 `APP_IMAGE` 应在第一次验证后换成 GHCR 返回的不可变 digest。
+
+图片生成路由由以下环境变量控制：
+
+- `AI_RESPONSE_IMAGE_MODELS`：使用 Responses `image_generation` 工具的聊天
+  模型列表；留空时只启用 `AI_DEFAULT_MODEL`。
+- `AI_DEDICATED_IMAGE_MODELS_JSON`：聊天模型到
+  `/v1/images/generations` 专用模型的映射。CPA 模式在变量缺失或为空时
+  默认使用 `{"grok-4.5":"grok-imagine-image-quality"}`。
+
+应用只发送模型、提示词、`n=1` 和 `response_format=b64_json`；不会覆盖
+`quality`、`size`、`compression` 或 `partial_images`，因此图片质量保持
+CPA 服务端 `auto` 默认值。
 
 启动前的只读检查：
 
@@ -136,7 +148,8 @@ sudo systemctl reload nginx
 ```
 
 浏览器上传虚拟主机保持 `13m`；CPA 虚拟主机保持 `50m`。SSE location
-必须关闭响应和请求缓冲。
+必须关闭响应和请求缓冲。应用在活动回答期间每 15 秒发送 SSE 注释心跳，
+用于跨过反代和浏览器的长时间无输出阶段。
 
 ## 5. 发布
 

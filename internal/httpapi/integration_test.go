@@ -27,6 +27,7 @@ const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mN
 func TestAuthenticatedChatFlow(t *testing.T) {
 	var providerMu sync.Mutex
 	var providerRequest map[string]any
+	var dedicatedImageRequest map[string]any
 	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer provider-test-key" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -40,6 +41,11 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 				"input_modalities":["text","image"],"supports_search_tool":true,
 				"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
 				"default_reasoning_level":"low","priority":1
+			},{
+				"slug":"grok-4.5","display_name":"Grok 4.5","context_window":131072,
+				"input_modalities":["text","image"],"supports_search_tool":false,
+				"supported_reasoning_levels":[{"effort":"high"}],
+				"default_reasoning_level":"high","priority":2
 			}]}`)
 		case "/v1/responses":
 			var request map[string]any
@@ -65,6 +71,17 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 				_, _ = io.WriteString(w, "data: "+event+"\n\n")
 			}
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		case "/v1/images/generations":
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			providerMu.Lock()
+			dedicatedImageRequest = request
+			providerMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"created":456,"data":[{"b64_json":"`+onePixelPNG+`"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -98,6 +115,10 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 			DefaultModel: "gpt-chat", ModelsTimeout: time.Second,
 			DefaultReasoningEffort: "auto", UnknownModelContextTokens: 128000,
 			RequestBodyMaxBytes: 50 << 20,
+			ResponseImageModels: []string{"gpt-chat"},
+			DedicatedImageModels: map[string]string{
+				"grok-4.5": "grok-imagine-image-quality",
+			},
 		},
 		Jobs: config.Jobs{
 			MaxConcurrentGlobal: 4, MaxConcurrentPerUser: 2, MaxQueuedPerUser: 2, QueueTimeout: time.Second,
@@ -205,6 +226,34 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	}
 	imageResponse.Body.Close()
 
+	grokConversation := createTestConversation(t, server.URL, cookie, csrf, "grok-4.5", "high")
+	grokImageResponse := authenticatedRequest(
+		t, http.MethodPost,
+		server.URL+"/api/v1/conversations/"+grokConversation.ID+"/responses",
+		cookie, csrf,
+		`{"text":"Draw a fox","attachmentIds":[],"requestId":"grok-image-1","generateImage":true}`,
+	)
+	grokStream, _ := io.ReadAll(grokImageResponse.Body)
+	grokImageResponse.Body.Close()
+	if grokImageResponse.StatusCode != http.StatusOK ||
+		!strings.Contains(string(grokStream), "event: response.tool") ||
+		!strings.Contains(string(grokStream), "event: response.image") ||
+		!strings.Contains(string(grokStream), "event: response.completed") {
+		t.Fatalf("Grok image response status=%d body=%s", grokImageResponse.StatusCode, grokStream)
+	}
+	providerMu.Lock()
+	gotDedicatedRequest := dedicatedImageRequest
+	providerMu.Unlock()
+	if gotDedicatedRequest["model"] != "grok-imagine-image-quality" ||
+		gotDedicatedRequest["prompt"] != "Draw a fox" {
+		t.Fatalf("dedicated image request = %#v", gotDedicatedRequest)
+	}
+	for _, forbidden := range []string{"quality", "size", "compression", "partial_images"} {
+		if _, exists := gotDedicatedRequest[forbidden]; exists {
+			t.Fatalf("dedicated image request unexpectedly set %s: %#v", forbidden, gotDedicatedRequest)
+		}
+	}
+
 	regeneration := authenticatedRequest(
 		t, http.MethodPost, server.URL+"/api/v1/messages/"+assistant.ID+"/regenerate",
 		cookie, csrf, `{"requestId":"regenerate-1"}`,
@@ -283,6 +332,15 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		t.Fatalf("deleted conversation image status=%d", deletedImage.StatusCode)
 	}
 	deletedImage.Body.Close()
+	deletedGrok := authenticatedRequest(
+		t, http.MethodDelete, server.URL+"/api/v1/conversations/"+grokConversation.ID,
+		cookie, csrf, "",
+	)
+	if deletedGrok.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(deletedGrok.Body)
+		t.Fatalf("delete Grok conversation status=%d body=%s", deletedGrok.StatusCode, body)
+	}
+	deletedGrok.Body.Close()
 	var remainingGenerated int
 	_ = filepath.WalkDir(generatedRoot, func(_ string, entry os.DirEntry, _ error) error {
 		if entry != nil && !entry.IsDir() {

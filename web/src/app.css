@@ -1124,11 +1124,14 @@ select {
 }
 
 .effort-icon {
+  display: grid;
   position: absolute;
   left: 8px;
   z-index: 1;
+  place-items: center;
   color: var(--purple);
   font-size: 10px;
+  line-height: 0;
   pointer-events: none;
 }
 
@@ -1231,6 +1234,7 @@ select {
   background: linear-gradient(140deg, #7d66c8, #b17d9e);
   font-size: 11px;
   font-weight: 680;
+  line-height: 0;
 }
 
 .message.assistant .avatar {
@@ -1421,8 +1425,11 @@ select {
 }
 
 .reasoning-spark {
+  display: inline-grid;
+  place-items: center;
   color: var(--purple);
   font-size: 10px;
+  line-height: 0;
 }
 
 .reasoning-duration {
@@ -1491,6 +1498,7 @@ select {
   border-radius: 9px;
   background: var(--bg);
   font-size: 17px;
+  line-height: 0;
 }
 
 .tool-card > div:nth-child(2) {
@@ -1783,8 +1791,11 @@ select {
 }
 
 .suggestion-grid button > span {
+  display: grid;
+  place-items: center;
   color: var(--purple);
   font-size: 18px;
+  line-height: 0;
 }
 
 .suggestion-grid strong {
@@ -1850,6 +1861,11 @@ select {
   border-color: var(--border);
 }
 
+.composer.image-mode {
+  border-color: color-mix(in srgb, var(--purple) 58%, var(--border));
+  box-shadow: 0 7px 28px var(--glow);
+}
+
 .composer textarea {
   display: block;
   width: 100%;
@@ -1909,6 +1925,24 @@ select {
 .toolbar-button:hover {
   color: var(--text);
   background: var(--bg-hover);
+}
+
+.toolbar-button.active {
+  color: var(--purple);
+  background: color-mix(in srgb, var(--purple) 12%, transparent);
+}
+
+.toolbar-button svg {
+  flex: 0 0 auto;
+}
+
+.toolbar-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--purple);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
 }
 
 .toolbar-button:disabled {

@@ -32,10 +32,12 @@ type Model struct {
 	ContextWindow          int      `json:"contextWindow"`
 	InputModalities        []string `json:"inputModalities,omitempty"`
 	SupportsWebSearch      bool     `json:"supportsWebSearch"`
+	ImageGenerationMode    string   `json:"imageGenerationMode,omitempty"`
 	ReasoningEfforts       []string `json:"reasoningEfforts,omitempty"`
 	DefaultReasoningEffort string   `json:"defaultReasoningEffort,omitempty"`
 	CapabilitiesComplete   bool     `json:"capabilitiesComplete"`
 	Selectable             bool     `json:"selectable"`
+	DedicatedImageModel    string   `json:"-"`
 	Priority               int      `json:"-"`
 }
 
@@ -51,6 +53,8 @@ type Client struct {
 	denylist         map[string]struct{}
 	unknownCtx       int
 	contextOverrides map[string]int
+	responseImages    map[string]struct{}
+	dedicatedImages   map[string]string
 	httpClient       *http.Client
 	streamClient     *http.Client
 	clientVersion    string
@@ -59,6 +63,10 @@ type Client struct {
 }
 
 func NewClient(cfg config.Provider, appVersion string) *Client {
+	responseImageModels := cfg.ResponseImageModels
+	if len(responseImageModels) == 0 && strings.TrimSpace(cfg.DefaultModel) != "" {
+		responseImageModels = []string{cfg.DefaultModel}
+	}
 	return &Client{
 		baseURL:          cfg.BaseURL,
 		apiKey:           cfg.APIKey,
@@ -67,6 +75,8 @@ func NewClient(cfg config.Provider, appVersion string) *Client {
 		denylist:         stringSet(cfg.ModelDenylist),
 		unknownCtx:       cfg.UnknownModelContextTokens,
 		contextOverrides: cloneIntMap(cfg.ModelContextOverrides),
+		responseImages:    stringSet(responseImageModels),
+		dedicatedImages:   cloneStringMap(cfg.DedicatedImageModels),
 		httpClient:       &http.Client{Timeout: cfg.ModelsTimeout},
 		streamClient: &http.Client{Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
@@ -74,7 +84,10 @@ func NewClient(cfg config.Provider, appVersion string) *Client {
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   8,
 			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 90 * time.Second,
+			// CPA image generation may not return response headers until the
+			// image is complete. Match the 600-second Nginx boundary while the
+			// request context still handles explicit cancellation.
+			ResponseHeaderTimeout: 10 * time.Minute,
 		}},
 		clientVersion:  "owui-personal-slim/" + appVersion,
 		requestMax:     cfg.RequestBodyMaxBytes,
@@ -198,6 +211,7 @@ func (c *Client) normalizeEnhanced(input []enhancedModel) Catalog {
 			DefaultReasoningEffort: normalizeEffort(item.DefaultReasoningEffort),
 			CapabilitiesComplete:   true, Selectable: true, Priority: item.Priority,
 		}
+		c.applyImageGenerationCapability(&model)
 		if override, exists := c.contextOverrides[id]; exists {
 			model.ContextWindow = override
 		}
@@ -235,10 +249,12 @@ func (c *Client) normalizePlain(input []plainModel) Catalog {
 		if override, exists := c.contextOverrides[id]; exists {
 			contextWindow = override
 		}
-		models = append(models, Model{
+		model := Model{
 			ID: id, Name: id, ContextWindow: contextWindow,
 			CapabilitiesComplete: false, Selectable: selectable,
-		})
+		}
+		c.applyImageGenerationCapability(&model)
+		models = append(models, model)
 		if len(models) == maxModels {
 			break
 		}
@@ -253,6 +269,25 @@ func cloneIntMap(input map[string]int) map[string]int {
 		result[key] = value
 	}
 	return result
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return result
+}
+
+func (c *Client) applyImageGenerationCapability(model *Model) {
+	if imageModel, ok := c.dedicatedImages[model.ID]; ok {
+		model.ImageGenerationMode = "dedicated"
+		model.DedicatedImageModel = imageModel
+		return
+	}
+	if _, ok := c.responseImages[model.ID]; ok {
+		model.ImageGenerationMode = "responses_tool"
+	}
 }
 
 func (c *Client) FindSelectable(catalog Catalog, id string) (Model, bool) {

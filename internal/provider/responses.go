@@ -88,26 +88,7 @@ func (c *Client) StartResponse(ctx context.Context, request ResponsesRequest) (*
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	var payload struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(raw, &payload)
-	code := strings.TrimSpace(payload.Error.Code)
-	if code == "" {
-		code = strings.TrimSpace(payload.Error.Type)
-	}
-	if code == "" {
-		code = "provider_http_error"
-	}
-	message := strings.TrimSpace(payload.Error.Message)
-	if message == "" {
-		message = http.StatusText(resp.StatusCode)
-	}
-	return nil, &HTTPError{StatusCode: resp.StatusCode, Code: code, Message: message}
+	return nil, decodeHTTPError(resp.StatusCode, raw)
 }
 
 func (c *Client) compileRequest(request ResponsesRequest) (*os.File, string, int64, error) {

@@ -16,6 +16,7 @@ const model = {
   contextWindow: 200000,
   inputModalities: ['text', 'image'],
   supportsWebSearch: true,
+  imageGenerationMode: 'responses_tool',
   reasoningEfforts: ['low', 'medium', 'high'],
   defaultReasoningEffort: 'medium',
   capabilitiesComplete: true,
@@ -61,13 +62,19 @@ async function mockAPI(page: Page) {
       return json(200, { conversations: [] });
     }
     if (path === '/api/v1/conversations' && request.method() === 'POST') {
+      const body = request.postDataJSON() as {
+        model: string;
+        reasoningEffort: string;
+      };
+      expect(body.model).toBe(model.id);
+      expect(body.reasoningEffort).toBe('low');
       conversationCreated = true;
       return json(201, {
         conversation: {
           id: 'conversation-1',
           title: 'New chat',
           model: model.id,
-          reasoningEffort: 'auto',
+          reasoningEffort: body.reasoningEffort,
           createdAt: Date.now(),
           updatedAt: Date.now()
         }
@@ -112,6 +119,8 @@ async function mockAPI(page: Page) {
       });
     }
     if (path.endsWith('/responses') && request.method() === 'POST' && conversationCreated) {
+      const body = request.postDataJSON() as { generateImage: boolean };
+      expect(body.generateImage).toBe(true);
       checkpointReady = true;
       const now = Date.now();
       const userMessage = {
@@ -127,7 +136,8 @@ async function mockAPI(page: Page) {
         conversationId: 'conversation-1',
         role: 'assistant',
         model: model.id,
-        reasoningEffortRequested: 'auto',
+        reasoningEffortRequested: 'low',
+        reasoningEffortSent: 'low',
         status: 'streaming',
         parentMessageId: 'message-user',
         createdAt: now + 1,
@@ -252,7 +262,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: /GPT Personal/ }).click();
     await page.getByLabel('搜索模型').fill('gpt-personal');
     await expect(page.getByRole('option', { name: /GPT Personal/ })).toContainText(
-      '图片输入 · 联网 · 推理: low/medium/high'
+      '图片输入 · 联网 · 图片生成 · 推理: low/medium/high'
     );
     await page.getByRole('option', { name: /GPT Personal/ }).click();
 
@@ -278,7 +288,9 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '中文' }).click();
   }
 
-  await page.getByRole('button', { name: /联网搜索/ }).click();
+  await page.getByLabel('推理强度').selectOption('low');
+  await page.getByRole('button', { name: /生成图片/ }).first().click();
+  await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByText('今日科技摘要')).toBeVisible();
   await expect(page.locator('.reasoning summary')).toContainText('1.2 秒');

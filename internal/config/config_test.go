@@ -22,6 +22,9 @@ func TestLoadDevelopmentConfig(t *testing.T) {
 	if !filepath.IsAbs(cfg.DataDir) {
 		t.Fatalf("DataDir = %q, want absolute", cfg.DataDir)
 	}
+	if got := cfg.Provider.DedicatedImageModels["grok-4.5"]; got != "grok-imagine-image-quality" {
+		t.Fatalf("default Grok image route = %q", got)
+	}
 }
 
 func TestLoadSecretFile(t *testing.T) {
@@ -77,5 +80,36 @@ func TestLoadParsesModelContextOverrides(t *testing.T) {
 	}
 	if cfg.Provider.ModelContextOverrides["gpt-test"] != 200000 {
 		t.Fatalf("context overrides = %#v", cfg.Provider.ModelContextOverrides)
+	}
+}
+
+func TestLoadParsesImageModelRoutes(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("AI_DEFAULT_MODEL", "gpt-default")
+	t.Setenv("AI_RESPONSE_IMAGE_MODELS", "gpt-one,gpt-two")
+	t.Setenv("AI_DEDICATED_IMAGE_MODELS_JSON", `{"grok-chat":"grok-image"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(cfg.Provider.ResponseImageModels); got != 2 {
+		t.Fatalf("response image models = %#v", cfg.Provider.ResponseImageModels)
+	}
+	if got := cfg.Provider.DedicatedImageModels["grok-chat"]; got != "grok-image" {
+		t.Fatalf("dedicated image route = %q", got)
+	}
+}
+
+func TestLoadRejectsInvalidImageModelRoutes(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("AI_DEDICATED_IMAGE_MODELS_JSON", `{"grok-chat":""}`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want invalid image route error")
 	}
 }

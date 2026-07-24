@@ -14,6 +14,7 @@ export interface Model {
   contextWindow: number;
   inputModalities?: string[];
   supportsWebSearch: boolean;
+  imageGenerationMode?: 'responses_tool' | 'dedicated';
   reasoningEfforts?: string[];
   defaultReasoningEffort?: string;
   capabilitiesComplete: boolean;
