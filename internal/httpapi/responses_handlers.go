@@ -945,10 +945,7 @@ func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage,
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return nil
 	}
-	status := item.Status
-	if status == "" {
-		status = fallbackStatus
-	}
+	status := normalizeOutputItemStatus(item.Status, fallbackStatus)
 	if a.toolStarted == nil {
 		a.toolStarted = make(map[string]time.Time)
 	}
@@ -1024,6 +1021,26 @@ func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage,
 		}
 	}
 	return nil
+}
+
+func normalizeOutputItemStatus(status, eventStatus string) string {
+	status = strings.TrimSpace(status)
+	eventStatus = strings.TrimSpace(eventStatus)
+	switch eventStatus {
+	case "in_progress":
+		if status == "" || status == "queued" || status == "generating" {
+			return "in_progress"
+		}
+	case "completed":
+		// CPA can emit response.output_item.done for an image_generation_call
+		// while the embedded item still carries the transitional "generating"
+		// status. The event lifecycle is authoritative in that case and the
+		// same item contains the final Base64 result.
+		if status == "" || status == "queued" || status == "in_progress" || status == "generating" {
+			return "completed"
+		}
+	}
+	return status
 }
 
 func (a *responseAccumulator) recordTool(snapshot toolSnapshot) {
