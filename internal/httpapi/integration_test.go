@@ -332,6 +332,15 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		t.Fatalf("deleted conversation image status=%d", deletedImage.StatusCode)
 	}
 	deletedImage.Body.Close()
+	deletedGrok := authenticatedRequest(
+		t, http.MethodDelete, server.URL+"/api/v1/conversations/"+grokConversation.ID,
+		cookie, csrf, "",
+	)
+	if deletedGrok.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(deletedGrok.Body)
+		t.Fatalf("delete Grok conversation status=%d body=%s", deletedGrok.StatusCode, body)
+	}
+	deletedGrok.Body.Close()
 	var remainingGenerated int
 	_ = filepath.WalkDir(generatedRoot, func(_ string, entry os.DirEntry, _ error) error {
 		if entry != nil && !entry.IsDir() {
