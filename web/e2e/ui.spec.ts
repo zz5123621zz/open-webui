@@ -310,7 +310,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.screenshot({ path: testInfo.outputPath('login.png'), fullPage: true });
 
   await page.getByLabel('用户名').fill('alice');
-  await page.getByLabel('密码').fill('correct horse battery');
+  await page.getByLabel('密码', { exact: true }).fill('correct horse battery');
   await page.getByRole('checkbox', { name: /记住密码/ }).check();
   await page.getByRole('button', { name: '登录' }).click();
   await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
