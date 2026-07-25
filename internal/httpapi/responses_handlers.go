@@ -28,7 +28,9 @@ import (
 const (
 	maxProviderEventBytes = 50 * 1024 * 1024
 	sseHeartbeatInterval  = 15 * time.Second
-	responseInstructions  = "Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Make user-visible reasoning summaries clear and informative when the provider supports them, but never reveal private chain-of-thought; summarize only the approach, checks, and current progress."
+	responseInstructions  = `Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Make user-visible reasoning summaries clear and informative when the provider supports them, but never reveal private chain-of-thought; summarize only the approach, checks, and current progress.
+
+Use a China-first web-search strategy when the subject is in mainland China or the user asks about a Chinese local place, business, person, event, policy, or service. Start with Simplified Chinese queries and include any known city, province, or district. Prioritize current mainland first-party or official sources, government websites, and official accounts or pages. For local businesses, Chinese map and local platforms such as 高德地图、百度地图、大众点评、美团和小红书 may be used for discovery, but distinguish user-generated content from verified facts and cross-check addresses, opening hours, and other practical details against an official source or at least two independent recent local sources when possible. Do not substitute a same-named foreign entity or search primarily non-Chinese sites when relevant Chinese sources exist. Ask for the city or location when the entity is ambiguous. For genuinely global topics, or when credible Chinese sources are unavailable, use the best international sources and state that limitation. When web search is used, cite the sources actually relied on and distinguish official facts from reviews or other user-generated claims.`
 )
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {

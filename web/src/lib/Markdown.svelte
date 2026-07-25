@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { afterUpdate, onMount } from 'svelte';
   import { marked, Renderer } from 'marked';
   import markedKatex from 'marked-katex-extension';
   import DOMPurify from 'dompurify';
@@ -15,6 +16,8 @@
   export let text = '';
   export let locale: Locale = 'zh-CN';
   let copiedButton: HTMLButtonElement | null = null;
+  let markdownElement: HTMLDivElement;
+  let resizeFrame = 0;
 
   hljs.registerLanguage('bash', bash);
   hljs.registerLanguage('shell', bash);
@@ -62,10 +65,64 @@
         anchor.removeAttribute('href');
       }
     }
+    for (const table of template.content.querySelectorAll<HTMLTableElement>('table')) {
+      const shell = document.createElement('div');
+      shell.className = 'rich-table-shell';
+      const hint = document.createElement('span');
+      hint.className = 'rich-table-hint';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = translate(
+        _locale,
+        '表格可左右滑动，查看完整内容',
+        'Swipe horizontally to view the full table'
+      );
+      const scroller = document.createElement('div');
+      scroller.className = 'rich-table-scroll';
+      scroller.setAttribute('role', 'region');
+      scroller.setAttribute(
+        'aria-label',
+        translate(_locale, '可横向滚动的数据表', 'Horizontally scrollable data table')
+      );
+      scroller.tabIndex = 0;
+      table.parentNode?.insertBefore(shell, table);
+      shell.append(hint, scroller);
+      scroller.append(table);
+    }
     return template.innerHTML;
   }
 
   $: rendered = renderMarkdown(text, locale);
+
+  function updateTableOverflow() {
+    if (!markdownElement) return;
+    for (const shell of markdownElement.querySelectorAll<HTMLElement>('.rich-table-shell')) {
+      const scroller = shell.querySelector<HTMLElement>('.rich-table-scroll');
+      shell.classList.toggle(
+        'is-overflowing',
+        Boolean(scroller && scroller.scrollWidth > scroller.clientWidth + 1)
+      );
+    }
+  }
+
+  function queueTableOverflowUpdate() {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(updateTableOverflow);
+  }
+
+  afterUpdate(queueTableOverflowUpdate);
+
+  onMount(() => {
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(queueTableOverflowUpdate);
+    if (markdownElement) observer?.observe(markdownElement);
+    queueTableOverflowUpdate();
+    return () => {
+      cancelAnimationFrame(resizeFrame);
+      observer?.disconnect();
+    };
+  });
 
   async function copyCode(event: MouseEvent) {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('.copy-code');
@@ -89,4 +146,4 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="markdown" on:click={copyCode}>{@html rendered}</div>
+<div class="markdown" bind:this={markdownElement} on:click={copyCode}>{@html rendered}</div>

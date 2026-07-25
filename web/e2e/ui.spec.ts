@@ -164,7 +164,14 @@ async function mockAPI(page: Page) {
       checkpointReady = true;
       const now = Date.now();
       const responseText =
-        '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>\n\n' +
+        '### 今日科技摘要\n\n重点是 **AI 基础设施** 与端侧模型。公式示例：$E = mc^2$。\n\n' +
+        '| 项目 | 中国来源 | 发布日期 | 核心结论 | 适用人群 | 风险提示 | 后续动作 |\n' +
+        '| --- | --- | --- | --- | --- | --- | --- |\n' +
+        '| 端侧模型 | 官方技术博客 | 2026-07-25 | 推理效率继续提升 | 移动开发者 | 留意设备兼容性 | 核对正式文档 |\n' +
+        '| AI 基础设施 | 行业协会报告 | 2026-07-24 | 算力调度成为重点 | 平台团队 | 样本口径不同 | 对照原始数据 |\n\n' +
+        '> 重要结论需要回到原始来源核对，尤其要区分官方信息与用户评价。\n\n' +
+        '长链接测试：https://example.com/research/2026/a-very-long-path-that-must-not-break-the-mobile-message-layout?source=official&language=zh-CN\n\n' +
+        '```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>\n\n' +
         Array.from(
           { length: 28 },
           (_, index) => `补充说明 ${index + 1}：这是用于验证长回答滚动行为的内容。`
@@ -373,6 +380,21 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem('personal-chat-remember-username')))
     .toBe('alice');
+  await expect(page.getByText('首次使用指南')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '先选适合这次任务的模型' })).toBeVisible();
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(page.getByRole('heading', { name: '再决定需要思考多深' })).toBeVisible();
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(page.getByRole('heading', { name: '把重要对话整理好' })).toBeVisible();
+  await page.getByRole('button', { name: '下一步' }).click();
+  await expect(page.getByRole('heading', { name: '从输入框开始，过程随时可查' })).toBeVisible();
+  await page.getByRole('button', { name: '开始聊天' }).click();
+  await expect(page.getByText('首次使用指南')).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem('personal-chat-onboarding-v1:user-1'))
+    )
+    .toBe('complete');
 
   const initialSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
   expect(initialSuggestions).toHaveLength(3);
@@ -382,6 +404,11 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   expect(refreshedSuggestions.some((value) => initialSuggestions.includes(value))).toBe(false);
 
   if (testInfo.project.name === 'desktop') {
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: '新手指南' }).click();
+    await expect(page.getByText('首次使用指南')).toBeVisible();
+    await page.getByRole('button', { name: '跳过', exact: true }).click();
+
     await page.getByRole('button', { name: /GPT 5.6 Sol/ }).click();
     await expect(page.getByText('Sol > Terra > Luna', { exact: true })).toBeVisible();
     await page.getByLabel('搜索模型').fill('gpt-5.6-sol');
@@ -458,10 +485,35 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(page.locator('.citation-row')).toContainText('Example Technology');
   await expect(page.getByText('较早上下文已摘要')).toBeVisible();
   await expect(page.getByText('安全渲染')).toBeVisible();
+  await expect(page.getByRole('region', { name: '可横向滚动的数据表' })).toBeVisible();
   await expect(page.locator('.markdown [onmouseover], .markdown script')).toHaveCount(0);
   expect(
     await page.evaluate(() => (window as typeof window & { __owuiXSS?: boolean }).__owuiXSS)
   ).toBeUndefined();
+  if (testInfo.project.name === 'mobile') {
+    const tableScroll = page.getByRole('region', { name: '可横向滚动的数据表' });
+    await expect(page.getByText('表格可左右滑动，查看完整内容')).toBeVisible();
+    expect(
+      await tableScroll.evaluate((element) => element.scrollWidth > element.clientWidth)
+    ).toBe(true);
+    await tableScroll.evaluate((element) => {
+      element.scrollLeft = 160;
+    });
+    expect(await tableScroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+
+    const userBody = await page.locator('.message.user .message-body').boundingBox();
+    const assistantBody = await page.locator('.message.assistant .message-body').boundingBox();
+    const messageColumn = await page.locator('.message-column').boundingBox();
+    expect(userBody).not.toBeNull();
+    expect(assistantBody).not.toBeNull();
+    expect(messageColumn).not.toBeNull();
+    expect(userBody!.width).toBeLessThan(assistantBody!.width);
+    expect(Math.abs(userBody!.x + userBody!.width - (assistantBody!.x + assistantBody!.width)))
+      .toBeLessThanOrEqual(2);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+    ).toBe(true);
+  }
   const feed = page.locator('.messages-scroll');
   await feed.evaluate((element) => {
     element.scrollTop = 0;
@@ -499,6 +551,9 @@ test('administrator can inspect another user chat and manage summary compatibili
     updatedAt: Date.now()
   };
   let summaryMode: 'auto' | 'off' = 'auto';
+  await page.addInitScript(() => {
+    localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
+  });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();

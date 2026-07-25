@@ -16,16 +16,19 @@ Svelte 静态前端、Go 单进程后端与 SQLite。
 - CPA 动态模型目录、可搜索能力面板与 Conversation 级低/中/高推理强度，
   分别发送 `medium`/`high`/`max`
 - OpenAI Responses SSE 文本与推理摘要
-- Web Search 和 Image Generation 工具状态；上传图片与生成图片是两个明确模式
+- Web Search 和 Image Generation 工具状态；中国本地实体优先使用中文
+  查询与本土官方/地图/生活服务来源，并区分官方事实和用户评价
 - PNG、JPEG、WebP 上传；生成图原质量落盘
 - GPT 默认走 Responses `image_generation`；Grok 4.5 默认路由到 CPA
   `grok-imagine-image-quality` 的 `/v1/images/generations`
-- Markdown、代码高亮/复制、KaTeX、引用来源
+- Markdown、代码高亮/复制、KaTeX、引用来源；移动端表格、公式、代码和
+  长链接在消息内部独立滚动或换行，不撑破页面
 - 停止、失败重试、重新生成、置顶与七天临时留档/恢复
 - 每用户 3 GB 活跃附件空间、最多 30 个活跃会话和 10 个置顶会话；置顶
   会话不参与自动留档
 - 应用管理的 Context Checkpoint
-- 中文/English 界面、亮色/暗色/系统主题
+- 中文/English 界面、亮色/暗色/系统主题；首次登录提供可跳过、可重新
+  打开的浏览器端新手指南
 - 50 MiB CPA 请求硬边界；大请求通过临时文件编译
 - 浏览器 SSE 每 15 秒心跳，并在断流后重新同步服务端消息终态
 - 非 root、只读、`320m` 内存上限的 Docker Compose
