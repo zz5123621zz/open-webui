@@ -21,12 +21,12 @@
       icon: 'sparkles',
       chineseEyebrow: '模型',
       englishEyebrow: 'Model',
-      chineseTitle: '先选适合这次任务的模型',
-      englishTitle: 'Choose the right model for this task',
+      chineseTitle: '选择快速、均衡或专家模式',
+      englishTitle: 'Choose Fast, Balanced, or Expert',
       chineseDescription:
-        '点击顶部模型名称即可切换。Sol 智能最高，Terra 更均衡，Luna 响应更轻快；选择会保存在当前会话中。',
+        '点击顶部模式名称即可切换。快速对应 Luna，适合轻量任务；均衡对应 Terra，适合大多数任务；专家对应 Sol，适合复杂任务。',
       englishDescription:
-        'Use the model name at the top. Sol is the most capable, Terra is balanced, and Luna is faster. The choice is saved per chat.'
+        'Use the mode name at the top. Fast uses Luna for lighter tasks, Balanced uses Terra for most work, and Expert uses Sol for complex tasks.'
     },
     {
       icon: 'plan',
@@ -171,15 +171,15 @@
       <div class="step-visual" aria-hidden="true">
         {#if stepIndex === 0}
           <div class="mock-topbar">
-            <span class="mock-control selected">GPT 5.6 Sol <Icon name="chevron-down" size={13} /></span>
+            <span class="mock-control selected">{t('专家', 'Expert')} <Icon name="chevron-down" size={13} /></span>
             <span class="mock-control">{t('推理 · 中', 'Reasoning · Medium')}</span>
           </div>
           <div class="tier-row">
-            <span><b>Sol</b>{t('旗舰', 'Flagship')}</span>
-            <i>›</i>
-            <span><b>Terra</b>{t('均衡', 'Balanced')}</span>
-            <i>›</i>
-            <span><b>Luna</b>{t('轻快', 'Fast')}</span>
+            <span><b>{t('快速', 'Fast')}</b>Luna</span>
+            <i>·</i>
+            <span><b>{t('均衡', 'Balanced')}</b>Terra</span>
+            <i>·</i>
+            <span><b>{t('专家', 'Expert')}</b>Sol</span>
           </div>
         {:else if stepIndex === 1}
           <div class="effort-demo">
@@ -311,13 +311,13 @@
   }
 
   .onboarding-brand strong {
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 700;
   }
 
   .onboarding-brand small {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 0.6875rem;
   }
 
   button {
@@ -332,7 +332,7 @@
     color: var(--text-muted);
     border-radius: 10px;
     background: transparent;
-    font-size: 12px;
+    font-size: 0.75rem;
   }
 
   .skip-button:hover {
@@ -407,7 +407,7 @@
     border-radius: 11px;
     background: var(--surface);
     box-shadow: var(--shadow-sm);
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 650;
   }
 
@@ -430,12 +430,12 @@
   }
 
   .tier-row b {
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   .tier-row span {
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: 0.5625rem;
   }
 
   .tier-row i {
@@ -464,12 +464,12 @@
   }
 
   .effort-demo b {
-    font-size: 14px;
+    font-size: 0.875rem;
   }
 
   .effort-demo small {
     color: var(--text-muted);
-    font-size: 9px;
+    font-size: 0.5625rem;
   }
 
   .chat-demo {
@@ -489,7 +489,7 @@
     border: 1px solid var(--border);
     border-radius: 11px;
     background: var(--surface);
-    font-size: 10px;
+    font-size: 0.625rem;
   }
 
   .composer-demo {
@@ -501,7 +501,7 @@
     border-radius: 15px;
     background: var(--surface);
     box-shadow: var(--shadow-md);
-    font-size: 11px;
+    font-size: 0.6875rem;
   }
 
   .composer-demo > div {
@@ -553,7 +553,7 @@
 
   .step-copy > small {
     color: var(--primary);
-    font-size: 11px;
+    font-size: 0.6875rem;
     font-weight: 670;
   }
 
@@ -567,7 +567,7 @@
   .step-copy p {
     margin: 0;
     color: var(--text-soft);
-    font-size: 13px;
+    font-size: 0.8125rem;
     line-height: 1.72;
   }
 
@@ -579,7 +579,7 @@
   footer p {
     margin: 0;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 0.625rem;
   }
 
   footer > div {
@@ -593,7 +593,7 @@
     min-width: 88px;
     padding: 0 15px;
     border-radius: 11px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 650;
   }
 
@@ -671,7 +671,7 @@
 
     h2 {
       margin-top: 6px;
-      font-size: 22px;
+      font-size: 1.375rem;
     }
 
     footer {
@@ -691,7 +691,7 @@
     }
 
     .tier-row span {
-      font-size: 8px;
+      font-size: 0.5rem;
     }
 
     footer p {

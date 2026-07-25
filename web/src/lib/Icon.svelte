@@ -31,6 +31,7 @@
     | 'sparkles'
     | 'stop'
     | 'sun'
+    | 'text-size'
     | 'theme'
     | 'trash'
     | 'upload';
@@ -140,6 +141,9 @@
   {:else if name === 'sun'}
     <circle cx="12" cy="12" r="3.5" />
     <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+  {:else if name === 'text-size'}
+    <path d="M4 6h10M9 6v12M6 18h6" />
+    <path d="M15 11h5M17.5 11v7M15.5 18h4" />
   {:else if name === 'theme'}
     <circle cx="12" cy="12" r="9" />
     <path d="M12 3v18A9 9 0 0 0 12 3Z" fill="currentColor" stroke="none" />

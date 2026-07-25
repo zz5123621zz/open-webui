@@ -79,16 +79,22 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
   strength, conversation lifecycle and composer tools. It is skippable,
   keyboard accessible and can be reopened from the profile menu; no tutorial
   state is added to the backend.
+- Every authenticated entry starts on an unpersisted blank draft. Existing
+  history remains visible in the sidebar, and a database conversation is
+  created only when the first message is sent.
+- Text size is a browser-local setting with compact / standard / large choices.
+  It scales the interface through root `rem` sizing rather than browser zoom,
+  preserves a 16 px minimum for reading and input text, and must reflow cleanly
+  at all supported widths.
 
 ## Core components
 
 - Sidebar items: single-line title, clear active rail/surface, actions exposed on
   focus as well as hover.
-- Model picker: searchable sheet/popover with capability descriptions and a
-  visible selected check.
-- Model picker descriptions lead with product positioning rather than a raw
-  capability dump: GPT 5.6 is explicitly ordered Sol > Terra > Luna, while Grok
-  models are described within their own family. Technical IDs remain secondary.
+- Model picker: a compact sheet/popover exposing exactly three user-facing
+  modes with a visible selected check: Fast maps to GPT Luna, Balanced maps to
+  GPT Terra, and Expert maps to GPT Sol. Raw model IDs and non-GPT catalog
+  entries stay out of the selector.
 - Reasoning picker: visually paired with the model picker. It exposes three
   plain-language levels (low/medium/high), includes a short speed/quality
   description, and discloses the CPA `medium`/`high`/`max` mapping.

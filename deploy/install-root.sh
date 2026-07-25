@@ -10,6 +10,7 @@ SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DEPLOY_ROOT=${DEPLOY_ROOT:-/opt/owui-personal-slim}
 APP_IMAGE=${APP_IMAGE:-}
 AI_DEFAULT_MODEL=${AI_DEFAULT_MODEL:-gpt-5.6-sol}
+AI_MODEL_ALLOWLIST=${AI_MODEL_ALLOWLIST:-gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol}
 APP_BASE_URL=${APP_BASE_URL:-https://chat.la4rain.com}
 AI_BASE_URL=${AI_BASE_URL:-https://cpa.la4rain.com/v1}
 DEPLOY_START=${DEPLOY_START:-0}
@@ -77,7 +78,7 @@ if [ ! -e "$DEPLOY_ROOT/.env" ]; then
     printf 'AI_BASE_URL=%s\n' "$AI_BASE_URL"
     printf 'AI_DEFAULT_MODEL=%s\n' "$AI_DEFAULT_MODEL"
     printf 'AI_DEFAULT_REASONING_EFFORT=high\n'
-    printf 'AI_MODEL_ALLOWLIST=\n'
+    printf 'AI_MODEL_ALLOWLIST=%s\n' "$AI_MODEL_ALLOWLIST"
     printf 'AI_MODEL_DENYLIST=\n'
     printf 'AI_UNKNOWN_MODEL_CONTEXT_TOKENS=128000\n'
     printf 'AI_MODEL_CONTEXT_OVERRIDES_JSON={}\n'
