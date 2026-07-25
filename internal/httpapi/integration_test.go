@@ -222,6 +222,27 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		assistant.ReasoningEffortRequested != "high" || assistant.ReasoningTokens != 3 {
 		t.Fatalf("assistant = %#v", assistant)
 	}
+	responseRecord := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/responses/"+assistant.ID,
+		cookie, "", "",
+	)
+	if responseRecord.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(responseRecord.Body)
+		responseRecord.Body.Close()
+		t.Fatalf("response record status=%d body=%s", responseRecord.StatusCode, raw)
+	}
+	var responsePayload struct {
+		Message store.Message `json:"message"`
+	}
+	if err := json.NewDecoder(responseRecord.Body).Decode(&responsePayload); err != nil {
+		responseRecord.Body.Close()
+		t.Fatal(err)
+	}
+	responseRecord.Body.Close()
+	if responsePayload.Message.ID != assistant.ID ||
+		responsePayload.Message.Status != "completed" {
+		t.Fatalf("response record = %#v", responsePayload.Message)
+	}
 	partTypes := make([]string, len(assistant.Parts))
 	for index, part := range assistant.Parts {
 		partTypes[index] = part.Type
@@ -645,6 +666,144 @@ func TestAcceptedProviderStreamIsNeverAutomaticallyRetried(t *testing.T) {
 	defer providerMu.Unlock()
 	if attempts != 1 {
 		t.Fatalf("accepted provider stream attempts = %d, want exactly 1", attempts)
+	}
+}
+
+func TestResponseContinuesAndPersistsAfterViewerDisconnects(t *testing.T) {
+	var providerMu sync.Mutex
+	providerAttempts := 0
+	providerStarted := make(chan struct{})
+	var providerStartedOnce sync.Once
+	releaseProvider := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseProvider) }) }
+	t.Cleanup(release)
+
+	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeReasoningTestModel(w)
+		case "/v1/responses":
+			providerMu.Lock()
+			providerAttempts++
+			providerMu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.created","response":{"id":"resp_background"}}`+
+				"\n\n")
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.output_text.delta","delta":"Saved partial. "}`+
+				"\n\n")
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			providerStartedOnce.Do(func() { close(providerStarted) })
+			<-releaseProvider
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.output_text.delta","delta":"Finished later."}`+
+				"\n\n")
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.completed","response":{"id":"resp_background","status":"completed"}}`+
+				"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockProvider.Close()
+
+	app, server, dataStore, cookie, csrf := startReasoningIntegrationApp(
+		t, mockProvider.URL,
+	)
+	conversation := createTestConversation(
+		t, server.URL, cookie, csrf, "gpt-reasoning", "high",
+	)
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		strings.NewReader(
+			`{"text":"continue in background","attachmentIds":[],"requestId":"background-1"}`,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("Origin", "http://chat.test")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(cookie)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("response status=%d body=%s", response.StatusCode, raw)
+	}
+	// Closing the viewer is deliberately not an explicit cancellation.
+	response.Body.Close()
+
+	select {
+	case <-providerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider did not start after the viewer disconnected")
+	}
+	user, err := dataStore.UserByUsername(context.Background(), "reasoning-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForAssistant := func(
+		condition func(store.Message) bool,
+	) store.Message {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			current, listErr := dataStore.ListMessages(
+				context.Background(), user.ID, conversation.ID,
+			)
+			if listErr == nil {
+				for _, message := range current {
+					if message.Role == "assistant" && condition(message) {
+						return message
+					}
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("assistant state did not become observable before the deadline")
+		return store.Message{}
+	}
+	partial := waitForAssistant(func(message store.Message) bool {
+		return message.Status == "streaming" &&
+			len(message.Parts) == 1 &&
+			message.Parts[0].TextContent == "Saved partial. "
+	})
+	if partial.ErrorCode != "" {
+		t.Fatalf("partial response error = %q", partial.ErrorCode)
+	}
+
+	release()
+	completed := waitForAssistant(func(message store.Message) bool {
+		return message.Status == "completed"
+	})
+	if len(completed.Parts) != 1 ||
+		completed.Parts[0].TextContent != "Saved partial. Finished later." {
+		t.Fatalf("completed response = %#v", completed)
+	}
+	providerMu.Lock()
+	attempts := providerAttempts
+	providerMu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("provider attempts = %d, want exactly 1", attempts)
+	}
+	shutdownContext, cancelShutdown := context.WithTimeout(
+		context.Background(), time.Second,
+	)
+	defer cancelShutdown()
+	if err := app.Shutdown(shutdownContext); err != nil {
+		t.Fatal(err)
 	}
 }
 

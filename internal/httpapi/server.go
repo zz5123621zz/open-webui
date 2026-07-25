@@ -26,28 +26,34 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	cfg       config.Config
-	store     *store.Store
-	models    *provider.Client
-	jobs      *jobs.Scheduler
-	contexts  *activecontext.Manager
-	summaries *progressivesummary.Manager
-	logins    *loginLimiter
-	actions   *actionLimiter
-	uploads   *keyedGate
-	activeMu  sync.Mutex
-	active    map[string]activeResponse
-	logger    *slog.Logger
-	mux       *http.ServeMux
+	cfg             config.Config
+	store           *store.Store
+	models          *provider.Client
+	jobs            *jobs.Scheduler
+	contexts        *activecontext.Manager
+	summaries       *progressivesummary.Manager
+	logins          *loginLimiter
+	actions         *actionLimiter
+	uploads         *keyedGate
+	activeMu        sync.Mutex
+	active          map[string]activeResponse
+	responseMu      sync.Mutex
+	responseContext context.Context
+	responseCancel  context.CancelCauseFunc
+	responseWG      sync.WaitGroup
+	shuttingDown    bool
+	logger          *slog.Logger
+	mux             *http.ServeMux
 }
 
 type activeResponse struct {
 	userID string
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 }
 
 func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client, logger *slog.Logger) *Server {
 	cfg.Lifecycle = cfg.Lifecycle.Normalized()
+	responseContext, responseCancel := context.WithCancelCause(context.Background())
 	server := &Server{
 		cfg: cfg, store: dataStore, models: modelClient,
 		jobs: jobs.NewScheduler(
@@ -56,12 +62,15 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 			cfg.Jobs.MaxQueuedPerUser,
 			cfg.Jobs.QueueTimeout,
 		),
-		logger: logger, mux: http.NewServeMux(),
-		logins:    newLoginLimiter(),
-		actions:   newActionLimiter(),
-		uploads:   newKeyedGate(),
-		active:    make(map[string]activeResponse),
-		summaries: progressivesummary.New(30 * time.Minute),
+		logger:          logger,
+		mux:             http.NewServeMux(),
+		logins:          newLoginLimiter(),
+		actions:         newActionLimiter(),
+		uploads:         newKeyedGate(),
+		active:          make(map[string]activeResponse),
+		responseContext: responseContext,
+		responseCancel:  responseCancel,
+		summaries:       progressivesummary.New(30 * time.Minute),
 	}
 	server.contexts = activecontext.New(dataStore, modelClient, server.providerSafetyIdentifier)
 	server.routes()
@@ -112,6 +121,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/conversations/{id}/messages", s.auth(http.HandlerFunc(s.listMessages)))
 	s.mux.Handle("POST /api/v1/conversations/{id}/responses", s.auth(s.limitAction("response", 60, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.createResponse))))))
 	s.mux.Handle("POST /api/v1/messages/{id}/regenerate", s.auth(s.limitAction("response", 60, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.regenerateResponse))))))
+	s.mux.Handle("GET /api/v1/responses/{id}", s.auth(http.HandlerFunc(s.getResponse)))
 	s.mux.Handle("POST /api/v1/responses/{id}/cancel", s.auth(s.limitAction("cancel", 120, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.cancelResponse))))))
 	s.mux.Handle("GET /api/v1/conversations/{id}/context-checkpoints", s.auth(http.HandlerFunc(s.listContextCheckpoints)))
 

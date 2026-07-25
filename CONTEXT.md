@@ -78,6 +78,28 @@ A provider request that has returned a successful HTTP response or emitted any
 stream event. It may already have consumed quota or caused tool side effects.
 _Avoid_: Completed response, safe-to-retry request
 
+**Response job**:
+An accepted request whose provider work belongs to La4RainGPT and continues
+independently of browser connections until completion, explicit cancellation,
+or service interruption.
+_Avoid_: SSE request, browser request
+
+**Response subscription**:
+A temporary viewer connection that receives events from a response job without
+owning or controlling that job's lifetime.
+_Avoid_: Response job, generation request
+
+**Explicit response cancellation**:
+An authenticated user action that ends their running response job. Closing a
+tab, losing connectivity, signing out, or ending a subscription is not
+cancellation.
+_Avoid_: Client disconnect, stop watching
+
+**Service-interrupted response**:
+A response job that could not finish because the application stopped or
+restarted. Its received durable evidence remains visible and retry is manual.
+_Avoid_: Automatically resumed response, provider retry
+
 **Transparent compatibility fallback**:
 A single application-initiated retry without progressive summary delivery
 after the provider explicitly rejects that field before accepting the first

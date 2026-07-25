@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,8 +12,8 @@ import (
 
 func TestCancelResponseIsScopedToCurrentUser(t *testing.T) {
 	server := &Server{active: make(map[string]activeResponse)}
-	jobContext, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	jobContext, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	server.registerResponse("assistant-1", "user-a", cancel)
 
 	otherRequest := httptest.NewRequest(http.MethodPost, "/api/v1/responses/assistant-1/cancel", nil)
@@ -45,5 +46,8 @@ func TestCancelResponseIsScopedToCurrentUser(t *testing.T) {
 	case <-jobContext.Done():
 	default:
 		t.Fatal("owner cancel did not cancel the job context")
+	}
+	if !errors.Is(context.Cause(jobContext), errResponseCancelled) {
+		t.Fatalf("cancel cause = %v", context.Cause(jobContext))
 	}
 }

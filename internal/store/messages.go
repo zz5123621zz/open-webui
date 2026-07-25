@@ -272,30 +272,65 @@ func (s *Store) BeginRegeneration(
 	}, history, nil
 }
 
+func (s *Store) SaveAssistantProgress(ctx context.Context, userID, messageID string, result AssistantResult) (Message, error) {
+	result.Status = "streaming"
+	result.ErrorCode = ""
+	return s.replaceAssistantResult(ctx, userID, messageID, result, false)
+}
+
 func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string, result AssistantResult) (Message, error) {
 	if result.Status == "" {
 		result.Status = "completed"
 	}
+	return s.replaceAssistantResult(ctx, userID, messageID, result, true)
+}
+
+func (s *Store) replaceAssistantResult(
+	ctx context.Context,
+	userID string,
+	messageID string,
+	result AssistantResult,
+	final bool,
+) (Message, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Message{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	completedAt := time.Now().UnixMilli()
-	update, err := tx.ExecContext(ctx, `
-		UPDATE messages
-		SET provider_response_id = NULLIF(?, ''), status = ?, error_code = NULLIF(?, ''),
-		    input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, completed_at = ?
-		WHERE id = ? AND user_id = ? AND role = 'assistant'
-	`, result.ProviderResponseID, result.Status, result.ErrorCode,
-		result.InputTokens, result.OutputTokens, result.ReasoningTokens, completedAt, messageID, userID)
+	savedAt := time.Now().UnixMilli()
+	var update sql.Result
+	if final {
+		update, err = tx.ExecContext(ctx, `
+			UPDATE messages
+			SET provider_response_id = NULLIF(?, ''), status = ?, error_code = NULLIF(?, ''),
+			    input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, completed_at = ?
+			WHERE id = ? AND user_id = ? AND role = 'assistant'
+		`, result.ProviderResponseID, result.Status, result.ErrorCode,
+			result.InputTokens, result.OutputTokens, result.ReasoningTokens, savedAt, messageID, userID)
+	} else {
+		update, err = tx.ExecContext(ctx, `
+			UPDATE messages
+			SET provider_response_id = NULLIF(?, ''), status = 'streaming', error_code = NULL,
+			    input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, completed_at = NULL
+			WHERE id = ? AND user_id = ? AND role = 'assistant'
+			  AND status IN ('pending', 'streaming')
+		`, result.ProviderResponseID, result.InputTokens, result.OutputTokens,
+			result.ReasoningTokens, messageID, userID)
+	}
 	if err != nil {
-		return Message{}, fmt.Errorf("complete assistant message: %w", err)
+		return Message{}, fmt.Errorf("save assistant message: %w", err)
 	}
 	affected, _ := update.RowsAffected()
 	if affected != 1 {
 		return Message{}, ErrNotFound
+	}
+	for _, table := range []string{"message_parts", "tool_events", "provider_items"} {
+		if _, err := tx.ExecContext(
+			ctx, "DELETE FROM "+table+" WHERE message_id = ?", messageID,
+		); err != nil {
+			return Message{}, fmt.Errorf("replace assistant %s: %w", table, err)
+		}
 	}
 	for sequence, part := range result.Parts {
 		partID, idErr := ids.New()
@@ -309,7 +344,7 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO message_parts(id, message_id, sequence, type, text_content, json_content, attachment_id, created_at)
 			VALUES(?, ?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?)
-		`, partID, messageID, sequence, part.Type, part.TextContent, rawJSON, part.AttachmentID, completedAt); err != nil {
+		`, partID, messageID, sequence, part.Type, part.TextContent, rawJSON, part.AttachmentID, savedAt); err != nil {
 			return Message{}, fmt.Errorf("insert assistant part: %w", err)
 		}
 		if part.Type == "tool" && len(part.JSONContent) > 0 {
@@ -326,10 +361,10 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 				if idErr != nil {
 					return Message{}, idErr
 				}
-				startedAt := completedAt - max(0, snapshot.DurationMS)
+				startedAt := savedAt - max(0, snapshot.DurationMS)
 				var completed any
 				if snapshot.Status == "completed" || snapshot.Status == "failed" {
-					completed = completedAt
+					completed = savedAt
 				}
 				var safeResult string
 				if snapshot.ErrorCode != "" {
@@ -369,7 +404,7 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO provider_items(id, message_id, sequence, item_type, replay_json, created_at)
 			VALUES(?, ?, ?, ?, ?, ?)
-		`, itemID, messageID, providerSequence, item.ItemType, string(item.ReplayJSON), completedAt); err != nil {
+		`, itemID, messageID, providerSequence, item.ItemType, string(item.ReplayJSON), savedAt); err != nil {
 			return Message{}, fmt.Errorf("insert provider item: %w", err)
 		}
 		providerSequence++
@@ -377,7 +412,27 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 	if err := tx.Commit(); err != nil {
 		return Message{}, err
 	}
+	if !final {
+		return Message{}, nil
+	}
 	return s.MessageByID(ctx, userID, messageID)
+}
+
+func (s *Store) InterruptActiveResponses(ctx context.Context) (int64, error) {
+	completedAt := time.Now().UnixMilli()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE messages
+		SET status = 'interrupted', error_code = 'service_interrupted', completed_at = ?
+		WHERE role = 'assistant' AND status IN ('pending', 'streaming')
+	`, completedAt)
+	if err != nil {
+		return 0, fmt.Errorf("interrupt active responses: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count interrupted responses: %w", err)
+	}
+	return affected, nil
 }
 
 func (s *Store) ListMessages(ctx context.Context, userID, conversationID string) ([]Message, error) {

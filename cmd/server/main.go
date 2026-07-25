@@ -61,6 +61,16 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) > 0 && args[0] != "serve" {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+	interrupted, err := dataStore.InterruptActiveResponses(context.Background())
+	if err != nil {
+		return err
+	}
+	if interrupted > 0 {
+		logger.Warn(
+			"recovered responses interrupted by an earlier service stop",
+			"responses", interrupted,
+		)
+	}
 
 	modelClient := provider.NewClient(cfg.Provider, version)
 	handler := httpapi.New(cfg, dataStore, modelClient, logger)
@@ -86,7 +96,15 @@ func run(logger *slog.Logger, args []string) error {
 		<-shutdownContext.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		responseShutdown := make(chan struct{})
+		go func() {
+			if err := handler.Shutdown(ctx); err != nil {
+				logger.Warn("response shutdown incomplete", "error", err)
+			}
+			close(responseShutdown)
+		}()
 		_ = server.Shutdown(ctx)
+		<-responseShutdown
 	}()
 
 	logger.Info("server starting", "version", version, "addr", cfg.HTTPAddr, "data_dir", cfg.DataDir)

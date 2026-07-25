@@ -51,6 +51,14 @@
     if (status === 'failed') {
       return `${t('失败', 'Failed')}${part.data?.errorCode ? ` · ${part.data.errorCode}` : ''}${suffix}`;
     }
+    if (
+      status === 'in_progress' &&
+      (message.status === 'interrupted' || message.status === 'error')
+    ) {
+      return message.status === 'interrupted'
+        ? t('随回答一同中断', 'Interrupted with the response')
+        : t('随回答一同结束', 'Ended with the response');
+    }
     const running =
       type === 'web_search'
         ? t('正在搜索网页', 'Searching the web')
@@ -88,6 +96,20 @@
     return message.parts
       .filter((candidate) => candidate.type === 'reasoning' && candidate.text)
       .indexOf(part) + 1;
+  }
+
+  function responseErrorDescription(code: string | undefined): string {
+    const descriptions: Record<string, [string, string]> = {
+      response_cancelled: ['已由你主动停止', 'Stopped by you'],
+      service_interrupted: ['服务重启时中断，已保留现有内容', 'Interrupted by a service restart; saved content was retained'],
+      response_timeout: ['运行超过 30 分钟，已自动停止', 'Stopped after exceeding 30 minutes'],
+      response_interrupted: ['生成过程意外中断', 'Generation was interrupted unexpectedly'],
+      provider_stream_incomplete: ['模型未发送完整的结束事件', 'The model did not send a complete ending event'],
+      persistence_failed: ['回答进度无法安全保存', 'Response progress could not be saved safely']
+    };
+    if (!code) return '';
+    const description = descriptions[code];
+    return description ? t(description[0], description[1]) : code;
   }
 
   type ToolDetail = { label: string; value: string; url?: string };
@@ -315,9 +337,13 @@
       <div class="message-error" role="alert">
         <Icon name="alert" size={15} />
         {message.status === 'interrupted'
-          ? t('回答被中断', 'Response interrupted')
+          ? message.errorCode === 'response_cancelled'
+            ? t('回答已停止', 'Response stopped')
+            : t('回答被中断', 'Response interrupted')
           : t('回答失败', 'Response failed')}
-        {#if message.errorCode}<span>· {message.errorCode}</span>{/if}
+        {#if responseErrorDescription(message.errorCode)}
+          <span>· {responseErrorDescription(message.errorCode)}</span>
+        {/if}
       </div>
     {/if}
     {#if message.role === 'assistant' && message.status !== 'streaming'}

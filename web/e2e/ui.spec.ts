@@ -589,6 +589,121 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
 });
 
+test('a persisted background response resumes after reopening its chat', async ({ page }) => {
+  const startedAt = Date.now() - 6000;
+  const conversation = {
+    id: 'conversation-background',
+    ownerId: user.id,
+    title: '后台回答',
+    model: model.id,
+    reasoningEffort: 'high',
+    createdAt: startedAt - 1000,
+    updatedAt: startedAt
+  };
+  const userMessage = {
+    id: 'message-background-user',
+    conversationId: conversation.id,
+    role: 'user',
+    status: 'completed',
+    createdAt: startedAt,
+    parts: [{ type: 'text', text: '请在后台完成这个回答' }]
+  };
+  const runningMessage = {
+    id: 'message-background-assistant',
+    conversationId: conversation.id,
+    role: 'assistant',
+    model: model.id,
+    reasoningEffortRequested: 'high',
+    reasoningEffortSent: 'high',
+    status: 'streaming',
+    parentMessageId: userMessage.id,
+    createdAt: startedAt + 1,
+    parts: [{ type: 'text', text: '这是已经保存的部分回答。' }]
+  };
+  let responsePolls = 0;
+
+  await page.addInitScript(() => {
+    localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
+  });
+  await page.route('**/api/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const respond = (body: unknown, status = 200) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body)
+      });
+    if (path === '/api/v1/me') {
+      return respond({ user, csrfToken: 'csrf-background' });
+    }
+    if (path === '/api/v1/models') return respond({ models });
+    if (path === '/api/v1/me/storage') {
+      return respond({
+        storage: {
+          usedBytes: 0,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 0,
+          activeConversations: 1,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/conversations') {
+      return respond({ conversations: [conversation] });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/messages`) {
+      return respond({ messages: [userMessage, runningMessage] });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/context-checkpoints`) {
+      return respond({ checkpoints: [] });
+    }
+    if (path === `/api/v1/responses/${runningMessage.id}`) {
+      responsePolls += 1;
+      if (responsePolls < 3) {
+        return respond({
+          message: {
+            ...runningMessage,
+            parts: [{
+              type: 'text',
+              text: `这是已经保存的部分回答。后台进度 ${responsePolls}/2。`
+            }]
+          }
+        });
+      }
+      return respond({
+        message: {
+          ...runningMessage,
+          status: 'completed',
+          completedAt: Date.now(),
+          parts: [{ type: 'text', text: '后台回答已经完整保存。' }]
+        }
+      });
+    }
+    return respond({ error: { code: 'not_found', message: 'Not found.' } }, 404);
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+  if (page.viewportSize()!.width < 700) {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page
+    .locator('.conversation-item')
+    .filter({ hasText: '后台回答' })
+    .locator('.conversation-icon')
+    .click();
+  await expect(page.getByText('回答正在服务器后台继续生成')).toBeVisible();
+  await expect(page.getByText(/这是已经保存的部分回答/)).toBeVisible();
+  await expect(page.locator('.thinking-progress')).toContainText(/已运行 \d+ s/);
+  await expect(page.getByText('后台回答已经完整保存。')).toBeVisible({
+    timeout: 5000
+  });
+  await expect(page.getByText('回答正在服务器后台继续生成')).toHaveCount(0);
+});
+
 test('administrator can inspect another user chat and manage summary compatibility', async ({ page }, testInfo) => {
   const admin = {
     ...user,
