@@ -587,7 +587,10 @@ test('administrator can inspect another user chat and manage summary compatibili
   await page.getByRole('button', { name: '重新检测' }).click();
   await expect(page.getByText(/兼容状态已清除/)).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('admin-summary-settings.png'), fullPage: true });
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: '渐进式推理摘要' })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click();
   if (testInfo.project.name === 'mobile') {
     await page.locator('.mobile-close').click();
   }
