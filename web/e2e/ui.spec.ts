@@ -690,7 +690,11 @@ test('a persisted background response resumes after reopening its chat', async (
   if (page.viewportSize()!.width < 700) {
     await page.getByRole('button', { name: '打开侧边栏' }).click();
   }
-  await page.getByRole('button', { name: '后台回答' }).click();
+  await page
+    .locator('.conversation-item')
+    .filter({ hasText: '后台回答' })
+    .locator('.conversation-icon')
+    .click();
   await expect(page.getByText('回答正在服务器后台继续生成')).toBeVisible();
   await expect(page.getByText(/这是已经保存的部分回答/)).toBeVisible();
   await expect(page.locator('.thinking-progress')).toContainText(/已运行 \d+ s/);
