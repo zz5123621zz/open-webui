@@ -251,13 +251,13 @@
 
   .service-settings h2 {
     margin: 14px 0 0;
-    font-size: 22px;
+    font-size: 1.375rem;
   }
 
   .service-lead {
     margin: 9px 0 20px;
     color: var(--text-soft);
-    font-size: 13px;
+    font-size: 0.8125rem;
     line-height: 1.65;
   }
 
@@ -268,7 +268,7 @@
     justify-content: center;
     gap: 10px;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   .service-card {
@@ -296,12 +296,12 @@
   }
 
   .service-card-heading strong {
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   .service-card-heading span {
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 0.6875rem;
   }
 
   .state-badge {
@@ -367,12 +367,12 @@
   }
 
   .mode-options strong {
-    font-size: 13px;
+    font-size: 0.8125rem;
   }
 
   .mode-options small {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 0.625rem;
     line-height: 1.45;
   }
 
@@ -394,7 +394,7 @@
     margin-top: 11px;
     padding: 10px 11px;
     border-radius: 10px;
-    font-size: 11px;
+    font-size: 0.6875rem;
     line-height: 1.5;
   }
 
@@ -408,7 +408,7 @@
   .recheck-button {
     min-height: 44px;
     border-radius: 10px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: 630;
   }
 
@@ -440,7 +440,7 @@
   .service-boundary {
     margin: 9px 0 0;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 0.625rem;
     line-height: 1.55;
   }
 
@@ -489,14 +489,14 @@
 
   .model-status-copy strong {
     overflow: hidden;
-    font-size: 12px;
+    font-size: 0.75rem;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .model-status-copy small {
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 0.625rem;
   }
 
   .empty-status {
@@ -506,7 +506,7 @@
     border: 1px dashed var(--border-strong);
     border-radius: 10px;
     background: var(--surface);
-    font-size: 11px;
+    font-size: 0.6875rem;
     line-height: 1.55;
   }
 

@@ -24,6 +24,28 @@ const model = {
   selectable: true
 };
 
+const models = [
+  {
+    ...model,
+    id: 'gpt-5.6-luna',
+    name: 'GPT 5.6 Luna',
+    description: 'Fast model for everyday work.'
+  },
+  {
+    ...model,
+    id: 'gpt-5.6-terra',
+    name: 'GPT 5.6 Terra',
+    description: 'Balanced model for most tasks.'
+  },
+  model,
+  {
+    ...model,
+    id: 'grok-4.5',
+    name: 'Grok 4.5',
+    description: 'A selectable non-GPT model that must stay hidden.'
+  }
+];
+
 const onePixelPNG =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -52,7 +74,7 @@ async function mockAPI(page: Page) {
       loggedIn = true;
       return json(200, { user, csrfToken: 'csrf-test' });
     }
-    if (path === '/api/v1/models') return json(200, { models: [model] });
+    if (path === '/api/v1/models') return json(200, { models });
     if (path === '/api/v1/me/storage') {
       return json(200, {
         storage: {
@@ -97,7 +119,7 @@ async function mockAPI(page: Page) {
         reasoningEffort: string;
       };
       expect(body.model).toBe(model.id);
-      expect(body.reasoningEffort).toBe('high');
+      expect(body.reasoningEffort).toBe('medium');
       conversationCreated = true;
       conversationReasoningEffort = body.reasoningEffort;
       return json(201, {
@@ -381,7 +403,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .poll(() => page.evaluate(() => localStorage.getItem('personal-chat-remember-username')))
     .toBe('alice');
   await expect(page.getByText('首次使用指南')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '先选适合这次任务的模型' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '选择快速、均衡或专家模式' })).toBeVisible();
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(page.getByRole('heading', { name: '再决定需要思考多深' })).toBeVisible();
   await page.getByRole('button', { name: '下一步' }).click();
@@ -396,6 +418,28 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     )
     .toBe('complete');
 
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByRole('button', { name: /Alice/ }).click();
+  await page.getByRole('button', { name: '显示与字体' }).click();
+  await expect(page.getByRole('heading', { name: '显示与字体' })).toBeVisible();
+  await page.getByRole('radio', { name: /^较大/ }).click();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.dataset.fontSize))
+    .toBe('large');
+  await expect
+    .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize))
+    .toBe('18px');
+  await page.getByRole('radio', { name: /^标准/ }).click();
+  await page
+    .getByRole('dialog', { name: '显示与字体' })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click();
+  if (testInfo.project.name === 'mobile') {
+    await page.locator('.mobile-close').click();
+  }
+
   const initialSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
   expect(initialSuggestions).toHaveLength(3);
   await page.getByRole('button', { name: '换一批' }).click();
@@ -409,16 +453,13 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await expect(page.getByText('首次使用指南')).toBeVisible();
     await page.getByRole('button', { name: '跳过', exact: true }).click();
 
-    await page.getByRole('button', { name: /GPT 5.6 Sol/ }).click();
-    await expect(page.getByText('Sol > Terra > Luna', { exact: true })).toBeVisible();
-    await page.getByLabel('搜索模型').fill('gpt-5.6-sol');
-    await expect(page.getByRole('option', { name: /GPT 5.6 Sol/ })).toContainText(
-      '旗舰档'
-    );
-    await expect(page.getByRole('option', { name: /GPT 5.6 Sol/ })).toContainText(
-      'GPT 5.6 系列智能最高'
-    );
-    await page.getByRole('option', { name: /GPT 5.6 Sol/ }).click();
+    await page.locator('.model-picker-trigger').click();
+    await expect(page.getByRole('option')).toHaveCount(3);
+    await expect(page.getByRole('option', { name: /^快速/ })).toContainText('GPT · Luna');
+    await expect(page.getByRole('option', { name: /^均衡/ })).toContainText('GPT · Terra');
+    await expect(page.getByRole('option', { name: /^专家/ })).toContainText('GPT · Sol');
+    await expect(page.getByText('Grok 4.5')).toHaveCount(0);
+    await page.getByRole('option', { name: /^专家/ }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '关于' }).click();
@@ -446,12 +487,12 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '打开侧边栏' }).click();
   }
   await page.getByRole('button', { name: '新对话' }).click();
-  await expect(page.locator('.conversation-item')).toHaveCount(1);
+  await expect(page.locator('.conversation-item')).toHaveCount(0);
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: '打开侧边栏' }).click();
   }
   await page.getByRole('button', { name: '新对话' }).click();
-  await expect(page.locator('.conversation-item')).toHaveCount(1);
+  await expect(page.locator('.conversation-item')).toHaveCount(0);
 
   await page.getByRole('button', { name: '推理强度' }).click();
   await page.getByRole('option', { name: /^低/ }).click();
@@ -460,6 +501,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.locator('.image-mode-button').click();
   await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: '发送' }).click();
+  await expect(page.locator('.conversation-item')).toHaveCount(1);
   await expect(page.locator('.context-status')).toContainText('正在发送请求');
   await expect(page.locator('.context-status')).toContainText('1 s', { timeout: 2500 });
   await expect(page.getByText('今日科技摘要')).toBeVisible();
@@ -564,7 +606,7 @@ test('administrator can inspect another user chat and manage summary compatibili
         body: JSON.stringify(body)
       });
     if (path === '/api/v1/me') return respond({ user: admin, csrfToken: 'admin-csrf' });
-    if (path === '/api/v1/models') return respond({ models: [model] });
+    if (path === '/api/v1/models') return respond({ models });
     if (path === '/api/v1/me/storage') {
       return respond({
         storage: {
@@ -621,6 +663,12 @@ test('administrator can inspect another user chat and manage summary compatibili
   });
 
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+  await expect(page.getByText('管理员只读查看')).toHaveCount(0);
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByRole('button', { name: '旅行计划' }).click();
   await expect(page.getByText('管理员只读查看')).toBeVisible();
   await expect(page.getByLabel('聊天消息')).toBeDisabled();
   await expect(page.getByRole('button', { name: '推理强度' })).toBeDisabled();

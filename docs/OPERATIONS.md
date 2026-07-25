@@ -71,6 +71,9 @@ sudo chmod 0400 /opt/owui-personal-slim/secrets/*
 
 复制 `compose.yaml`、`.env.example`，把 `.env.example` 改名为 `.env`。
 `APP_IMAGE` 应在第一次验证后换成 GHCR 返回的不可变 digest。
+`AI_MODEL_ALLOWLIST` 固定为 `gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol`，
+对应前端的“快速 / 均衡 / 专家”三种模式；默认模型仍为
+`gpt-5.6-sol`。
 
 图片生成路由由以下环境变量控制：
 

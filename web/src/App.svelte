@@ -58,6 +58,16 @@
     englishPrompt: string;
     mode?: 'image';
   };
+  type FontSize = 'compact' | 'standard' | 'large';
+  type ModelMode = 'fast' | 'balanced' | 'expert';
+  type ModelModeInfo = {
+    key: ModelMode;
+    chineseName: string;
+    englishName: string;
+    technicalName: 'Luna' | 'Terra' | 'Sol';
+    chineseDescription: string;
+    englishDescription: string;
+  };
 
   let phase: Phase = 'boot';
   let user: User | null = null;
@@ -82,7 +92,7 @@
   let contextStatus = '';
   let sidebarOpen = false;
   let profileOpen = false;
-  let dialog: '' | 'security' | 'service' | 'about' = '';
+  let dialog: '' | 'appearance' | 'security' | 'service' | 'about' = '';
   let accountError = '';
   let accountPending = false;
   let showArchived = false;
@@ -100,7 +110,6 @@
   let editingTitle = '';
   let modelPickerOpen = false;
   let effortPickerOpen = false;
-  let modelSearch = '';
   let storageStatus: StorageStatus | null = null;
   let creatingConversation = false;
   let generationStage: GenerationStage | '' = '';
@@ -109,6 +118,29 @@
   let generationTimer: number | undefined;
   let onboardingOpen = false;
   let visibleSuggestions: Suggestion[] = [];
+  const fontSizeChoices = [
+    {
+      value: 'compact',
+      chinese: '较小',
+      english: 'Small',
+      chineseDescription: '界面更紧凑，正文仍保持清晰',
+      englishDescription: 'A tighter interface with readable body text'
+    },
+    {
+      value: 'standard',
+      chinese: '标准',
+      english: 'Default',
+      chineseDescription: '适合大多数屏幕',
+      englishDescription: 'Comfortable on most screens'
+    },
+    {
+      value: 'large',
+      chinese: '较大',
+      english: 'Large',
+      chineseDescription: '文字更醒目，页面会自动重排',
+      englishDescription: 'Larger text with responsive reflow'
+    }
+  ] as const;
   const reasoningChoices = [
     {
       value: 'medium',
@@ -326,6 +358,11 @@
       ? savedTheme
       : 'light';
   let resolvedTheme: 'light' | 'dark' = 'light';
+  const savedFontSize = localStorage.getItem('personal-chat-font-size');
+  let fontSize: FontSize =
+    savedFontSize === 'compact' || savedFontSize === 'standard' || savedFontSize === 'large'
+      ? savedFontSize
+      : 'standard';
 
   $: activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) || null;
@@ -340,13 +377,7 @@
         activeConversation.ownerId !== user.id
     );
   $: activeConversationReadOnly = showArchived || viewingOtherUser;
-  $: selectableModels = models.filter((model) => model.selectable);
-  $: filteredModels = selectableModels.filter((model) => {
-    const query = modelSearch.trim().toLocaleLowerCase();
-    return !query ||
-      model.name.toLocaleLowerCase().includes(query) ||
-      model.id.toLocaleLowerCase().includes(query);
-  });
+  $: selectableModels = visibleModeModels(models);
   $: t = (chinese: string, english: string) => translate($locale, chinese, english);
   $: generationElapsedSeconds = generationStartedAt
     ? Math.max(0, Math.floor((generationNow - generationStartedAt) / 1000))
@@ -358,6 +389,7 @@
     const updateSystemTheme = () => applyTheme();
     systemTheme.addEventListener('change', updateSystemTheme);
     applyTheme();
+    applyFontSize();
     refreshSuggestions();
     void initialize();
     return () => {
@@ -505,25 +537,31 @@
     models = loadedModels;
     conversations = loadedConversations;
     storageStatus = loadedStorage;
+    const availableModes = visibleModeModels(loadedModels);
     const initialDraftModel =
       (user?.preferredModel &&
-        loadedModels.find(
-          (model) => model.selectable && model.id === user?.preferredModel
-        )?.id) ||
-      loadedModels.find((model) => model.selectable)?.id ||
+        availableModes.find((model) => model.id === user?.preferredModel)?.id) ||
+      availableModes.find((model) => modelModeInfo(model)?.key === 'expert')?.id ||
+      availableModes[0]?.id ||
       '';
     draftModel = initialDraftModel;
     draftReasoningEffort = effortForModel(
       loadedModels.find((model) => model.id === initialDraftModel),
       draftReasoningEffort
     );
+    activeConversationId = '';
+    messages = [];
+    checkpoints = [];
+    text = '';
+    uploads = [];
+    generateImage = false;
+    contextStatus = '';
+    showArchived = false;
+    followStream = true;
+    showJumpToLatest = false;
+    localStorage.removeItem('personal-chat-conversation');
+    await tick();
     refreshSuggestions();
-
-    const remembered = localStorage.getItem('personal-chat-conversation');
-    const initial =
-      loadedConversations.find((conversation) => conversation.id === remembered) ||
-      loadedConversations[0];
-    if (initial) await openConversation(initial.id);
   }
 
   async function refreshStorage() {
@@ -541,11 +579,12 @@
       const loaded = await getModels();
       models = loaded;
       if (!activeConversation) {
-        const nextDraftModel = loaded.some(
-          (model) => model.selectable && model.id === draftModel
-        )
+        const availableModes = visibleModeModels(loaded);
+        const nextDraftModel = availableModes.some((model) => model.id === draftModel)
           ? draftModel
-          : loaded.find((model) => model.selectable)?.id || '';
+          : availableModes.find((model) => modelModeInfo(model)?.key === 'expert')?.id ||
+            availableModes[0]?.id ||
+            '';
         setDraftModel(nextDraftModel);
       }
     } catch (error) {
@@ -612,6 +651,9 @@
       messages = [];
       checkpoints = [];
       conversations = [];
+      text = '';
+      uploads = [];
+      generateImage = false;
       storageStatus = null;
       profileOpen = false;
       onboardingOpen = false;
@@ -625,6 +667,9 @@
     messages = [];
     checkpoints = [];
     conversations = [];
+    text = '';
+    uploads = [];
+    generateImage = false;
     storageStatus = null;
     profileOpen = false;
     dialog = '';
@@ -667,7 +712,7 @@
     }
   }
 
-  async function openDialog(value: 'security' | 'service' | 'about') {
+  async function openDialog(value: 'appearance' | 'security' | 'service' | 'about') {
     profileOpen = false;
     accountError = '';
     dialog = value;
@@ -743,6 +788,35 @@
     } finally {
       creatingConversation = false;
     }
+  }
+
+  async function startNewChat() {
+    if (generating || creatingConversation || !selectableModels.length) return;
+    const ownedConversation = ownsConversation(activeConversation) ? activeConversation : null;
+    const requestedModel = ownedConversation?.model || draftModel;
+    const nextModel =
+      selectableModels.find((model) => model.id === requestedModel) ||
+      selectableModels.find((model) => modelModeInfo(model)?.key === 'expert') ||
+      selectableModels[0];
+    const requestedEffort =
+      ownedConversation?.reasoningEffort || draftReasoningEffort;
+
+    setDraftModel(nextModel.id);
+    draftReasoningEffort = effortForModel(nextModel, requestedEffort);
+    activeConversationId = '';
+    messages = [];
+    checkpoints = [];
+    contextStatus = '';
+    showArchived = false;
+    followStream = true;
+    showJumpToLatest = false;
+    modelPickerOpen = false;
+    effortPickerOpen = false;
+    sidebarOpen = false;
+    localStorage.removeItem('personal-chat-conversation');
+    await tick();
+    refreshSuggestions();
+    textareaElement?.focus();
   }
 
   async function toggleArchiveView() {
@@ -835,7 +909,6 @@
   async function selectModel(model: string) {
     modelPickerOpen = false;
     effortPickerOpen = false;
-    modelSearch = '';
     if (!activeConversation) {
       setDraftModel(model);
       await tick();
@@ -866,7 +939,6 @@
     if (generating || activeConversationReadOnly || !selectableModels.length) return;
     modelPickerOpen = !modelPickerOpen;
     effortPickerOpen = false;
-    modelSearch = '';
   }
 
   function toggleEffortPicker() {
@@ -1547,6 +1619,16 @@
     localStorage.setItem('personal-chat-theme', theme);
   }
 
+  function applyFontSize() {
+    document.documentElement.dataset.fontSize = fontSize;
+  }
+
+  function selectFontSize(value: FontSize) {
+    fontSize = value;
+    applyFontSize();
+    localStorage.setItem('personal-chat-font-size', value);
+  }
+
   function themeLabel(): string {
     if (theme === 'system') return t('跟随系统', 'Use system theme');
     return theme === 'dark' ? t('深色模式', 'Dark mode') : t('浅色模式', 'Light mode');
@@ -1641,54 +1723,59 @@
     textareaElement?.focus();
   }
 
-  function modelTierInfo(model: Model) {
+  function modelModeInfo(model: Model | null | undefined): ModelModeInfo | null {
+    if (!model) return null;
     const id = model.id.toLocaleLowerCase();
-    if (id.includes('gpt-5.6-sol')) {
+    if (!id.startsWith('gpt')) return null;
+    if (/(^|[-_.])luna($|[-_.])/.test(id)) {
       return {
-        chineseLabel: '旗舰档',
-        englishLabel: 'Flagship',
-        chineseDescription: 'GPT 5.6 系列智能最高（Sol > Terra > Luna），适合复杂推理、编程和高要求任务。',
-        englishDescription: 'The most capable GPT 5.6 tier (Sol > Terra > Luna), for complex reasoning, coding, and demanding work.'
+        key: 'fast',
+        chineseName: '快速',
+        englishName: 'Fast',
+        technicalName: 'Luna',
+        chineseDescription: '响应速度优先，适合日常问答、改写和快速检索。',
+        englishDescription: 'Prioritizes speed for everyday questions, rewriting, and quick searches.'
       };
     }
-    if (id.includes('gpt-5.6-terra')) {
+    if (/(^|[-_.])terra($|[-_.])/.test(id)) {
       return {
-        chineseLabel: '均衡档',
-        englishLabel: 'Balanced',
-        chineseDescription: 'GPT 5.6 系列均衡档，智能仅次于 Sol，兼顾质量、速度与日常使用成本。',
-        englishDescription: 'The balanced GPT 5.6 tier, below Sol in capability while balancing quality, speed, and everyday cost.'
+        key: 'balanced',
+        chineseName: '均衡',
+        englishName: 'Balanced',
+        technicalName: 'Terra',
+        chineseDescription: '兼顾速度与能力，适合大多数分析、写作和多步骤任务。',
+        englishDescription: 'Balances speed and capability for analysis, writing, and multi-step tasks.'
       };
     }
-    if (id.includes('gpt-5.6-luna')) {
+    if (/(^|[-_.])sol($|[-_.])/.test(id)) {
       return {
-        chineseLabel: '轻快档',
-        englishLabel: 'Fast',
-        chineseDescription: 'GPT 5.6 系列速度优先档，智能低于 Sol 和 Terra，适合简单问答、改写与快速草稿。',
-        englishDescription: 'The speed-first GPT 5.6 tier, below Sol and Terra in capability, for simple questions, rewriting, and quick drafts.'
+        key: 'expert',
+        chineseName: '专家',
+        englishName: 'Expert',
+        technicalName: 'Sol',
+        chineseDescription: '能力优先，适合复杂推理、编程和高要求任务，等待可能更久。',
+        englishDescription: 'Prioritizes capability for complex reasoning, coding, and demanding work; it may take longer.'
       };
     }
-    if (id.includes('grok-4.5')) {
-      return {
-        chineseLabel: '长上下文档',
-        englishLabel: 'Long context',
-        chineseDescription: '偏重工程、代理工作流与超长资料分析；它属于 Grok 系列，不与 GPT 5.6 档位直接排序。',
-        englishDescription: 'Focused on engineering, agentic workflows, and very long context; it is a separate family from the GPT 5.6 ranking.'
-      };
+    return null;
+  }
+
+  function visibleModeModels(source: Model[]): Model[] {
+    const selected = new Map<ModelMode, Model>();
+    for (const model of source) {
+      const mode = modelModeInfo(model);
+      if (model.selectable && mode && !selected.has(mode.key)) {
+        selected.set(mode.key, model);
+      }
     }
-    if (id.includes('composer') && id.includes('fast')) {
-      return {
-        chineseLabel: '极速档',
-        englishLabel: 'Speed first',
-        chineseDescription: '优先响应速度，适合快速编程草稿和轻量代理任务；复杂任务建议选择更高智能档。',
-        englishDescription: 'Prioritizes response speed for quick coding drafts and light agent tasks; choose a stronger tier for complex work.'
-      };
-    }
-    return {
-      chineseLabel: '通用档',
-      englishLabel: 'General',
-      chineseDescription: '通用模型；具体能力与速度由 CPA 当前模型目录决定。',
-      englishDescription: model.description || 'A general model whose capability and speed follow the current CPA catalog.'
-    };
+    return (['fast', 'balanced', 'expert'] as const)
+      .map((mode) => selected.get(mode))
+      .filter((model): model is Model => Boolean(model));
+  }
+
+  function modelDisplayName(model: Model | null | undefined): string {
+    const mode = modelModeInfo(model);
+    return mode ? t(mode.chineseName, mode.englishName) : model?.name || '';
   }
 </script>
 
@@ -1784,7 +1871,7 @@
         class="new-chat"
         class:pending={creatingConversation}
         aria-busy={creatingConversation}
-        on:click={newConversation}
+        on:click={startNewChat}
         disabled={generating || creatingConversation || !selectableModels.length}
       >
         <span class="plus">
@@ -1938,6 +2025,9 @@
               />
               {themeLabel()}
             </button>
+            <button on:click={() => openDialog('appearance')}>
+              <Icon name="text-size" size={17} />{t('显示与字体', 'Display & text')}
+            </button>
             <button on:click={toggleArchiveView}>
               <Icon name={showArchived ? 'chat' : 'archive'} size={17} />
               {showArchived ? t('返回对话记录', 'Back to chats') : t('临时留档', 'Retained chats')}
@@ -1989,44 +2079,31 @@
               on:click={toggleModelPicker}
               disabled={generating || activeConversationReadOnly || !selectableModels.length}
             >
-              <span>{activeModel?.name || activeConversation?.model || draftModel || t('选择模型', 'Select model')}</span>
+              <span>{modelDisplayName(activeModel) || activeConversation?.model || draftModel || t('选择模式', 'Select mode')}</span>
               <Icon name="chevron-down" size={15} />
             </button>
             {#if modelPickerOpen}
               <div class="model-picker-panel">
-                <label class="model-search">
-                  <span class="sr-only">{t('搜索模型', 'Search models')}</span>
-                  <span class="model-search-icon"><Icon name="search" size={17} /></span>
-                  <input
-                    bind:value={modelSearch}
-                    placeholder={t('按名称或模型 ID 搜索', 'Search by name or model ID')}
-                    on:keydown={(event) => {
-                      if (event.key === 'Enter' && filteredModels[0]) {
-                        event.preventDefault();
-                        void selectModel(filteredModels[0].id);
-                      }
-                    }}
-                  />
-                </label>
                 <div class="model-tier-guide">
-                  <strong>{t('GPT 5.6 智能档位', 'GPT 5.6 capability tiers')}</strong>
-                  <span>Sol &gt; Terra &gt; Luna</span>
+                  <strong>{t('选择工作模式', 'Choose a mode')}</strong>
+                  <span>{t('快速 · 均衡 · 专家', 'Fast · Balanced · Expert')}</span>
                   <small>
                     {t(
-                      '其他系列按各自定位说明，不与 GPT 5.6 强行横向排序。',
-                      'Other families are described by their own positioning rather than forced into the GPT 5.6 ranking.'
+                      '三种模式分别由 GPT Luna、Terra 和 Sol 提供，可随时为当前会话切换。',
+                      'The three modes use GPT Luna, Terra, and Sol respectively and can be changed per chat.'
                     )}
                   </small>
                 </div>
                 <div class="model-options" role="listbox" aria-label={t('聊天模型', 'Chat models')}>
-                  {#if activeConversation && !activeModel}
+                  {#if activeConversation &&
+                    !selectableModels.some((model) => model.id === activeConversation?.model)}
                     <div class="model-unavailable">
                       <strong>{activeConversation.model}</strong>
-                      <span>{t('当前不可用；刷新目录后再试', 'Currently unavailable; refresh the catalog and try again')}</span>
+                      <span>{t('这是旧会话使用的隐藏模型，请切换到以下模式继续。', 'This older chat uses a hidden model. Choose a mode below to continue.')}</span>
                     </div>
                   {/if}
-                  {#each filteredModels as model}
-                    {@const tier = modelTierInfo(model)}
+                  {#each selectableModels as model}
+                    {@const mode = modelModeInfo(model)}
                     <button
                       type="button"
                       role="option"
@@ -2036,19 +2113,18 @@
                     >
                       <span class="model-option-copy">
                         <span class="model-option-heading">
-                          <strong>{model.name}</strong>
-                          <em>{t(tier.chineseLabel, tier.englishLabel)}</em>
+                          <strong>{modelDisplayName(model)}</strong>
+                          {#if mode}<em>GPT · {mode.technicalName}</em>{/if}
                         </span>
-                        <code>{model.id}</code>
-                        <small>{t(tier.chineseDescription, tier.englishDescription)}</small>
+                        {#if mode}<small>{t(mode.chineseDescription, mode.englishDescription)}</small>{/if}
                       </span>
                       {#if model.id === (activeConversation?.model || draftModel)}
                         <span class="model-check"><Icon name="check" size={17} /></span>
                       {/if}
                     </button>
                   {/each}
-                  {#if filteredModels.length === 0}
-                    <p>{t('没有匹配的模型', 'No matching models')}</p>
+                  {#if selectableModels.length === 0}
+                    <p>{t('CPA 暂未提供可用的 GPT 模式', 'CPA has not provided an available GPT mode')}</p>
                   {/if}
                 </div>
               </div>
@@ -2450,6 +2526,45 @@
           <button class="logout-everywhere" on:click={doLogoutAll} disabled={accountPending}>
             {t('注销此账户的全部会话', 'Sign this account out everywhere')}
           </button>
+        {:else if dialog === 'appearance'}
+          <div class="dialog-icon"><Icon name="text-size" size={23} /></div>
+          <h2 id="dialog-title">{t('显示与字体', 'Display & text')}</h2>
+          <p class="dialog-lead">
+            {t(
+              '选择适合当前设备的字号。页面会整体重排，消息正文与输入框始终保留清晰的阅读下限。',
+              'Choose a size for this device. The whole layout reflows while message text and inputs retain a readable minimum.'
+            )}
+          </p>
+          <div class="font-preview" aria-label={t('字体效果预览', 'Text size preview')}>
+            <span>{t('效果预览', 'Preview')}</span>
+            <p>{t('清晰阅读，也让界面保持从容。', 'Comfortable reading with a calm layout.')}</p>
+            <small>{t('设置会立即应用到侧栏、对话和弹窗。', 'The setting applies immediately to chats, navigation, and dialogs.')}</small>
+          </div>
+          <div class="font-size-options" role="radiogroup" aria-label={t('字体大小', 'Text size')}>
+            {#each fontSizeChoices as choice}
+              <button
+                type="button"
+                role="radio"
+                class:selected={choice.value === fontSize}
+                aria-checked={choice.value === fontSize}
+                on:click={() => selectFontSize(choice.value)}
+              >
+                <span>
+                  <strong>{t(choice.chinese, choice.english)}</strong>
+                  <small>{t(choice.chineseDescription, choice.englishDescription)}</small>
+                </span>
+                {#if choice.value === fontSize}
+                  <Icon name="check" size={17} />
+                {/if}
+              </button>
+            {/each}
+          </div>
+          <p class="appearance-note">
+            {t(
+              '此设置只保存在当前浏览器，不会影响其他设备。',
+              'This setting is stored in this browser and does not affect other devices.'
+            )}
+          </p>
         {:else if dialog === 'service'}
           <ProgressiveSummarySettings locale={$locale} />
         {:else}
@@ -2506,7 +2621,7 @@
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k' && phase === 'ready') {
       event.preventDefault();
-      void newConversation();
+      void startNewChat();
     }
   }}
 />
