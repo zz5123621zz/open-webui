@@ -432,7 +432,10 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize))
     .toBe('18px');
   await page.getByRole('radio', { name: /^标准/ }).click();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: '显示与字体' })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click();
   if (testInfo.project.name === 'mobile') {
     await page.locator('.mobile-close').click();
   }
