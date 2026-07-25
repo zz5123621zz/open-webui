@@ -29,21 +29,22 @@ type Config struct {
 }
 
 type Provider struct {
-	Kind                      string
-	BaseURL                   *url.URL
-	APIKey                    string
-	DefaultModel              string
-	ModelAllowlist            []string
-	ModelDenylist             []string
-	ModelContextOverrides     map[string]int
-	ResponseImageModels       []string
-	DedicatedImageModels      map[string]string
-	ModelsTimeout             time.Duration
-	DefaultReasoningEffort    string
-	UnknownModelContextTokens int
-	ImagePromptMaxBytes       int
-	RequestBodyMaxBytes       int64
-	RequestTempDir            string
+	Kind                           string
+	BaseURL                        *url.URL
+	APIKey                         string
+	DefaultModel                   string
+	ModelAllowlist                 []string
+	ModelDenylist                  []string
+	ModelContextOverrides          map[string]int
+	ResponseImageModels            []string
+	DedicatedImageModels           map[string]string
+	ModelsTimeout                  time.Duration
+	DefaultReasoningEffort         string
+	UnknownModelContextTokens      int
+	ImagePromptMaxBytes            int
+	RequestBodyMaxBytes            int64
+	RequestTempDir                 string
+	ProgressiveSummaryHardDisabled bool
 }
 
 type Jobs struct {
@@ -59,7 +60,7 @@ type Tools struct {
 }
 
 type Lifecycle struct {
-	MaxStorageBytes       int64
+	MaxStorageBytes        int64
 	MaxActiveConversations int
 	MaxPinnedConversations int
 	RetentionTTL           time.Duration
@@ -221,6 +222,12 @@ func Load() (Config, error) {
 	}
 	if !validReasoningEffort(cfg.Provider.DefaultReasoningEffort) {
 		return Config{}, fmt.Errorf("AI_DEFAULT_REASONING_EFFORT is invalid")
+	}
+	cfg.Provider.ProgressiveSummaryHardDisabled, err = boolEnv(
+		"AI_PROGRESSIVE_SUMMARY_HARD_DISABLED", false,
+	)
+	if err != nil {
+		return Config{}, err
 	}
 	providerSecret, err := readSecret("AI_API_KEY", "AI_API_KEY_FILE")
 	if err != nil {

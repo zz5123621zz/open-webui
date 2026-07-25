@@ -31,10 +31,28 @@ func TestLoadDevelopmentConfig(t *testing.T) {
 	if cfg.Provider.DefaultReasoningEffort != "high" {
 		t.Fatalf("default reasoning effort = %q, want high", cfg.Provider.DefaultReasoningEffort)
 	}
+	if cfg.Provider.ProgressiveSummaryHardDisabled {
+		t.Fatal("progressive summary hard disable defaults to true")
+	}
 	if cfg.Lifecycle.MaxStorageBytes != 3*1024*1024*1024 ||
 		cfg.Lifecycle.MaxActiveConversations != 30 ||
 		cfg.Lifecycle.MaxPinnedConversations != 10 {
 		t.Fatalf("lifecycle defaults = %#v", cfg.Lifecycle)
+	}
+}
+
+func TestLoadParsesProgressiveSummaryHardDisable(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("AI_PROGRESSIVE_SUMMARY_HARD_DISABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Provider.ProgressiveSummaryHardDisabled {
+		t.Fatal("progressive summary hard disable = false")
 	}
 }
 

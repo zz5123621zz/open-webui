@@ -162,3 +162,41 @@ CREATE INDEX IF NOT EXISTS idx_conversations_retention_expiry
 ON conversations(archived_at)
 WHERE archived_at IS NOT NULL;
 `
+
+const schemaV4 = `
+CREATE TABLE IF NOT EXISTS service_settings (
+	key TEXT PRIMARY KEY
+		CHECK (key IN ('progressive_summary_mode')),
+	value TEXT NOT NULL
+		CHECK (value IN ('auto', 'off')),
+	updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS service_setting_audit (
+	id TEXT PRIMARY KEY,
+	setting_key TEXT NOT NULL
+		CHECK (setting_key IN ('progressive_summary_mode')),
+	action TEXT NOT NULL
+		CHECK (action IN ('update', 'recheck')),
+	old_value TEXT NOT NULL
+		CHECK (old_value IN ('auto', 'off')),
+	new_value TEXT NOT NULL
+		CHECK (new_value IN ('auto', 'off')),
+	actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_service_setting_audit_created
+ON service_setting_audit(created_at DESC);
+
+INSERT INTO service_settings(key, value, updated_by, updated_at)
+VALUES(
+	'progressive_summary_mode',
+	'auto',
+	NULL,
+	CAST(strftime('%s', 'now') AS INTEGER) * 1000
+)
+ON CONFLICT(key) DO NOTHING;
+
+DELETE FROM provider_items WHERE item_type = 'reasoning';
+`

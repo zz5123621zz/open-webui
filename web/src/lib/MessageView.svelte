@@ -16,6 +16,9 @@
   const dispatch = createEventDispatcher<{ regenerate: { message: Message } }>();
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
+  $: reasoningCount = message.parts.filter(
+    (part) => part.type === 'reasoning' && part.text
+  ).length;
 
   function toolLabel(part: MessagePart): string {
     const type = String(part.data?.type || '');
@@ -60,7 +63,11 @@
   }
 
   function reasoningDuration(part: MessagePart): string {
-    if (message.status === 'streaming') {
+    const providerDuration = Number(part.data?.durationMs || 0);
+    if (providerDuration > 0) {
+      return `${(providerDuration / 1000).toFixed(providerDuration >= 1000 ? 1 : 2)} ${t('秒', 's')}`;
+    }
+    if (message.status === 'streaming' && part.data?.completed !== true) {
       const completedDuration = Number(part.data?.clientDurationMs || 0);
       if (completedDuration > 0) {
         return `${(completedDuration / 1000).toFixed(completedDuration >= 1000 ? 1 : 2)} ${t('秒', 's')}`;
@@ -72,9 +79,15 @@
           : elapsedSeconds;
       return `${t('已运行', 'Running for')} ${seconds} s`;
     }
-    const duration = Number(part.data?.durationMs || 0);
+    const duration = Number(part.data?.clientDurationMs || 0);
     if (duration <= 0) return '';
     return `${(duration / 1000).toFixed(duration >= 1000 ? 1 : 2)} ${t('秒', 's')}`;
+  }
+
+  function reasoningOrdinal(part: MessagePart): number {
+    return message.parts
+      .filter((candidate) => candidate.type === 'reasoning' && candidate.text)
+      .indexOf(part) + 1;
   }
 
   type ToolDetail = { label: string; value: string; url?: string };
@@ -185,10 +198,17 @@
           <summary>
             <span class="reasoning-spark"><Icon name="sparkles" size={13} /></span>
             {t('推理摘要', 'Reasoning summary')}
+            {#if reasoningCount > 1}
+              <span class="reasoning-index">
+                {t(`第 ${reasoningOrdinal(part)} 段`, `Section ${reasoningOrdinal(part)}`)}
+              </span>
+            {/if}
             {#if reasoningDuration(part)}
               <span class="reasoning-duration">· {reasoningDuration(part)}</span>
             {/if}
-            {#if message.status === 'streaming'}<span class="pulse-dot"></span>{/if}
+            {#if message.status === 'streaming' && part.data?.completed !== true}
+              <span class="pulse-dot"></span>
+            {/if}
           </summary>
           <div class="reasoning-content"><Markdown text={part.text} {locale} /></div>
         </details>
@@ -275,16 +295,16 @@
       {/if}
     {/each}
 
-    {#if message.status === 'streaming' && message.parts.length === 0}
-      <div class="thinking-progress" role="status">
+    {#if message.status === 'streaming'}
+      <div class:compact={message.parts.length > 0} class="thinking-progress" role="status">
         <span class="thinking-progress-icon"><Icon name="sparkles" size={15} /></span>
         <span class="thinking-progress-copy">
           <strong>{streamingStage || t('正在思考', 'Thinking')}</strong>
           <small>
             {t('已运行', 'Running for')} {elapsedSeconds} s
             · {t(
-              '等待期间仅展示安全的处理阶段',
-              'Only safe processing stages are shown while you wait'
+              '等待新事件；这里只显示真实阶段与 Provider 摘要',
+              'Waiting for a new event; only factual stages and provider summaries are shown'
             )}
           </small>
         </span>

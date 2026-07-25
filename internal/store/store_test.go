@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -356,19 +357,24 @@ func TestAssistantProviderItemsAndToolEventsPersistTransactionally(t *testing.T)
 	}
 	toolJSON := json.RawMessage(`{"callId":"search-1","type":"web_search","status":"completed","data":{"query":"safe"},"durationMs":25}`)
 	reasoningJSON := json.RawMessage(`{"type":"reasoning","id":"reasoning-1","encrypted_content":"opaque"}`)
+	messageJSON := json.RawMessage(`{"type":"message","id":"message-1","content":[]}`)
 	completed, err := dataStore.CompleteAssistant(ctx, user.ID, assistant.ID, AssistantResult{
 		Status: "completed",
 		Parts:  []NewMessagePart{{Type: "tool", JSONContent: toolJSON}},
-		ProviderItems: []NewProviderItem{{
-			ItemType: "reasoning", ReplayJSON: reasoningJSON,
-		}},
+		ProviderItems: []NewProviderItem{
+			{ItemType: "reasoning", ReplayJSON: reasoningJSON},
+			{ItemType: "message", ReplayJSON: messageJSON},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(completed.ProviderItems) != 1 ||
-		string(completed.ProviderItems[0].ReplayJSON) != string(reasoningJSON) {
+		string(completed.ProviderItems[0].ReplayJSON) != string(messageJSON) {
 		t.Fatalf("provider items = %#v", completed.ProviderItems)
+	}
+	if strings.Contains(string(completed.ProviderItems[0].ReplayJSON), "encrypted_content") {
+		t.Fatalf("encrypted reasoning was persisted: %#v", completed.ProviderItems)
 	}
 	var toolCount int
 	if err := dataStore.db.QueryRowContext(ctx, `
@@ -378,6 +384,58 @@ func TestAssistantProviderItemsAndToolEventsPersistTransactionally(t *testing.T)
 	}
 	if toolCount != 1 {
 		t.Fatalf("tool event count = %d", toolCount)
+	}
+}
+
+func TestProgressiveSummarySettingIsNarrowAndAudited(t *testing.T) {
+	dataStore := openTestStore(t)
+	ctx := context.Background()
+	admin, err := dataStore.CreateUserWithRole(
+		ctx, "setting-admin", "Setting Admin", "hash", "admin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := dataStore.CreateUser(ctx, "setting-user", "Setting User", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initial, err := dataStore.ProgressiveSummarySetting(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Key != ProgressiveSummarySettingKey ||
+		initial.Value != ProgressiveSummaryModeAuto {
+		t.Fatalf("initial setting = %#v", initial)
+	}
+	if _, err := dataStore.SetProgressiveSummaryMode(
+		ctx, user.ID, ProgressiveSummaryModeOff,
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("regular user update error = %v, want not found", err)
+	}
+	updated, err := dataStore.SetProgressiveSummaryMode(
+		ctx, admin.ID, ProgressiveSummaryModeOff,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Value != ProgressiveSummaryModeOff || updated.UpdatedBy != admin.ID {
+		t.Fatalf("updated setting = %#v", updated)
+	}
+	if err := dataStore.RecordProgressiveSummaryRecheck(ctx, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := dataStore.ListServiceSettingAudit(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audit) != 2 ||
+		audit[0].Action != "recheck" ||
+		audit[1].Action != "update" ||
+		audit[1].OldValue != ProgressiveSummaryModeAuto ||
+		audit[1].NewValue != ProgressiveSummaryModeOff {
+		t.Fatalf("service setting audit = %#v", audit)
 	}
 }
 

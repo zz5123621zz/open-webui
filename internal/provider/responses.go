@@ -19,10 +19,17 @@ type ResponsesRequest struct {
 	SafetyIdentifier string           `json:"safety_identifier,omitempty"`
 	Input            []ResponseInput  `json:"input"`
 	Stream           bool             `json:"stream"`
+	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
 	Store            bool             `json:"store"`
 	Reasoning        ReasoningOptions `json:"reasoning"`
 	Tools            []map[string]any `json:"tools,omitempty"`
 	ToolChoice       string           `json:"tool_choice,omitempty"`
+}
+
+const ReasoningSummaryDeliverySequentialCutoff = "sequential_cutoff"
+
+type StreamOptions struct {
+	ReasoningSummaryDelivery string `json:"reasoning_summary_delivery"`
 }
 
 type ResponseInput struct {
@@ -273,6 +280,18 @@ func writeResponsesRequest(output io.Writer, request ResponsesRequest) error {
 	}
 	if err := writeJSON(request.Stream); err != nil {
 		return err
+	}
+	if request.StreamOptions != nil {
+		if request.StreamOptions.ReasoningSummaryDelivery !=
+			ReasoningSummaryDeliverySequentialCutoff {
+			return errors.New("unsupported reasoning summary delivery mode")
+		}
+		if err := write(`,"stream_options":`); err != nil {
+			return err
+		}
+		if err := writeJSON(request.StreamOptions); err != nil {
+			return err
+		}
 	}
 	if err := write(`,"store":`); err != nil {
 		return err

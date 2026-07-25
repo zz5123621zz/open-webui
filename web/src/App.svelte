@@ -25,6 +25,7 @@
   import { locale, setLocale, translate } from './lib/i18n';
   import Icon from './lib/Icon.svelte';
   import MessageView from './lib/MessageView.svelte';
+  import ProgressiveSummarySettings from './lib/ProgressiveSummarySettings.svelte';
   import type {
     Attachment,
     Conversation,
@@ -80,7 +81,7 @@
   let contextStatus = '';
   let sidebarOpen = false;
   let profileOpen = false;
-  let dialog: '' | 'security' | 'about' = '';
+  let dialog: '' | 'security' | 'service' | 'about' = '';
   let accountError = '';
   let accountPending = false;
   let showArchived = false;
@@ -660,7 +661,7 @@
     }
   }
 
-  async function openDialog(value: 'security' | 'about') {
+  async function openDialog(value: 'security' | 'service' | 'about') {
     profileOpen = false;
     accountError = '';
     dialog = value;
@@ -1120,11 +1121,14 @@
             setGenerationStage(String(item.data.stage || ''));
           } else if (item.event === 'response.reasoning.delta') {
             setGenerationStage('reasoning');
-            appendTextPart(assistantId, 'reasoning', String(item.data.delta || ''));
+            updateReasoningPart(assistantId, item.data, false);
+          } else if (item.event === 'response.reasoning.done') {
+            updateReasoningPart(assistantId, item.data, true);
+            setGenerationStage('waiting_for_model');
           } else if (item.event === 'response.text.delta') {
             setGenerationStage('answering');
             finishLiveReasoning(assistantId);
-            appendTextPart(assistantId, 'text', String(item.data.delta || ''));
+            appendTextPart(assistantId, String(item.data.delta || ''));
           } else if (item.event === 'response.tool') {
             finishLiveReasoning(assistantId);
             if (item.data.status === 'in_progress') {
@@ -1227,11 +1231,14 @@
             setGenerationStage(String(item.data.stage || ''));
           } else if (item.event === 'response.reasoning.delta') {
             setGenerationStage('reasoning');
-            appendTextPart(assistantId, 'reasoning', String(item.data.delta || ''));
+            updateReasoningPart(assistantId, item.data, false);
+          } else if (item.event === 'response.reasoning.done') {
+            updateReasoningPart(assistantId, item.data, true);
+            setGenerationStage('waiting_for_model');
           } else if (item.event === 'response.text.delta') {
             setGenerationStage('answering');
             finishLiveReasoning(assistantId);
-            appendTextPart(assistantId, 'text', String(item.data.delta || ''));
+            appendTextPart(assistantId, String(item.data.delta || ''));
           } else if (item.event === 'response.tool') {
             finishLiveReasoning(assistantId);
             if (item.data.status === 'in_progress') {
@@ -1298,26 +1305,85 @@
     return Array.from(line).slice(0, 36).join('') || 'New chat';
   }
 
-  function appendTextPart(messageId: string, type: 'text' | 'reasoning', delta: string) {
+  function appendTextPart(messageId: string, delta: string) {
     if (!messageId || !delta) return;
     messages = messages.map((message) => {
       if (message.id !== messageId) return message;
-      const index = message.parts.findIndex((part) => part.type === type);
+      const index = message.parts.findIndex((part) => part.type === 'text');
       let parts: MessagePart[];
       if (index < 0) {
-        parts = [
-          ...message.parts,
-          {
-            type,
-            text: delta,
-            data: type === 'reasoning' ? { clientStartedAt: Date.now() } : undefined
-          }
-        ];
+        parts = [...message.parts, { type: 'text', text: delta }];
       } else {
         parts = message.parts.map((part, current) =>
           current === index ? { ...part, text: (part.text || '') + delta } : part
         );
       }
+      return { ...message, status: 'streaming', parts };
+    });
+  }
+
+  function reasoningIdentity(data?: Record<string, unknown>): string {
+    const itemId = String(data?.providerItemId || data?.itemId || '');
+    const outputIndex = Number(data?.outputIndex || 0);
+    const summaryIndex = Number(data?.summaryIndex || 0);
+    return `${itemId || `output:${outputIndex}`}:${summaryIndex}`;
+  }
+
+  function updateReasoningPart(
+    messageId: string,
+    data: Record<string, unknown>,
+    completed: boolean
+  ) {
+    if (!messageId) return;
+    const delta = String(data.delta || '');
+    const completeText = String(data.text || '');
+    if (!delta && !completeText && !completed) return;
+    const identity = reasoningIdentity(data);
+    messages = messages.map((message) => {
+      if (message.id !== messageId) return message;
+      const index = message.parts.findIndex(
+        (part) => part.type === 'reasoning' && reasoningIdentity(part.data) === identity
+      );
+      const now = Date.now();
+      const providerData = {
+        providerItemId: String(data.itemId || ''),
+        outputIndex: Number(data.outputIndex || 0),
+        summaryIndex: Number(data.summaryIndex || 0)
+      };
+      if (index < 0) {
+        const next: MessagePart = {
+          type: 'reasoning',
+          text: completeText || delta,
+          data: {
+            ...providerData,
+            completed,
+            clientStartedAt: now,
+            ...(Number(data.durationMs || 0) > 0
+              ? { durationMs: Number(data.durationMs) }
+              : {})
+          }
+        };
+        return { ...message, status: 'streaming', parts: [...message.parts, next] };
+      }
+      const parts = message.parts.map((part, current) => {
+        if (current !== index) return part;
+        const startedAt = Number(part.data?.clientStartedAt || now);
+        const duration = Number(data.durationMs || 0);
+        const isCompleted = completed || part.data?.completed === true;
+        return {
+          ...part,
+          text: completeText || `${part.text || ''}${delta}`,
+          data: {
+            ...part.data,
+            ...providerData,
+            completed: isCompleted,
+            ...(duration > 0 ? { durationMs: duration } : {}),
+            ...(isCompleted && duration <= 0
+              ? { clientDurationMs: Math.max(1, now - startedAt) }
+              : {})
+          }
+        };
+      });
       return { ...message, status: 'streaming', parts };
     });
   }
@@ -1351,13 +1417,18 @@
     messages = messages.map((message) => {
       if (message.id !== messageId) return message;
       const parts = message.parts.map((part) => {
-        if (part.type !== 'reasoning' || part.data?.clientDurationMs) return part;
+        if (
+          part.type !== 'reasoning' ||
+          part.data?.completed === true ||
+          part.data?.clientDurationMs
+        ) return part;
         const startedAt = Number(part.data?.clientStartedAt || 0);
         if (startedAt <= 0) return part;
         return {
           ...part,
           data: {
             ...part.data,
+            completed: true,
             clientDurationMs: Math.max(1, now - startedAt)
           }
         };
@@ -1844,6 +1915,9 @@
               <Icon name="globe" size={17} />{$locale === 'zh-CN' ? 'English' : '中文'}
             </button>
             <button on:click={refreshModels}><Icon name="refresh" size={17} />{t('刷新模型目录', 'Refresh model catalog')}</button>
+            {#if user?.role === 'admin'}
+              <button on:click={() => openDialog('service')}><Icon name="sparkles" size={17} />{t('推理摘要设置', 'Reasoning summary settings')}</button>
+            {/if}
             <button on:click={() => openDialog('security')}><Icon name="shield" size={17} />{t('账户与安全', 'Account & security')}</button>
             <button on:click={() => openDialog('about')}><Icon name="info" size={17} />{t('关于', 'About')}</button>
             <button class="logout-button" on:click={doLogout}><Icon name="logout" size={17} />{t('退出登录', 'Sign out')}</button>
@@ -2338,6 +2412,8 @@
           <button class="logout-everywhere" on:click={doLogoutAll} disabled={accountPending}>
             {t('注销此账户的全部会话', 'Sign this account out everywhere')}
           </button>
+        {:else if dialog === 'service'}
+          <ProgressiveSummarySettings locale={$locale} />
         {:else}
           <div class="dialog-icon"><Icon name="sparkles" size={23} /></div>
           <h2 id="dialog-title">La4RainGPT</h2>

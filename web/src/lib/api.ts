@@ -5,6 +5,8 @@ import type {
   ContextCheckpoint,
   Message,
   Model,
+  ProgressiveSummaryMode,
+  ProgressiveSummarySettings,
   StorageStatus,
   StreamEvent,
   User
@@ -106,6 +108,34 @@ export async function getModels(): Promise<Model[]> {
 export async function getStorageStatus(): Promise<StorageStatus> {
   const body = await request<{ storage: StorageStatus }>('/api/v1/me/storage');
   return body.storage;
+}
+
+export async function getProgressiveSummarySettings(): Promise<ProgressiveSummarySettings> {
+  const body = await request<{ progressiveSummary: ProgressiveSummarySettings }>(
+    '/api/v1/admin/progressive-summaries'
+  );
+  return body.progressiveSummary;
+}
+
+export async function updateProgressiveSummarySettings(
+  mode: ProgressiveSummaryMode
+): Promise<ProgressiveSummarySettings> {
+  const body = await request<{ progressiveSummary: ProgressiveSummarySettings }>(
+    '/api/v1/admin/progressive-summaries',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ mode })
+    }
+  );
+  return body.progressiveSummary;
+}
+
+export async function recheckProgressiveSummaryCompatibility(): Promise<ProgressiveSummarySettings> {
+  const body = await request<{ progressiveSummary: ProgressiveSummarySettings }>(
+    '/api/v1/admin/progressive-summaries/recheck',
+    { method: 'POST' }
+  );
+  return body.progressiveSummary;
 }
 
 export async function getConversations(archived = false): Promise<Conversation[]> {

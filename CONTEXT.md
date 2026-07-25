@@ -12,8 +12,9 @@ limits.
 _Avoid_: Tenant, member
 
 **Administrator**:
-A user who can read every user's conversations for diagnosis but can mutate
-only their own workspace.
+A user who can read every user's conversations for diagnosis, manage an
+explicitly bounded set of audited service settings, and mutate only their own
+chat workspace.
 _Avoid_: Superuser, owner
 
 **Active conversation**:
@@ -40,3 +41,98 @@ _Avoid_: Cleanup
 The three-gigabyte attachment capacity assigned to each user's active
 workspace. Temporarily retained attachments do not consume this allowance.
 _Avoid_: Disk size, account quota
+
+**Safe reasoning summary**:
+A provider-authored, user-visible summary of the model's approach that excludes
+private raw chain-of-thought.
+_Avoid_: Chain-of-thought, raw reasoning, thought transcript
+
+**Activity status**:
+A factual description of observable work such as waiting, searching, or
+generating that does not claim access to unreported model reasoning.
+_Avoid_: Synthetic thinking, inferred reasoning
+
+**Progressive summary delivery**:
+A provider capability that delivers completed safe reasoning-summary sections
+while the response is still reasoning.
+_Avoid_: Live chain-of-thought, continuous thinking
+
+**Service setting**:
+A globally effective operating choice selected by an administrator from a
+fixed application-defined set; it contains neither credentials nor arbitrary
+provider configuration.
+_Avoid_: Admin preference, environment variable, provider JSON
+
+**Configured summary mode**:
+The administrator's persistent choice to allow automatic progressive summary
+delivery or to disable it.
+_Avoid_: Effective summary state
+
+**Effective summary state**:
+The currently observed availability of progressive summary delivery after
+provider compatibility checks and fallback.
+_Avoid_: Configured summary mode
+
+**Accepted provider attempt**:
+A provider request that has returned a successful HTTP response or emitted any
+stream event. It may already have consumed quota or caused tool side effects.
+_Avoid_: Completed response, safe-to-retry request
+
+**Transparent compatibility fallback**:
+A single application-initiated retry without progressive summary delivery
+after the provider explicitly rejects that field before accepting the first
+attempt.
+_Avoid_: Stream recovery, automatic answer retry
+
+**Compatibility cooldown**:
+The 30-minute, provider-endpoint-and-model-scoped period after an explicit
+progressive-delivery rejection during which new requests use baseline summary
+delivery. It changes effective state without changing configured summary mode.
+_Avoid_: Automatic disable, administrator setting
+
+**Compatibility probe**:
+The next eligible normal chat request allowed to retest progressive summary
+delivery after a compatibility cooldown expires or an administrator clears it.
+Concurrent requests continue with baseline delivery while the probe is running.
+_Avoid_: Health check, answer retry
+
+**Durable response evidence**:
+Provider-authored reasoning-summary sections and factual search or tool events
+stored with their source identity and order so conversation history can replay
+what was actually received.
+_Avoid_: Thought transcript, reconstructed progress
+
+**Transient activity indicator**:
+A live-only timer or factual waiting state shown while a response is running.
+It is neither message content nor conversation history.
+_Avoid_: Durable response evidence, reasoning summary
+
+**Sanitized web evidence**:
+A provider-reported search query, page title, or HTTP(S) URL made safe before
+display and storage. URL credentials, fragments, tracking parameters, and
+secret-like parameters are removed while ordinary navigation parameters remain.
+_Avoid_: Raw provider action, request metadata, browsing log
+
+**Setting activation boundary**:
+The start of a new response job. Service-setting changes are snapshotted for
+jobs started after the change and never cancel or rewrite a job already in
+progress.
+_Avoid_: Immediate stream mutation, response cancellation
+
+**Manual compatibility recheck**:
+An administrator action that clears compatibility cooldown so the next eligible
+normal chat becomes the compatibility probe. The action itself sends no model
+request and consumes no provider quota.
+_Avoid_: Active health check, test prompt
+
+**Observed event latency**:
+The time from La4RainGPT receiving a provider summary, search, or tool event to
+that event being rendered in the browser. Application processing targets no
+more than one second under validation conditions.
+_Avoid_: First semantic progress time, total response time
+
+**First semantic progress time**:
+The provider-controlled time until it emits the first safe reasoning summary,
+search, tool, or answer event. La4RainGPT reports elapsed time but cannot
+guarantee a maximum.
+_Avoid_: Observed event latency, first-token transport latency

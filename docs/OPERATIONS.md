@@ -87,6 +87,30 @@ sudo chmod 0400 /opt/owui-personal-slim/secrets/*
 `quality`、`size`、`compression` 或 `partial_images`，因此图片质量保持
 CPA 服务端 `auto` 默认值。
 
+### 渐进式推理摘要
+
+渐进式摘要依赖单独维护的最小 CPA 兼容镜像。该镜像只对白名单字段
+`stream_options.reasoning_summary_delivery = "sequential_cutoff"` 放行，
+生产部署必须固定
+`ghcr.io/zz5123621zz/cliproxyapi-la4rain@sha256:DIGEST`，并同时记录替换前
+CPA 的版本、二进制或镜像 digest 作为回滚目标。替换 CPA 时不得更改现有
+密钥、账号目录、模型配置或额度来源。
+
+日常开关位于管理员头像菜单的“推理摘要设置”：
+
+- `自动`：下一次符合条件的正常聊天探测或使用渐进摘要；
+- `关闭`：之后开始的新回答使用普通 CPA 流；
+- `重新检测`：只清除进程内兼容状态，下一次正常聊天才探测，不会发送隐藏
+  请求或消耗额外额度。
+
+设置只影响之后开始的新回答，不取消正在运行的回答，也不需要重启应用或
+CPA。`AI_PROGRESSIVE_SUMMARY_HARD_DISABLED=true` 是部署级紧急上限，优先于
+管理员设置；只在未知上游行为或管理员页面不可用时启用。
+
+首次发布顺序固定为：CPA 兼容镜像 CI 与 digest → 替换 CPA 并验证普通
+Responses → 应用镜像 CI 与 digest → 数据库备份 → 应用以 `off` 启动 →
+健康检查和普通聊天 → 管理员切换 `auto` → 真实摘要、降级、并发和内存验收。
+
 启动前的只读检查：
 
 ```bash

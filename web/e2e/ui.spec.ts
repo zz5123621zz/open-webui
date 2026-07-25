@@ -197,7 +197,24 @@ async function mockAPI(page: Page) {
           {
             type: 'reasoning',
             text: '我会先检索可靠来源，再归纳共同趋势。',
-            data: { durationMs: 1200 }
+            data: {
+              durationMs: 1200,
+              providerItemId: 'reasoning-1',
+              outputIndex: 0,
+              summaryIndex: 0,
+              completed: true
+            }
+          },
+          {
+            type: 'reasoning',
+            text: '我核对了来源时间，并准备组织最终回答。',
+            data: {
+              durationMs: 760,
+              providerItemId: 'reasoning-1',
+              outputIndex: 0,
+              summaryIndex: 1,
+              completed: true
+            }
           },
           {
             type: 'tool',
@@ -243,7 +260,46 @@ async function mockAPI(page: Page) {
             boundaryMessageId: 'message-user'
           }
         ],
-        ['response.reasoning.delta', { delta: '我会先检索可靠来源，再归纳共同趋势。' }],
+        [
+          'response.reasoning.delta',
+          {
+            itemId: 'reasoning-1',
+            outputIndex: 0,
+            summaryIndex: 0,
+            delta: '我会先检索可靠来源，再归纳共同趋势。'
+          }
+        ],
+        [
+          'response.reasoning.done',
+          {
+            itemId: 'reasoning-1',
+            outputIndex: 0,
+            summaryIndex: 0,
+            text: '我会先检索可靠来源，再归纳共同趋势。',
+            durationMs: 1200,
+            completed: true
+          }
+        ],
+        [
+          'response.reasoning.delta',
+          {
+            itemId: 'reasoning-1',
+            outputIndex: 0,
+            summaryIndex: 1,
+            delta: '我核对了来源时间，并准备组织最终回答。'
+          }
+        ],
+        [
+          'response.reasoning.done',
+          {
+            itemId: 'reasoning-1',
+            outputIndex: 0,
+            summaryIndex: 1,
+            text: '我核对了来源时间，并准备组织最终回答。',
+            durationMs: 760,
+            completed: true
+          }
+        ],
         ['response.stage', { stage: 'searching' }],
         [
           'response.tool',
@@ -380,7 +436,13 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(page.locator('.context-status')).toContainText('正在发送请求');
   await expect(page.locator('.context-status')).toContainText('1 s', { timeout: 2500 });
   await expect(page.getByText('今日科技摘要')).toBeVisible();
-  await expect(page.locator('.reasoning summary')).toContainText('1.2 秒');
+  await expect(page.locator('.reasoning')).toHaveCount(2);
+  await expect(page.locator('.reasoning').nth(0).locator('summary')).toContainText('第 1 段');
+  await expect(page.locator('.reasoning').nth(0).locator('summary')).toContainText('1.2 秒');
+  await expect(page.locator('.reasoning').nth(1).locator('summary')).toContainText('第 2 段');
+  await expect(page.locator('.reasoning').nth(1)).toContainText(
+    '我核对了来源时间，并准备组织最终回答。'
+  );
   await expect(page.getByText('网页搜索')).toBeVisible();
   await expect(page.getByText('搜索内容')).toBeVisible();
   await expect(page.getByText('today technology news')).toBeVisible();
@@ -417,7 +479,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
 });
 
-test('administrator can inspect another user chat without mutation controls', async ({ page }) => {
+test('administrator can inspect another user chat and manage summary compatibility', async ({ page }, testInfo) => {
   const admin = {
     ...user,
     id: 'admin-1',
@@ -436,8 +498,10 @@ test('administrator can inspect another user chat without mutation controls', as
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
+  let summaryMode: 'auto' | 'off' = 'auto';
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
     const respond = (body: unknown) =>
       route.fulfill({
         status: 200,
@@ -469,6 +533,31 @@ test('administrator can inspect another user chat without mutation controls', as
     if (path === '/api/v1/conversations/conversation-other/context-checkpoints') {
       return respond({ checkpoints: [] });
     }
+    if (path === '/api/v1/admin/progressive-summaries') {
+      if (method === 'PUT') {
+        summaryMode = (route.request().postDataJSON() as { mode: 'auto' | 'off' }).mode;
+      }
+      return respond({
+        progressiveSummary: {
+          mode: summaryMode,
+          hardDisabled: false,
+          effectiveState: summaryMode === 'off' ? 'disabled' : 'unknown',
+          models: [],
+          updatedAt: Date.now()
+        }
+      });
+    }
+    if (path === '/api/v1/admin/progressive-summaries/recheck') {
+      return respond({
+        progressiveSummary: {
+          mode: summaryMode,
+          hardDisabled: false,
+          effectiveState: summaryMode === 'off' ? 'disabled' : 'unknown',
+          models: [],
+          updatedAt: Date.now()
+        }
+      });
+    }
     return route.fulfill({
       status: 404,
       contentType: 'application/json',
@@ -481,4 +570,25 @@ test('administrator can inspect another user chat without mutation controls', as
   await expect(page.getByLabel('聊天消息')).toBeDisabled();
   await expect(page.getByRole('button', { name: '推理强度' })).toBeDisabled();
   await expect(page.locator('.conversation-actions')).toHaveCount(0);
+
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByRole('button', { name: /Administrator/ }).click();
+  await page.getByRole('button', { name: '推理摘要设置' }).click();
+  await expect(page.getByRole('heading', { name: '渐进式推理摘要' })).toBeVisible();
+  await expect(page.getByRole('radio', { name: /^自动/ })).toHaveAttribute(
+    'aria-checked',
+    'true'
+  );
+  await page.getByRole('radio', { name: /^关闭/ }).click();
+  await page.getByRole('button', { name: '保存设置' }).click();
+  await expect(page.getByText('设置已保存，只影响之后开始的新回答。')).toBeVisible();
+  await page.getByRole('button', { name: '重新检测' }).click();
+  await expect(page.getByText(/兼容状态已清除/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('admin-summary-settings.png'), fullPage: true });
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  if (testInfo.project.name === 'mobile') {
+    await page.locator('.mobile-close').click();
+  }
 });

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/owui-personal-slim/owui-personal-slim/internal/activecontext"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/ids"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/jobs"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -26,7 +28,7 @@ import (
 const (
 	maxProviderEventBytes = 50 * 1024 * 1024
 	sseHeartbeatInterval  = 15 * time.Second
-	responseInstructions  = "Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Keep reasoning summaries concise and useful, but never reveal private chain-of-thought; describe only the approach, checks, and current progress."
+	responseInstructions  = "Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Make user-visible reasoning summaries clear and informative when the provider supports them, but never reveal private chain-of-thought; summarize only the approach, checks, and current progress."
 )
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +157,7 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer lease.Release()
+	summaryMode := s.progressiveSummaryMode(r.Context())
 
 	userMessage, assistantMessage, err := s.store.BeginResponse(
 		r.Context(), session.User.ID, conversationID, request.RequestID,
@@ -186,7 +189,8 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 
 	s.streamAssistantResponse(
 		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
-		assistantMessage, &userMessage, nil, queuedStream, request.GenerateImage, request.Text,
+		summaryMode, assistantMessage, &userMessage, nil, queuedStream,
+		request.GenerateImage, request.Text,
 	)
 }
 
@@ -256,6 +260,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer lease.Release()
+	summaryMode := s.progressiveSummaryMode(r.Context())
 
 	assistant, history, err := s.store.BeginRegeneration(
 		r.Context(), session.User.ID, original.ID, request.RequestID,
@@ -288,7 +293,8 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	s.streamAssistantResponse(
 		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
-		assistant, nil, history, queuedStream, generateImage, latestUserText(history),
+		summaryMode, assistant, nil, history, queuedStream, generateImage,
+		latestUserText(history),
 	)
 }
 
@@ -300,6 +306,7 @@ func (s *Server) streamAssistantResponse(
 	conversation store.Conversation,
 	model provider.Model,
 	sentEffort string,
+	summaryMode string,
 	assistantMessage store.Message,
 	userMessage *store.Message,
 	history []store.Message,
@@ -387,7 +394,17 @@ func (s *Server) streamAssistantResponse(
 		return
 	}
 	configureImageGenerationRequest(&providerRequest, generateImage)
+	summaryDecision := progressivesummary.Decision{}
+	if s.progressiveSummaryEligible(summaryMode, model) {
+		summaryDecision = s.summaries.Decide(
+			s.cfg.Provider.BaseURL.String(), model.ID,
+		)
+		if summaryDecision.Requested {
+			enableProgressiveSummary(&providerRequest)
+		}
+	}
 	if err := stream.send("response.stage", map[string]string{"stage": "waiting_for_model"}); err != nil {
+		s.summaries.MarkInconclusive(summaryDecision)
 		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
 		return
 	}
@@ -399,9 +416,12 @@ func (s *Server) streamAssistantResponse(
 		}
 	}
 	runProvider := func(request provider.ResponsesRequest, accumulator *responseAccumulator) (error, error) {
-		upstream, startErr := s.startResponseWithNetworkRetry(r.Context(), request)
+		upstream, startErr := s.models.StartResponse(r.Context(), request)
 		if startErr != nil {
 			return startErr, nil
+		}
+		if request.StreamOptions != nil {
+			s.summaries.MarkAccepted(summaryDecision)
 		}
 		consumeErr := consumeProviderSSE(upstream.Body, func(event providerStreamEvent) error {
 			return accumulator.handle(stream, event)
@@ -413,39 +433,65 @@ func (s *Server) streamAssistantResponse(
 		return nil, consumeErr
 	}
 
-	accumulator := newAccumulator()
-	startErr, consumeErr := runProvider(providerRequest, &accumulator)
-	contextRetry := isContextWindowError(startErr) ||
-		(startErr == nil && isContextWindowCode(accumulator.failureCode) && !accumulator.hasVisibleOutput())
-	if contextRetry {
-		_ = stream.send("response.stage", map[string]string{"stage": "preparing_context"})
-		forced, forceErr := s.contexts.ForcePrepare(
-			r.Context(), userID, conversation, model, sentEffort, history, assistantMessage.ID,
-			func(status string, data map[string]any) error {
-				data["status"] = status
-				data["retry"] = true
-				return stream.send("response.context", data)
-			},
-		)
-		if forceErr != nil {
-			_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "context_compaction_failed", nil)
-			_ = stream.send("response.error", map[string]string{
-				"code": "context_compaction_failed", "message": "The conversation is too large and could not be compacted safely.",
-			})
-			return
-		}
-		providerRequest, err = s.buildResponsesRequest(
-			r.Context(), userID, conversation, model, sentEffort, forced.Checkpoint, forced.Messages,
-		)
-		if err != nil {
-			_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "attachment_unavailable", nil)
-			_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
-			return
-		}
-		configureImageGenerationRequest(&providerRequest, generateImage)
-		_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
+	var accumulator responseAccumulator
+	var startErr, consumeErr error
+	compatibilityFallbackUsed := false
+	contextRetryUsed := false
+	for {
 		accumulator = newAccumulator()
 		startErr, consumeErr = runProvider(providerRequest, &accumulator)
+		if startErr == nil {
+			break
+		}
+		if providerRequest.StreamOptions != nil &&
+			!compatibilityFallbackUsed &&
+			isProgressiveSummaryUnsupported(startErr) {
+			s.summaries.MarkUnsupported(summaryDecision)
+			compatibilityFallbackUsed = true
+			providerRequest.StreamOptions = nil
+			_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
+			continue
+		}
+		if isContextWindowError(startErr) && !contextRetryUsed {
+			contextRetryUsed = true
+			_ = stream.send("response.stage", map[string]string{"stage": "preparing_context"})
+			forced, forceErr := s.contexts.ForcePrepare(
+				r.Context(), userID, conversation, model, sentEffort, history, assistantMessage.ID,
+				func(status string, data map[string]any) error {
+					data["status"] = status
+					data["retry"] = true
+					return stream.send("response.context", data)
+				},
+			)
+			if forceErr != nil {
+				s.summaries.MarkInconclusive(summaryDecision)
+				_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "context_compaction_failed", nil)
+				_ = stream.send("response.error", map[string]string{
+					"code": "context_compaction_failed", "message": "The conversation is too large and could not be compacted safely.",
+				})
+				return
+			}
+			providerRequest, err = s.buildResponsesRequest(
+				r.Context(), userID, conversation, model, sentEffort,
+				forced.Checkpoint, forced.Messages,
+			)
+			if err != nil {
+				s.summaries.MarkInconclusive(summaryDecision)
+				_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "attachment_unavailable", nil)
+				_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
+				return
+			}
+			configureImageGenerationRequest(&providerRequest, generateImage)
+			if summaryDecision.Requested && !compatibilityFallbackUsed {
+				enableProgressiveSummary(&providerRequest)
+			}
+			_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
+			continue
+		}
+		if providerRequest.StreamOptions != nil {
+			s.summaries.MarkInconclusive(summaryDecision)
+		}
+		break
 	}
 	if startErr != nil {
 		code, _, message := providerStartError(startErr)
@@ -512,6 +558,29 @@ func (s *Server) streamAssistantResponse(
 		_ = stream.send("response.error", map[string]any{
 			"code": errorCode, "message": "The response ended before completion.", "messageRecord": finalMessage,
 		})
+	}
+}
+
+func (s *Server) progressiveSummaryMode(ctx context.Context) string {
+	setting, err := s.store.ProgressiveSummarySetting(ctx)
+	if err != nil {
+		s.logger.Error("read progressive summary mode failed", "error", err)
+		return store.ProgressiveSummaryModeOff
+	}
+	return setting.Value
+}
+
+func (s *Server) progressiveSummaryEligible(mode string, model provider.Model) bool {
+	if mode != store.ProgressiveSummaryModeAuto ||
+		s.cfg.Provider.ProgressiveSummaryHardDisabled {
+		return false
+	}
+	return !model.CapabilitiesComplete || len(model.ReasoningEfforts) > 0
+}
+
+func enableProgressiveSummary(request *provider.ResponsesRequest) {
+	request.StreamOptions = &provider.StreamOptions{
+		ReasoningSummaryDelivery: provider.ReasoningSummaryDeliverySequentialCutoff,
 	}
 }
 
@@ -608,8 +677,8 @@ func (s *Server) streamDedicatedImage(
 		)
 		_ = stream.send("response.tool", failed)
 		_ = stream.send("response.error", map[string]any{
-			"code": errorCode,
-			"message": message,
+			"code":          errorCode,
+			"message":       message,
 			"messageRecord": finalMessage,
 		})
 		return
@@ -694,14 +763,6 @@ func latestUserText(messages []store.Message) string {
 		}
 	}
 	return ""
-}
-
-func (s *Server) startResponseWithNetworkRetry(ctx context.Context, request provider.ResponsesRequest) (*http.Response, error) {
-	response, err := s.models.StartResponse(ctx, request)
-	if err == nil || !errors.Is(err, provider.ErrUnavailable) || ctx.Err() != nil {
-		return response, err
-	}
-	return s.models.StartResponse(ctx, request)
 }
 
 func (s *Server) failAssistant(ctx context.Context, userID, messageID, code string, parts []store.NewMessagePart) (store.Message, error) {
@@ -822,6 +883,34 @@ func isContextWindowError(err error) bool {
 	return isContextWindowCode(upstream.Code) || isContextWindowCode(upstream.Message)
 }
 
+func isProgressiveSummaryUnsupported(err error) bool {
+	var upstream *provider.HTTPError
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(upstream.Code + " " + upstream.Message))
+	if !strings.Contains(value, "reasoning_summary_delivery") &&
+		!strings.Contains(value, "stream_options") {
+		return false
+	}
+	for _, marker := range []string{
+		"unsupported",
+		"not supported",
+		"unknown",
+		"unrecognized",
+		"unexpected",
+		"not allowed",
+		"not permitted",
+		"extra input",
+		"invalid parameter",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func isContextWindowCode(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	return strings.Contains(value, "context_length") ||
@@ -902,7 +991,7 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 	return provider.ResponsesRequest{
 		Model: conversation.Model, Instructions: responseInstructions,
 		SafetyIdentifier: s.providerSafetyIdentifier(userID),
-		Input: input, Stream: true, Store: false,
+		Input:            input, Stream: true, Store: false,
 		Reasoning: provider.ReasoningOptions{Effort: effort, Summary: "auto"},
 		Tools:     tools, ToolChoice: "auto",
 	}, nil
@@ -1008,12 +1097,16 @@ func (s *sseWriter) startHeartbeat(
 }
 
 type providerStreamEvent struct {
-	Type     string          `json:"type"`
-	Delta    string          `json:"delta"`
-	ItemID   string          `json:"item_id"`
-	Item     json.RawMessage `json:"item"`
-	Response json.RawMessage `json:"response"`
-	Error    json.RawMessage `json:"error"`
+	Type           string          `json:"type"`
+	Delta          string          `json:"delta"`
+	Text           string          `json:"text"`
+	ItemID         string          `json:"item_id"`
+	OutputIndex    int             `json:"output_index"`
+	SummaryIndex   int             `json:"summary_index"`
+	SequenceNumber int             `json:"sequence_number"`
+	Item           json.RawMessage `json:"item"`
+	Response       json.RawMessage `json:"response"`
+	Error          json.RawMessage `json:"error"`
 }
 
 func consumeProviderSSE(body io.Reader, handle func(providerStreamEvent) error) error {
@@ -1099,23 +1192,22 @@ func readLimitedLine(reader *bufio.Reader, maximum int) ([]byte, error) {
 }
 
 type responseAccumulator struct {
-	responseID          string
-	text                strings.Builder
-	reasoning           strings.Builder
-	reasoningStarted    time.Time
-	reasoningDurationMS int64
-	citations           []citation
-	tools               []toolSnapshot
-	toolStarted         map[string]time.Time
-	images              []generatedImage
-	partOrder           []accumulatorPart
-	inputTokens         int64
-	outputTokens        int64
-	reasoningTokens     int64
-	completed           bool
-	failureCode         string
-	saveImage           func(string) (generatedImage, error)
-	providerItems       []store.NewProviderItem
+	responseID      string
+	text            strings.Builder
+	reasoning       []*reasoningSection
+	reasoningByKey  map[string]*reasoningSection
+	citations       []citation
+	tools           []toolSnapshot
+	toolStarted     map[string]time.Time
+	images          []generatedImage
+	partOrder       []accumulatorPart
+	inputTokens     int64
+	outputTokens    int64
+	reasoningTokens int64
+	completed       bool
+	failureCode     string
+	saveImage       func(string) (generatedImage, error)
+	providerItems   []store.NewProviderItem
 }
 
 func (a *responseAccumulator) markExplicitImageGeneration() {
@@ -1131,9 +1223,16 @@ type accumulatorPart struct {
 	Key  string
 }
 
-func (a *responseAccumulator) hasVisibleOutput() bool {
-	return a.text.Len() > 0 || a.reasoning.Len() > 0 || len(a.tools) > 0 ||
-		len(a.toolStarted) > 0 || len(a.images) > 0
+type reasoningSection struct {
+	key          string
+	itemID       string
+	summaryIndex int
+	outputIndex  int
+	text         strings.Builder
+	startedAt    time.Time
+	durationMS   int64
+	sawDelta     bool
+	completed    bool
 }
 
 type citation struct {
@@ -1157,35 +1256,57 @@ func (a *responseAccumulator) handle(stream *sseWriter, event providerStreamEven
 	case "response.created", "response.in_progress":
 		a.readResponseMetadata(event.Response)
 	case "response.output_text.delta":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		a.ensurePart("text", "")
 		a.text.WriteString(event.Delta)
 		return stream.send("response.text.delta", map[string]string{"delta": event.Delta})
 	case "response.reasoning_summary_text.delta":
-		if a.reasoningStarted.IsZero() {
-			a.reasoningStarted = time.Now()
+		if event.Delta == "" {
+			return nil
 		}
-		a.ensurePart("reasoning", "")
-		a.reasoning.WriteString(event.Delta)
-		return stream.send("response.reasoning.delta", map[string]string{"delta": event.Delta})
+		section := a.reasoningSection(event)
+		if section.completed {
+			return nil
+		}
+		section.sawDelta = true
+		section.text.WriteString(event.Delta)
+		return stream.send("response.reasoning.delta", reasoningEventPayload(
+			section, event.Delta, "",
+		))
+	case "response.reasoning_summary_text.done":
+		section := a.reasoningSection(event)
+		previousText := section.text.String()
+		wasCompleted := section.completed
+		if event.Text != "" {
+			section.text.Reset()
+			section.text.WriteString(event.Text)
+		}
+		if section.text.Len() == 0 ||
+			(wasCompleted && previousText == section.text.String()) {
+			return nil
+		}
+		a.finishReasoningSection(section)
+		return stream.send("response.reasoning.done", reasoningEventPayload(
+			section, "", section.text.String(),
+		))
 	case "response.output_item.added":
-		return a.handleItem(stream, event.Item, "in_progress")
+		return a.handleItem(stream, event, "in_progress")
 	case "response.output_item.done":
 		a.captureProviderItem(event.Item)
-		return a.handleItem(stream, event.Item, "completed")
+		return a.handleItem(stream, event, "completed")
 	case "response.completed":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		a.completed = true
 		a.readResponseMetadata(event.Response)
 	case "response.failed", "response.incomplete":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		a.readFailure(event.Response, event.Error)
 	case "error":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		a.readFailure(nil, event.Error)
 	default:
 		if strings.Contains(event.Type, "web_search_call") {
-			a.finishReasoning()
+			a.finishOpenReasoning()
 			status := "in_progress"
 			if strings.HasSuffix(event.Type, ".completed") {
 				status = "completed"
@@ -1227,14 +1348,23 @@ func (a *responseAccumulator) captureProviderItem(raw json.RawMessage) {
 		return
 	}
 	switch header.Type {
-	case "message", "reasoning", "web_search_call":
+	case "message", "web_search_call":
+		safe, ok := sanitizeProviderReplayItem(raw)
+		if !ok {
+			return
+		}
 		a.providerItems = append(a.providerItems, store.NewProviderItem{
-			ItemType: header.Type, ReplayJSON: append(json.RawMessage(nil), raw...),
+			ItemType: header.Type, ReplayJSON: safe,
 		})
 	}
 }
 
-func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage, fallbackStatus string) error {
+func (a *responseAccumulator) handleItem(
+	stream *sseWriter,
+	event providerStreamEvent,
+	fallbackStatus string,
+) error {
+	raw := event.Item
 	if len(raw) == 0 {
 		return nil
 	}
@@ -1258,27 +1388,62 @@ func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage,
 				EndIndex   int    `json:"end_index"`
 			} `json:"annotations"`
 		} `json:"content"`
+		Summary []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"summary"`
 	}
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return nil
 	}
 	status := normalizeOutputItemStatus(item.Status, fallbackStatus)
-	if a.toolStarted == nil {
-		a.toolStarted = make(map[string]time.Time)
-	}
-	if status == "in_progress" && item.ID != "" {
-		if _, exists := a.toolStarted[item.ID]; !exists {
-			a.toolStarted[item.ID] = time.Now()
+	var durationMS int64
+	if item.Type == "web_search_call" || item.Type == "image_generation_call" {
+		if a.toolStarted == nil {
+			a.toolStarted = make(map[string]time.Time)
+		}
+		if status == "in_progress" && item.ID != "" {
+			if _, exists := a.toolStarted[item.ID]; !exists {
+				a.toolStarted[item.ID] = time.Now()
+			}
+		}
+		if started, exists := a.toolStarted[item.ID]; exists && status != "in_progress" {
+			durationMS = time.Since(started).Milliseconds()
+			delete(a.toolStarted, item.ID)
 		}
 	}
-	var durationMS int64
-	if started, exists := a.toolStarted[item.ID]; exists && status != "in_progress" {
-		durationMS = time.Since(started).Milliseconds()
-		delete(a.toolStarted, item.ID)
-	}
 	switch item.Type {
+	case "reasoning":
+		if status != "completed" {
+			return nil
+		}
+		for summaryIndex, summary := range item.Summary {
+			if summary.Type != "summary_text" || summary.Text == "" {
+				continue
+			}
+			summaryEvent := providerStreamEvent{
+				ItemID:       item.ID,
+				OutputIndex:  event.OutputIndex,
+				SummaryIndex: summaryIndex,
+			}
+			section := a.reasoningSection(summaryEvent)
+			previousText := section.text.String()
+			wasCompleted := section.completed
+			section.text.Reset()
+			section.text.WriteString(summary.Text)
+			a.finishReasoningSection(section)
+			if wasCompleted && previousText == summary.Text {
+				continue
+			}
+			if err := stream.send("response.reasoning.done", reasoningEventPayload(
+				section, "", section.text.String(),
+			)); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "web_search_call":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		safeData := safeWebAction(item.Action)
 		snapshot := toolSnapshot{
 			CallID: item.ID, Type: "web_search", Status: status, Data: safeData,
@@ -1287,7 +1452,7 @@ func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage,
 		a.recordTool(snapshot)
 		return stream.send("response.tool", snapshot)
 	case "image_generation_call":
-		a.finishReasoning()
+		a.finishOpenReasoning()
 		snapshot := toolSnapshot{
 			CallID: item.ID, Type: "image_generation", Status: status,
 			DurationMS: durationMS, ErrorCode: sanitizeOptionalCode(item.Error.Code),
@@ -1314,7 +1479,7 @@ func (a *responseAccumulator) handleItem(stream *sseWriter, raw json.RawMessage,
 		if a.text.Len() == 0 {
 			for _, content := range item.Content {
 				if content.Type == "output_text" {
-					a.finishReasoning()
+					a.finishOpenReasoning()
 					a.ensurePart("text", "")
 					a.text.WriteString(content.Text)
 				}
@@ -1390,14 +1555,76 @@ func (a *responseAccumulator) ensurePart(partType, key string) {
 	a.partOrder = append(a.partOrder, accumulatorPart{Type: partType, Key: key})
 }
 
-func (a *responseAccumulator) finishReasoning() {
-	if a.reasoningStarted.IsZero() || a.reasoningDurationMS > 0 {
+func reasoningSectionKey(itemID string, outputIndex, summaryIndex int) string {
+	if itemID != "" {
+		return itemID + "\x1f" + strconv.Itoa(summaryIndex)
+	}
+	return "output:" + strconv.Itoa(outputIndex) + "\x1f" + strconv.Itoa(summaryIndex)
+}
+
+func (a *responseAccumulator) reasoningSection(event providerStreamEvent) *reasoningSection {
+	if a.reasoningByKey == nil {
+		a.reasoningByKey = make(map[string]*reasoningSection)
+	}
+	key := reasoningSectionKey(event.ItemID, event.OutputIndex, event.SummaryIndex)
+	if section, exists := a.reasoningByKey[key]; exists {
+		return section
+	}
+	section := &reasoningSection{
+		key:          key,
+		itemID:       event.ItemID,
+		summaryIndex: event.SummaryIndex,
+		outputIndex:  event.OutputIndex,
+		startedAt:    time.Now(),
+	}
+	a.reasoningByKey[key] = section
+	a.reasoning = append(a.reasoning, section)
+	a.ensurePart("reasoning", key)
+	return section
+}
+
+func (a *responseAccumulator) finishReasoningSection(section *reasoningSection) {
+	if section == nil || section.completed {
 		return
 	}
-	a.reasoningDurationMS = time.Since(a.reasoningStarted).Milliseconds()
-	if a.reasoningDurationMS < 1 {
-		a.reasoningDurationMS = 1
+	if section.sawDelta {
+		section.durationMS = time.Since(section.startedAt).Milliseconds()
+		if section.durationMS < 1 {
+			section.durationMS = 1
+		}
 	}
+	section.completed = true
+}
+
+func (a *responseAccumulator) finishOpenReasoning() {
+	for _, section := range a.reasoning {
+		a.finishReasoningSection(section)
+	}
+}
+
+func reasoningEventPayload(
+	section *reasoningSection,
+	delta string,
+	text string,
+) map[string]any {
+	payload := map[string]any{
+		"summaryIndex": section.summaryIndex,
+		"outputIndex":  section.outputIndex,
+		"completed":    section.completed,
+	}
+	if section.itemID != "" {
+		payload["itemId"] = section.itemID
+	}
+	if delta != "" {
+		payload["delta"] = delta
+	}
+	if text != "" {
+		payload["text"] = text
+	}
+	if section.durationMS > 0 {
+		payload["durationMs"] = section.durationMS
+	}
+	return payload
 }
 
 func safeWebAction(value any) json.RawMessage {
@@ -1431,18 +1658,110 @@ func safeWebAction(value any) json.RawMessage {
 	return raw
 }
 
+func sanitizeProviderReplayItem(raw json.RawMessage) (json.RawMessage, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	safe := sanitizeProviderReplayValue(value)
+	encoded, err := json.Marshal(safe)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func sanitizeProviderReplayValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		safe := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			normalized := strings.ToLower(strings.TrimSpace(key))
+			if sensitiveProviderReplayField(normalized) {
+				continue
+			}
+			if normalized == "url" {
+				rawURL, ok := nested.(string)
+				if !ok {
+					continue
+				}
+				cleanURL := sanitizeCitationURL(rawURL)
+				if cleanURL != "" {
+					safe[key] = cleanURL
+				}
+				continue
+			}
+			safe[key] = sanitizeProviderReplayValue(nested)
+		}
+		return safe
+	case []any:
+		safe := make([]any, len(typed))
+		for index, nested := range typed {
+			safe[index] = sanitizeProviderReplayValue(nested)
+		}
+		return safe
+	default:
+		return typed
+	}
+}
+
+func sensitiveProviderReplayField(key string) bool {
+	switch key {
+	case "encrypted_content", "authorization", "cookie", "cookies", "headers",
+		"request_headers", "response_headers":
+		return true
+	default:
+		return unsafeEvidenceQueryParameter(key)
+	}
+}
+
 func sanitizeCitationURL(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) == 0 || len(value) > 2048 {
 		return ""
 	}
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Host == "" ||
-		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+	if err != nil || parsed == nil {
 		return ""
 	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if parsed.Host == "" || (scheme != "https" && scheme != "http") {
+		return ""
+	}
+	parsed.Scheme = scheme
 	parsed.User = nil
+	parsed.Fragment = ""
+	query := parsed.Query()
+	for key := range query {
+		if unsafeEvidenceQueryParameter(key) {
+			query.Del(key)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	parsed.ForceQuery = false
 	return parsed.String()
+}
+
+func unsafeEvidenceQueryParameter(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "utm_") ||
+		strings.HasPrefix(key, "x-amz-") ||
+		strings.HasPrefix(key, "x-goog-") {
+		return true
+	}
+	switch key {
+	case "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
+		"token", "access_token", "refresh_token", "id_token",
+		"api_key", "apikey", "api-key", "client_secret", "secret",
+		"signature", "sig", "session", "sessionid", "session_id",
+		"auth", "authorization", "password", "passwd", "jwt",
+		"credential", "security_token":
+		return true
+	default:
+		return false
+	}
 }
 
 func truncateRunes(value string, maximum int) string {
@@ -1525,7 +1844,7 @@ func sanitizeOptionalCode(value string) string {
 }
 
 func (a *responseAccumulator) parts() []store.NewMessagePart {
-	a.finishReasoning()
+	a.finishOpenReasoning()
 	parts := make([]store.NewMessagePart, 0, len(a.partOrder)+4)
 	emitted := make(map[string]bool, len(a.partOrder)+4)
 	appendPart := func(partType, key string) {
@@ -1535,13 +1854,25 @@ func (a *responseAccumulator) parts() []store.NewMessagePart {
 		}
 		switch partType {
 		case "reasoning":
-			if a.reasoning.Len() == 0 {
+			for _, section := range a.reasoning {
+				if section.key != key {
+					continue
+				}
+				if section.text.Len() == 0 {
+					return
+				}
+				raw, _ := json.Marshal(map[string]any{
+					"durationMs":     section.durationMS,
+					"providerItemId": section.itemID,
+					"summaryIndex":   section.summaryIndex,
+					"outputIndex":    section.outputIndex,
+					"completed":      section.completed,
+				})
+				parts = append(parts, store.NewMessagePart{
+					Type: "reasoning", TextContent: section.text.String(), JSONContent: raw,
+				})
 				return
 			}
-			raw, _ := json.Marshal(map[string]int64{"durationMs": a.reasoningDurationMS})
-			parts = append(parts, store.NewMessagePart{
-				Type: "reasoning", TextContent: a.reasoning.String(), JSONContent: raw,
-			})
 		case "text":
 			if a.text.Len() == 0 {
 				return
@@ -1577,7 +1908,9 @@ func (a *responseAccumulator) parts() []store.NewMessagePart {
 	for _, part := range a.partOrder {
 		appendPart(part.Type, part.Key)
 	}
-	appendPart("reasoning", "")
+	for _, section := range a.reasoning {
+		appendPart("reasoning", section.key)
+	}
 	appendPart("text", "")
 	appendPart("citations", "")
 	for _, tool := range a.tools {

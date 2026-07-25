@@ -42,7 +42,10 @@ func TestStartResponseStreamsImageThroughTemporaryRequestFile(t *testing.T) {
 	request := ResponsesRequest{
 		Model: "gpt-test", Instructions: "Keep visible summaries in the user's language.",
 		SafetyIdentifier: "stable-pseudonymous-user",
-		Stream: true, Store: false,
+		Stream:           true, Store: false,
+		StreamOptions: &StreamOptions{
+			ReasoningSummaryDelivery: ReasoningSummaryDeliverySequentialCutoff,
+		},
 		Input: []ResponseInput{{
 			Role: "user",
 			Content: []ResponseContent{
@@ -69,6 +72,11 @@ func TestStartResponseStreamsImageThroughTemporaryRequestFile(t *testing.T) {
 	if received["instructions"] != request.Instructions {
 		t.Fatalf("instructions = %#v", received["instructions"])
 	}
+	streamOptions, _ := received["stream_options"].(map[string]any)
+	if streamOptions["reasoning_summary_delivery"] !=
+		ReasoningSummaryDeliverySequentialCutoff {
+		t.Fatalf("stream_options = %#v", streamOptions)
+	}
 	input := received["input"].([]any)[0].(map[string]any)
 	content := input["content"].([]any)
 	imageURL := content[1].(map[string]any)["image_url"].(string)
@@ -81,6 +89,26 @@ func TestStartResponseStreamsImageThroughTemporaryRequestFile(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary request files remain: %#v", entries)
+	}
+}
+
+func TestCompileRequestRejectsUnknownReasoningSummaryDelivery(t *testing.T) {
+	baseURL, _ := url.Parse("http://127.0.0.1:1/v1")
+	client := NewClient(config.Provider{
+		BaseURL: baseURL, APIKey: "test", RequestBodyMaxBytes: 1 << 20,
+		RequestTempDir: t.TempDir(),
+	}, "test")
+	_, _, _, err := client.compileRequest(ResponsesRequest{
+		Model:  "gpt-test",
+		Input:  []ResponseInput{{Role: "user", Content: "hello"}},
+		Stream: true,
+		StreamOptions: &StreamOptions{
+			ReasoningSummaryDelivery: "arbitrary_passthrough",
+		},
+		Reasoning: ReasoningOptions{Summary: "auto"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported reasoning summary delivery") {
+		t.Fatalf("compileRequest() error = %v", err)
 	}
 }
 
