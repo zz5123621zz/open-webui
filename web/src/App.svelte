@@ -572,24 +572,23 @@
     }
   }
 
-  async function refreshModels() {
+  function reloadApplication() {
     profileOpen = false;
-    workspaceError = '';
-    try {
-      const loaded = await getModels();
-      models = loaded;
-      if (!activeConversation) {
-        const availableModes = visibleModeModels(loaded);
-        const nextDraftModel = availableModes.some((model) => model.id === draftModel)
-          ? draftModel
-          : availableModes.find((model) => modelModeInfo(model)?.key === 'expert')?.id ||
-            availableModes[0]?.id ||
-            '';
-        setDraftModel(nextDraftModel);
-      }
-    } catch (error) {
-      workspaceError = errorMessage(error);
+    if (generating) {
+      workspaceError = t(
+        '回答生成完成后再刷新应用。',
+        'Wait for the current response to finish before reloading the app.'
+      );
+      return;
     }
+    if (text.trim() || uploads.length > 0) {
+      workspaceError = t(
+        '输入框还有未发送内容，请先发送或清空后再刷新应用。',
+        'The composer contains an unsent draft. Send or clear it before reloading the app.'
+      );
+      return;
+    }
+    window.location.reload();
   }
 
   async function storeBrowserCredential(username: string, password: string) {
@@ -1733,8 +1732,8 @@
         chineseName: '快速',
         englishName: 'Fast',
         technicalName: 'Luna',
-        chineseDescription: '响应速度优先，适合日常问答、改写和快速检索。',
-        englishDescription: 'Prioritizes speed for everyday questions, rewriting, and quick searches.'
+        chineseDescription: '响应最快的模型，适合日常问答、改写和快速检索。',
+        englishDescription: 'The fastest model, suited to everyday questions, rewriting, and quick searches.'
       };
     }
     if (/(^|[-_.])terra($|[-_.])/.test(id)) {
@@ -1743,8 +1742,8 @@
         chineseName: '均衡',
         englishName: 'Balanced',
         technicalName: 'Terra',
-        chineseDescription: '兼顾速度与能力，适合大多数分析、写作和多步骤任务。',
-        englishDescription: 'Balances speed and capability for analysis, writing, and multi-step tasks.'
+        chineseDescription: '智能与速度均衡的模型，适合大多数分析、写作和多步骤任务。',
+        englishDescription: 'A model balancing intelligence and speed, suited to analysis, writing, and multi-step tasks.'
       };
     }
     if (/(^|[-_.])sol($|[-_.])/.test(id)) {
@@ -1753,8 +1752,8 @@
         chineseName: '专家',
         englishName: 'Expert',
         technicalName: 'Sol',
-        chineseDescription: '能力优先，适合复杂推理、编程和高要求任务，等待可能更久。',
-        englishDescription: 'Prioritizes capability for complex reasoning, coding, and demanding work; it may take longer.'
+        chineseDescription: '最高智能的模型，适合复杂推理、编程和高要求任务。',
+        englishDescription: 'The most intelligent model, suited to complex reasoning, coding, and demanding work.'
       };
     }
     return null;
@@ -2006,7 +2005,13 @@
       {/if}
 
       <div class="sidebar-footer">
-        <button class="profile-button" on:click={() => (profileOpen = !profileOpen)}>
+        <button
+          class="profile-button"
+          aria-haspopup="true"
+          aria-expanded={profileOpen}
+          aria-controls="profile-menu"
+          on:click={() => (profileOpen = !profileOpen)}
+        >
           <span class="profile-avatar">{user?.displayName?.slice(0, 1).toUpperCase()}</span>
           <span class="profile-copy">
             <strong>{user?.displayName}</strong>
@@ -2017,7 +2022,7 @@
           <Icon name="more" size={18} />
         </button>
         {#if profileOpen}
-          <div class="profile-menu">
+          <div class="profile-menu" id="profile-menu">
             <button on:click={toggleTheme}>
               <Icon
                 name={theme === 'system' ? 'theme' : resolvedTheme === 'dark' ? 'sun' : 'moon'}
@@ -2038,7 +2043,7 @@
             <button on:click={openOnboarding}>
               <Icon name="plan" size={17} />{t('新手指南', 'Getting started')}
             </button>
-            <button on:click={refreshModels}><Icon name="refresh" size={17} />{t('刷新模型目录', 'Refresh model catalog')}</button>
+            <button on:click={reloadApplication}><Icon name="refresh" size={17} />{t('刷新应用', 'Reload app')}</button>
             {#if user?.role === 'admin'}
               <button on:click={() => openDialog('service')}><Icon name="sparkles" size={17} />{t('推理摘要设置', 'Reasoning summary settings')}</button>
             {/if}

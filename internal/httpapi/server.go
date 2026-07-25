@@ -168,7 +168,10 @@ func (s *Server) serveFrontend(w http.ResponseWriter, r *http.Request) {
 		requestPath = "index.html"
 	}
 	if requestPath == "index.html" {
-		w.Header().Set("Cache-Control", "no-cache")
+		// The HTML shell points at content-hashed immutable assets. Never retain
+		// the shell itself, otherwise a long-lived browser cache can keep loading
+		// an older asset graph after a deployment.
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}

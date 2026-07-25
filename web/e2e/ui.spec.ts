@@ -437,7 +437,17 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .getByRole('button', { name: '关闭', exact: true })
     .click();
   if (testInfo.project.name === 'mobile') {
+    await page.setViewportSize({ width: 812, height: 375 });
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await expect(page.getByRole('button', { name: '显示与字体' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '刷新应用' })).toBeVisible();
+    const profileMenu = await page.locator('.profile-menu').boundingBox();
+    expect(profileMenu).not.toBeNull();
+    expect(profileMenu!.y).toBeGreaterThanOrEqual(0);
+    expect(profileMenu!.y + profileMenu!.height).toBeLessThanOrEqual(376);
+    await page.getByRole('button', { name: /Alice/ }).click();
     await page.locator('.mobile-close').click();
+    await page.setViewportSize({ width: 375, height: 812 });
   }
 
   const initialSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
@@ -455,6 +465,12 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
 
     await page.locator('.model-picker-trigger').click();
     await expect(page.getByRole('option')).toHaveCount(3);
+    await expect(page.getByRole('option', { name: /^快速/ }))
+      .toContainText('响应最快的模型，适合日常问答、改写和快速检索。');
+    await expect(page.getByRole('option', { name: /^均衡/ }))
+      .toContainText('智能与速度均衡的模型，适合大多数分析、写作和多步骤任务。');
+    await expect(page.getByRole('option', { name: /^专家/ }))
+      .toContainText('最高智能的模型，适合复杂推理、编程和高要求任务。');
     await expect(page.getByRole('option', { name: /^快速/ })).toContainText('GPT · Luna');
     await expect(page.getByRole('option', { name: /^均衡/ })).toContainText('GPT · Terra');
     await expect(page.getByRole('option', { name: /^专家/ })).toContainText('GPT · Sol');

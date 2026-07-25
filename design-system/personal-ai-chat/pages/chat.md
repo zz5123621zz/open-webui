@@ -94,7 +94,9 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
 - Model picker: a compact sheet/popover exposing exactly three user-facing
   modes with a visible selected check: Fast maps to GPT Luna, Balanced maps to
   GPT Terra, and Expert maps to GPT Sol. Raw model IDs and non-GPT catalog
-  entries stay out of the selector.
+  entries stay out of the selector. Descriptions state the practical
+  positioning once ("fastest", "balanced intelligence and speed", "most
+  intelligent") without repeating the GPT 5.6 family or a ranking formula.
 - Reasoning picker: visually paired with the model picker. It exposes three
   plain-language levels (low/medium/high), includes a short speed/quality
   description, and discloses the CPA `medium`/`high`/`max` mapping.
@@ -127,3 +129,6 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
   the preference and username may be retained in local storage.
 - Mobile dialogs: bottom sheets with safe-area padding and an explicit close
   button; desktop dialogs remain centered.
+- The profile menu remains vertically scrollable in short or landscape
+  viewports. Its refresh action reloads the complete app and model catalog,
+  while refusing to discard an active response or unsent composer content.

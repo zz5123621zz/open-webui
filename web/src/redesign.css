@@ -719,12 +719,17 @@ button:disabled {
   right: 0;
   bottom: 60px;
   left: 0;
+  max-height: min(560px, calc(100dvh - 84px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border-color: var(--border);
   border-radius: 14px;
   background: var(--surface);
   box-shadow: var(--shadow-md);
   backdrop-filter: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
 .profile-menu button {
