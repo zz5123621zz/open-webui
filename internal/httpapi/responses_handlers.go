@@ -154,6 +154,17 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		sentEffort = ""
 	}
 
+	clientContext := r.Context()
+	responseContext, cancelResponse, finishResponse, err := s.beginResponseJob(clientContext)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "service_stopping", "The service is stopping.")
+		return
+	}
+	defer finishResponse()
+	r = r.WithContext(responseContext)
+	s.registerResponse(request.RequestID, session.User.ID, cancelResponse)
+	defer s.unregisterResponse(request.RequestID)
+
 	lease, queuedStream, ok := s.acquireResponseJob(w, r, session.User.ID, conversationID)
 	if !ok {
 		return
@@ -190,7 +201,8 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.streamAssistantResponse(
-		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
+		w, r, clientContext, cancelResponse,
+		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, assistantMessage, &userMessage, nil, queuedStream,
 		request.GenerateImage, request.Text,
 	)
@@ -257,6 +269,17 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	if sentEffort == "auto" {
 		sentEffort = ""
 	}
+	clientContext := r.Context()
+	responseContext, cancelResponse, finishResponse, err := s.beginResponseJob(clientContext)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "service_stopping", "The service is stopping.")
+		return
+	}
+	defer finishResponse()
+	r = r.WithContext(responseContext)
+	s.registerResponse(request.RequestID, session.User.ID, cancelResponse)
+	defer s.unregisterResponse(request.RequestID)
+
 	lease, queuedStream, ok := s.acquireResponseJob(w, r, session.User.ID, conversation.ID)
 	if !ok {
 		return
@@ -294,7 +317,8 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.streamAssistantResponse(
-		w, r, session.User.ID, request.RequestID, conversation, model, sentEffort,
+		w, r, clientContext, cancelResponse,
+		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, assistant, nil, history, queuedStream, generateImage,
 		latestUserText(history),
 	)
@@ -303,6 +327,8 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamAssistantResponse(
 	w http.ResponseWriter,
 	r *http.Request,
+	clientContext context.Context,
+	cancelResponse context.CancelCauseFunc,
 	userID string,
 	requestID string,
 	conversation store.Conversation,
@@ -316,16 +342,11 @@ func (s *Server) streamAssistantResponse(
 	generateImage bool,
 	imagePrompt string,
 ) {
-	responseContext, cancelResponse := context.WithCancel(r.Context())
-	r = r.WithContext(responseContext)
 	s.registerResponse(assistantMessage.ID, userID, cancelResponse)
-	defer func() {
-		s.unregisterResponse(assistantMessage.ID)
-		cancelResponse()
-	}()
+	defer s.unregisterResponse(assistantMessage.ID)
 
 	if stream == nil {
-		stream = newSSEWriter(w)
+		stream = newResponseSSEWriter(w)
 		stream.start()
 	}
 	started := map[string]any{
@@ -336,20 +357,40 @@ func (s *Server) streamAssistantResponse(
 	} else {
 		started["regenerated"] = true
 	}
-	if err := stream.send("response.started", started); err != nil {
-		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
-		return
-	}
+	_ = stream.send("response.started", started)
 	initialStage := "preparing_context"
 	if generateImage && model.ImageGenerationMode == "dedicated" {
 		initialStage = "generating_image"
 	}
-	if err := stream.send("response.stage", map[string]string{"stage": initialStage}); err != nil {
-		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
-		return
-	}
-	stopHeartbeat := stream.startHeartbeat(r.Context(), sseHeartbeatInterval, cancelResponse)
+	_ = stream.send("response.stage", map[string]string{"stage": initialStage})
+	stopHeartbeat := stream.startHeartbeat(clientContext, sseHeartbeatInterval, func() {})
 	defer stopHeartbeat()
+	completeInterruption := func(parts []store.NewMessagePart) {
+		code := responseInterruptionCode(r.Context())
+		finalContext, cancelFinal := context.WithTimeout(
+			context.WithoutCancel(r.Context()), 5*time.Second,
+		)
+		finalMessage, err := s.store.CompleteAssistant(
+			finalContext, userID, assistantMessage.ID, store.AssistantResult{
+				Status: "interrupted", ErrorCode: code, Parts: parts,
+			},
+		)
+		cancelFinal()
+		if err != nil {
+			s.logger.Error(
+				"store interrupted assistant failed",
+				"error", err,
+				"message_id", assistantMessage.ID,
+			)
+		}
+		payload := map[string]any{
+			"code": code, "message": "The response ended before completion.",
+		}
+		if err == nil {
+			payload["messageRecord"] = finalMessage
+		}
+		_ = stream.send("response.error", payload)
+	}
 
 	if generateImage && model.ImageGenerationMode == "dedicated" {
 		s.streamDedicatedImage(
@@ -363,6 +404,10 @@ func (s *Server) streamAssistantResponse(
 	if history == nil {
 		history, err = s.store.ListMessages(r.Context(), userID, conversation.ID)
 		if err != nil {
+			if r.Context().Err() != nil {
+				completeInterruption(nil)
+				return
+			}
 			_, _ = s.failAssistant(r.Context(), userID, assistantMessage.ID, "history_unavailable", nil)
 			s.logger.Error("load response history failed", "error", err)
 			_ = stream.send("response.error", map[string]string{"code": "history_unavailable", "message": "Conversation history could not be loaded."})
@@ -377,6 +422,10 @@ func (s *Server) streamAssistantResponse(
 		},
 	)
 	if err != nil {
+		if r.Context().Err() != nil {
+			completeInterruption(nil)
+			return
+		}
 		code := "context_compaction_failed"
 		if errors.Is(err, activecontext.ErrContextTooLarge) {
 			code = "context_too_large"
@@ -390,6 +439,10 @@ func (s *Server) streamAssistantResponse(
 	}
 	providerRequest, err := s.buildResponsesRequest(r.Context(), userID, conversation, model, sentEffort, active.Checkpoint, active.Messages)
 	if err != nil {
+		if r.Context().Err() != nil {
+			completeInterruption(nil)
+			return
+		}
 		_, _ = s.failAssistant(r.Context(), userID, assistantMessage.ID, "attachment_unavailable", nil)
 		s.logger.Error("compile provider request failed", "error", err)
 		_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
@@ -405,11 +458,7 @@ func (s *Server) streamAssistantResponse(
 			enableProgressiveSummary(&providerRequest)
 		}
 	}
-	if err := stream.send("response.stage", map[string]string{"stage": "waiting_for_model"}); err != nil {
-		s.summaries.MarkInconclusive(summaryDecision)
-		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "client_disconnected", nil)
-		return
-	}
+	_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
 	newAccumulator := func() responseAccumulator {
 		return responseAccumulator{
 			saveImage: func(encoded string) (generatedImage, error) {
@@ -425,8 +474,39 @@ func (s *Server) streamAssistantResponse(
 		if request.StreamOptions != nil {
 			s.summaries.MarkAccepted(summaryDecision)
 		}
+		lastProgressSave := time.Time{}
 		consumeErr := consumeProviderSSE(upstream.Body, func(event providerStreamEvent) error {
-			return accumulator.handle(stream, event)
+			if err := accumulator.handle(stream, event); err != nil {
+				return err
+			}
+			if !lastProgressSave.IsZero() &&
+				time.Since(lastProgressSave) < time.Second {
+				return nil
+			}
+			progressParts := accumulator.progressParts()
+			if len(progressParts) == 0 && len(accumulator.providerItems) == 0 {
+				return nil
+			}
+			progressContext, cancelProgress := context.WithTimeout(
+				context.WithoutCancel(r.Context()), 5*time.Second,
+			)
+			_, progressErr := s.store.SaveAssistantProgress(
+				progressContext, userID, assistantMessage.ID, store.AssistantResult{
+					ProviderResponseID: accumulator.responseID,
+					InputTokens:        accumulator.inputTokens,
+					OutputTokens:       accumulator.outputTokens,
+					ReasoningTokens:    accumulator.reasoningTokens,
+					Parts:              progressParts,
+					ProviderItems:      accumulator.providerItems,
+				},
+			)
+			cancelProgress()
+			if progressErr != nil {
+				accumulator.failureCode = "persistence_failed"
+				return progressErr
+			}
+			lastProgressSave = time.Now()
+			return nil
 		})
 		closeErr := upstream.Body.Close()
 		if consumeErr == nil {
@@ -467,6 +547,10 @@ func (s *Server) streamAssistantResponse(
 			)
 			if forceErr != nil {
 				s.summaries.MarkInconclusive(summaryDecision)
+				if r.Context().Err() != nil {
+					completeInterruption(nil)
+					return
+				}
 				_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "context_compaction_failed", nil)
 				_ = stream.send("response.error", map[string]string{
 					"code": "context_compaction_failed", "message": "The conversation is too large and could not be compacted safely.",
@@ -479,6 +563,10 @@ func (s *Server) streamAssistantResponse(
 			)
 			if err != nil {
 				s.summaries.MarkInconclusive(summaryDecision)
+				if r.Context().Err() != nil {
+					completeInterruption(nil)
+					return
+				}
 				_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, "attachment_unavailable", nil)
 				_ = stream.send("response.error", map[string]string{"code": "attachment_unavailable", "message": "An image could not be prepared."})
 				return
@@ -496,6 +584,10 @@ func (s *Server) streamAssistantResponse(
 		break
 	}
 	if startErr != nil {
+		if r.Context().Err() != nil {
+			completeInterruption(nil)
+			return
+		}
 		code, _, message := providerStartError(startErr)
 		_, _ = s.failAssistant(context.WithoutCancel(r.Context()), userID, assistantMessage.ID, code, nil)
 		_ = stream.send("response.error", map[string]string{"code": code, "message": message})
@@ -505,9 +597,9 @@ func (s *Server) streamAssistantResponse(
 	status := "completed"
 	errorCode := ""
 	if consumeErr != nil {
-		if errors.Is(consumeErr, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+		if r.Context().Err() != nil {
 			status = "interrupted"
-			errorCode = "client_disconnected"
+			errorCode = responseInterruptionCode(r.Context())
 		} else if errors.Is(consumeErr, store.ErrStorageQuota) {
 			status = "error"
 			errorCode = "storage_quota_exceeded"
@@ -617,10 +709,30 @@ func (s *Server) streamDedicatedImage(
 		CallID: callID, Type: "image_generation", Status: "in_progress",
 		Data: json.RawMessage(`{"explicit":true}`),
 	}
-	if err := stream.send("response.tool", running); err != nil {
-		_, _ = s.completeDedicatedImageFailure(
-			context.WithoutCancel(ctx), userID, messageID, running, "client_disconnected", "interrupted",
+	_ = stream.send("response.tool", running)
+	rawRunning, _ := json.Marshal(running)
+	progressContext, cancelProgress := context.WithTimeout(
+		context.WithoutCancel(ctx), 5*time.Second,
+	)
+	_, progressErr := s.store.SaveAssistantProgress(
+		progressContext, userID, messageID, store.AssistantResult{
+			Parts: []store.NewMessagePart{{
+				Type: "tool", JSONContent: rawRunning,
+			}},
+		},
+	)
+	cancelProgress()
+	if progressErr != nil {
+		_, _ = s.failAssistant(
+			context.WithoutCancel(ctx), userID, messageID,
+			"persistence_failed", []store.NewMessagePart{{
+				Type: "tool", JSONContent: rawRunning,
+			}},
 		)
+		_ = stream.send("response.error", map[string]string{
+			"code": "persistence_failed",
+			"message": "The image response could not be tracked safely.",
+		})
 		return
 	}
 
@@ -631,7 +743,7 @@ func (s *Server) streamDedicatedImage(
 		code, _, message := providerStartError(generationErr)
 		status := "error"
 		if ctx.Err() != nil {
-			code = "client_disconnected"
+			code = responseInterruptionCode(ctx)
 			message = "The image request ended before completion."
 			status = "interrupted"
 		} else if errors.Is(generationErr, provider.ErrBadResponse) {
@@ -656,6 +768,22 @@ func (s *Server) streamDedicatedImage(
 			"status", status,
 			"error_code", code,
 		)
+		return
+	}
+	if ctx.Err() != nil {
+		code := responseInterruptionCode(ctx)
+		failed := running
+		failed.Status = "failed"
+		failed.DurationMS = time.Since(startedAt).Milliseconds()
+		failed.ErrorCode = code
+		finalMessage, _ := s.completeDedicatedImageFailure(
+			context.WithoutCancel(ctx), userID, messageID, failed, code, "interrupted",
+		)
+		_ = stream.send("response.tool", failed)
+		_ = stream.send("response.error", map[string]any{
+			"code": code, "message": "The image request ended before completion.",
+			"messageRecord": finalMessage,
+		})
 		return
 	}
 
@@ -783,7 +911,7 @@ func (s *Server) acquireResponseJob(
 	lease, err := s.jobs.AcquireWithQueueCallback(
 		r.Context(), userID, conversationID,
 		func(position int) error {
-			stream = newSSEWriter(w)
+			stream = newResponseSSEWriter(w)
 			stream.start()
 			return stream.send("response.queued", map[string]any{
 				"position":       position,
@@ -1027,10 +1155,18 @@ type sseWriter struct {
 	writer     http.ResponseWriter
 	controller *http.ResponseController
 	mu         sync.Mutex
+	bestEffort bool
+	failed     bool
 }
 
 func newSSEWriter(w http.ResponseWriter) *sseWriter {
 	return &sseWriter{writer: w, controller: http.NewResponseController(w)}
+}
+
+func newResponseSSEWriter(w http.ResponseWriter) *sseWriter {
+	stream := newSSEWriter(w)
+	stream.bestEffort = true
+	return stream
 }
 
 func (s *sseWriter) start() {
@@ -1049,19 +1185,41 @@ func (s *sseWriter) send(event string, data any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failed && s.bestEffort {
+		return nil
+	}
 	if _, err := fmt.Fprintf(s.writer, "event: %s\ndata: %s\n\n", event, raw); err != nil {
+		s.failed = true
+		if s.bestEffort {
+			return nil
+		}
 		return err
 	}
-	return s.controller.Flush()
+	if err := s.controller.Flush(); err != nil {
+		s.failed = true
+		if s.bestEffort {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *sseWriter) comment(value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.failed && s.bestEffort {
+		return io.ErrClosedPipe
+	}
 	if _, err := fmt.Fprintf(s.writer, ": %s\n\n", value); err != nil {
+		s.failed = true
 		return err
 	}
-	return s.controller.Flush()
+	if err := s.controller.Flush(); err != nil {
+		s.failed = true
+		return err
+	}
+	return nil
 }
 
 func (s *sseWriter) startHeartbeat(
@@ -1847,6 +2005,14 @@ func sanitizeOptionalCode(value string) string {
 
 func (a *responseAccumulator) parts() []store.NewMessagePart {
 	a.finishOpenReasoning()
+	return a.buildParts()
+}
+
+func (a *responseAccumulator) progressParts() []store.NewMessagePart {
+	return a.buildParts()
+}
+
+func (a *responseAccumulator) buildParts() []store.NewMessagePart {
 	parts := make([]store.NewMessagePart, 0, len(a.partOrder)+4)
 	emitted := make(map[string]bool, len(a.partOrder)+4)
 	appendPart := func(partType, key string) {

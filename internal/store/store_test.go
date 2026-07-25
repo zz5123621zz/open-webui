@@ -387,6 +387,152 @@ func TestAssistantProviderItemsAndToolEventsPersistTransactionally(t *testing.T)
 	}
 }
 
+func TestAssistantProgressSnapshotsReplaceEarlierEvidence(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "progress-user", "Progress", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := dataStore.CreateConversation(
+		ctx, user.ID, "Progress", "gpt-test", "high",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, assistant, err := dataStore.BeginResponse(
+		ctx, user.ID, conversation.ID, "progress-request", "hello",
+		"gpt-test", "high", "high", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.SaveAssistantProgress(
+		ctx, user.ID, assistant.ID, AssistantResult{
+			ProviderResponseID: "response-1",
+			Parts: []NewMessagePart{
+				{Type: "text", TextContent: "partial"},
+				{
+					Type: "tool",
+					JSONContent: json.RawMessage(
+						`{"callId":"search-1","type":"web_search","status":"in_progress","data":{"query":"safe"}}`,
+					),
+				},
+			},
+			ProviderItems: []NewProviderItem{{
+				ItemType: "message",
+				ReplayJSON: json.RawMessage(
+					`{"type":"message","id":"provider-message-1","content":[]}`,
+				),
+			}},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := dataStore.MessageByID(ctx, user.ID, assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.Status != "streaming" || len(progress.Parts) != 2 ||
+		progress.Parts[0].TextContent != "partial" ||
+		len(progress.ProviderItems) != 1 {
+		t.Fatalf("first progress snapshot = %#v", progress)
+	}
+
+	if _, err := dataStore.SaveAssistantProgress(
+		ctx, user.ID, assistant.ID, AssistantResult{
+			ProviderResponseID: "response-1",
+			Parts: []NewMessagePart{{
+				Type: "text", TextContent: "partial replacement",
+			}},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	progress, err = dataStore.MessageByID(ctx, user.ID, assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(progress.Parts) != 1 ||
+		progress.Parts[0].TextContent != "partial replacement" ||
+		len(progress.ProviderItems) != 0 {
+		t.Fatalf("replacement progress snapshot = %#v", progress)
+	}
+	var toolCount int
+	if err := dataStore.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tool_events WHERE message_id = ?
+	`, assistant.ID).Scan(&toolCount); err != nil {
+		t.Fatal(err)
+	}
+	if toolCount != 0 {
+		t.Fatalf("stale tool event count = %d", toolCount)
+	}
+
+	completed, err := dataStore.CompleteAssistant(
+		ctx, user.ID, assistant.ID, AssistantResult{
+			Status: "completed",
+			Parts: []NewMessagePart{{
+				Type: "text", TextContent: "final",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != "completed" || len(completed.Parts) != 1 ||
+		completed.Parts[0].TextContent != "final" {
+		t.Fatalf("completed snapshot = %#v", completed)
+	}
+}
+
+func TestInterruptActiveResponsesRetainsSavedProgress(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "recovery-user", "Recovery", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := dataStore.CreateConversation(
+		ctx, user.ID, "Recovery", "gpt-test", "high",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, assistant, err := dataStore.BeginResponse(
+		ctx, user.ID, conversation.ID, "recovery-request", "hello",
+		"gpt-test", "high", "high", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.SaveAssistantProgress(
+		ctx, user.ID, assistant.ID, AssistantResult{
+			Parts: []NewMessagePart{{
+				Type: "text", TextContent: "saved before restart",
+			}},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	affected, err := dataStore.InterruptActiveResponses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affected != 1 {
+		t.Fatalf("interrupted responses = %d", affected)
+	}
+	recovered, err := dataStore.MessageByID(ctx, user.ID, assistant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "interrupted" ||
+		recovered.ErrorCode != "service_interrupted" ||
+		len(recovered.Parts) != 1 ||
+		recovered.Parts[0].TextContent != "saved before restart" {
+		t.Fatalf("recovered response = %#v", recovered)
+	}
+}
+
 func TestProgressiveSummarySettingIsNarrowAndAudited(t *testing.T) {
 	dataStore := openTestStore(t)
 	ctx := context.Background()

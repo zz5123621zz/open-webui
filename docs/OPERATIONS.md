@@ -194,6 +194,16 @@ sudo systemctl reload nginx
 必须关闭响应和请求缓冲。应用在活动回答期间每 15 秒发送 SSE 注释心跳，
 用于跨过反代和浏览器的长时间无输出阶段。
 
+SSE 连接现在只是回答订阅，不再拥有 CPA 请求。关闭页面、断网、刷新或退出
+登录不会停止回答；用户必须点击“停止”发送显式取消。运行中安全证据至多每秒
+写入一次 SQLite，重新打开会话时前端每秒读取单条 assistant 记录。详细状态、
+重启边界和验收步骤见 [后台回答](BACKGROUND_RESPONSES.md)。
+
+应用停止或更新时应保留 Compose 的正常 `SIGTERM` 流程，不要直接发送
+`SIGKILL`。正常关机会取消 Provider 请求并把状态保存为
+`service_interrupted`；即使被强制终止，下次应用服务启动也会修复遗留
+`streaming` 状态。任何重启场景都不会自动重发 CPA 请求。
+
 ## 5. 发布
 
 ```bash

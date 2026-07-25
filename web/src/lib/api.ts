@@ -192,6 +192,13 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
   return body.messages;
 }
 
+export async function getResponse(messageId: string): Promise<Message> {
+  const body = await request<{ message: Message }>(
+    `/api/v1/responses/${encodeURIComponent(messageId)}`
+  );
+  return body.message;
+}
+
 export async function getContextCheckpoints(conversationId: string): Promise<ContextCheckpoint[]> {
   const body = await request<{ checkpoints: ContextCheckpoint[] }>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/context-checkpoints`

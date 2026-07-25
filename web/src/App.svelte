@@ -11,6 +11,7 @@
     getContextCheckpoints,
     getMessages,
     getModels,
+    getResponse,
     getSession,
     getStorageStatus,
     login,
@@ -47,7 +48,8 @@
     | 'reasoning'
     | 'searching'
     | 'generating_image'
-    | 'answering';
+    | 'answering'
+    | 'background';
   type SuggestionIcon = 'plan' | 'search' | 'image-plus' | 'sparkles' | 'upload';
   type Suggestion = {
     id: string;
@@ -98,6 +100,7 @@
   let showArchived = false;
   let abortController: AbortController | null = null;
   let activeAssistantId = '';
+  let activeResponseCancelId = '';
   let scrollElement: HTMLDivElement;
   let textareaElement: HTMLTextAreaElement;
   let fileElement: HTMLInputElement;
@@ -116,6 +119,7 @@
   let generationStartedAt = 0;
   let generationNow = Date.now();
   let generationTimer: number | undefined;
+  let responseWatchVersion = 0;
   let onboardingOpen = false;
   let visibleSuggestions: Suggestion[] = [];
   const fontSizeChoices = [
@@ -393,6 +397,7 @@
     refreshSuggestions();
     void initialize();
     return () => {
+      responseWatchVersion += 1;
       systemTheme.removeEventListener('change', updateSystemTheme);
       stopGenerationClock();
     };
@@ -473,9 +478,24 @@
         'The image service returned an image that could not be saved safely.'
       ],
       stream_incomplete: [
-        '连接在回答完成前中断，已尝试恢复最新状态。',
-        'The connection ended before completion. The latest state was restored when possible.'
+        '页面连接已中断，回答仍会在服务器后台继续。',
+        'The page connection ended. The response will continue on the server.'
       ],
+      response_cancelled: ['回答已由你停止。', 'The response was stopped by you.'],
+      service_interrupted: [
+        '服务重启中断了这次回答；已保留中断前的内容，可手动重试。',
+        'A service restart interrupted this response. Saved progress remains available for a manual retry.'
+      ],
+      response_timeout: [
+        '回答运行超过 30 分钟，已由服务器停止。',
+        'The response exceeded 30 minutes and was stopped by the server.'
+      ],
+      response_interrupted: ['回答被中断。', 'The response was interrupted.'],
+      persistence_failed: [
+        '回答进度无法安全保存，生成已停止。',
+        'Response progress could not be saved safely, so generation stopped.'
+      ],
+      service_stopping: ['服务正在重启，请稍后再试。', 'The service is restarting. Try again shortly.'],
       too_many_requests: ['当前请求较多，请稍后再试。', 'The request queue is full. Try again shortly.'],
       storage_quota_exceeded: [
         '你的 3 GB 活跃空间已满，请先将对话移入临时留档或删除图片。',
@@ -645,7 +665,13 @@
     try {
       await logout();
     } finally {
+      responseWatchVersion += 1;
       abortController?.abort();
+      generating = false;
+      stopGenerationClock();
+      activeAssistantId = '';
+      activeResponseCancelId = '';
+      activeConversationId = '';
       user = null;
       messages = [];
       checkpoints = [];
@@ -661,7 +687,13 @@
   }
 
   function clearWorkspaceAndShowLogin() {
+    responseWatchVersion += 1;
     abortController?.abort();
+    generating = false;
+    stopGenerationClock();
+    activeAssistantId = '';
+    activeResponseCancelId = '';
+    activeConversationId = '';
     user = null;
     messages = [];
     checkpoints = [];
@@ -738,6 +770,7 @@
       followStream = true;
       showJumpToLatest = false;
       await scrollToBottom(false);
+      resumePersistedResponse(id);
     } catch (error) {
       workspaceError = errorMessage(error);
     } finally {
@@ -1068,10 +1101,16 @@
     }
   }
 
-  function beginGenerationClock(stage: GenerationStage = 'sending') {
+  function beginGenerationClock(
+    stage: GenerationStage = 'sending',
+    startedAt = Date.now()
+  ) {
     stopGenerationClock();
-    generationStartedAt = Date.now();
-    generationNow = generationStartedAt;
+    generationNow = Date.now();
+    generationStartedAt = Math.min(
+      generationNow,
+      Number.isFinite(startedAt) && startedAt > 0 ? startedAt : generationNow
+    );
     generationStage = stage;
     generationTimer = window.setInterval(() => {
       generationNow = Date.now();
@@ -1096,7 +1135,8 @@
       'reasoning',
       'searching',
       'generating_image',
-      'answering'
+      'answering',
+      'background'
     ];
     if (knownStages.includes(stage as GenerationStage)) {
       generationStage = stage as GenerationStage;
@@ -1112,29 +1152,104 @@
       reasoning: ['正在推理并整理思路', 'Reasoning and organizing the approach'],
       searching: ['正在搜索并核对网页', 'Searching and checking web pages'],
       generating_image: ['正在生成图片', 'Generating the image'],
-      answering: ['正在组织并输出回答', 'Composing and streaming the answer']
+      answering: ['正在组织并输出回答', 'Composing and streaming the answer'],
+      background: [
+        '回答正在服务器后台继续生成',
+        'The response is continuing on the server'
+      ]
     };
     return stage ? t(...labels[stage]) : t('正在处理', 'Working');
   }
 
-  async function reconcileStreamFailure(
+  function isRunningResponse(message: Message | undefined): boolean {
+    return message?.status === 'streaming' || message?.status === 'pending';
+  }
+
+  function latestRunningResponse(items: Message[]): Message | undefined {
+    return [...items]
+      .reverse()
+      .find((message) => message.role === 'assistant' && isRunningResponse(message));
+  }
+
+  async function watchPersistedResponse(
     conversationId: string,
-    assistantId: string
+    assistantId: string,
+    watchVersion: number,
+    initial?: Message
   ): Promise<Message | undefined> {
-    for (const delay of [0, 250, 750, 1500, 2500]) {
-      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    let restored = initial;
+    let firstPoll = true;
+    while (watchVersion === responseWatchVersion) {
+      if (restored && !isRunningResponse(restored)) return restored;
+      if (!firstPoll) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        if (watchVersion !== responseWatchVersion) break;
+      }
+      firstPoll = false;
       try {
-        const latest = await getMessages(conversationId);
-        messages = latest;
-        const restored = latest.find((message) => message.id === assistantId);
-        if (restored && restored.status !== 'streaming' && restored.status !== 'pending') {
-          return restored;
+        restored = await getResponse(assistantId);
+        if (watchVersion !== responseWatchVersion) break;
+        if (activeConversationId === conversationId) {
+          replaceMessage(restored);
+          queueScroll();
         }
-      } catch {
-        return undefined;
+      } catch (error) {
+        if (error instanceof APIError && error.status === 401) {
+          clearWorkspaceAndShowLogin();
+          return undefined;
+        }
+        // A temporary viewer/network failure does not control the server-side job.
       }
     }
-    return undefined;
+    return restored;
+  }
+
+  async function recoverRunningResponse(
+    conversationId: string
+  ): Promise<Message | undefined> {
+    try {
+      const latest = await getMessages(conversationId);
+      if (activeConversationId === conversationId) messages = latest;
+      return latestRunningResponse(latest);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function resumePersistedResponse(conversationId: string) {
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (!ownsConversation(conversation)) return;
+    const running = latestRunningResponse(messages);
+    if (!running) return;
+
+    const watchVersion = ++responseWatchVersion;
+    generating = true;
+    abortController = null;
+    activeAssistantId = running.id;
+    activeResponseCancelId = running.id;
+    contextStatus = '';
+    beginGenerationClock('background', running.createdAt);
+
+    void (async () => {
+      const restored = await watchPersistedResponse(
+        conversationId, running.id, watchVersion, running
+      );
+      if (watchVersion !== responseWatchVersion) return;
+      if (restored && restored.status !== 'completed' && restored.errorCode) {
+        workspaceError = localizedAPIError(
+          restored.errorCode,
+          t('回答生成未完成。', 'The response did not complete.')
+        );
+      }
+      generating = false;
+      stopGenerationClock();
+      activeAssistantId = '';
+      activeResponseCancelId = '';
+      contextStatus = '';
+      await refreshCheckpoints(conversationId);
+      await refreshStorage();
+      queueScroll();
+    })();
   }
 
   async function send() {
@@ -1152,7 +1267,10 @@
     if (!conversation) conversation = await newConversation();
     if (!conversation) return;
 
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
     generating = true;
+    activeResponseCancelId = requestId;
     beginGenerationClock('sending');
     followStream = true;
     showJumpToLatest = false;
@@ -1171,7 +1289,7 @@
         conversation.id,
         outgoingText,
         outgoingUploads.map((attachment) => attachment.id),
-        crypto.randomUUID(),
+        requestId,
         outgoingGenerateImage,
         (item) => {
           if (item.event === 'response.queued') {
@@ -1187,6 +1305,7 @@
             const assistantMessage = item.data.assistantMessage as Message;
             assistantId = assistantMessage.id;
             activeAssistantId = assistantMessage.id;
+            activeResponseCancelId = assistantMessage.id;
             messages = userMessage
               ? [...messages, userMessage, assistantMessage]
               : [...messages, assistantMessage];
@@ -1240,45 +1359,69 @@
       );
     } catch (error) {
       const message = errorMessage(error);
+      if (!assistantId) {
+        const recovered = await recoverRunningResponse(conversation.id);
+        if (recovered) {
+          assistantId = recovered.id;
+          activeAssistantId = recovered.id;
+          activeResponseCancelId = recovered.id;
+        }
+      }
       if (assistantId) {
-        const restored = await reconcileStreamFailure(conversation.id, assistantId);
+        setGenerationStage('background');
+        contextStatus = '';
+        workspaceError = '';
+        const restored = await watchPersistedResponse(
+          conversation.id, assistantId, watchVersion
+        );
         if (restored?.status === 'completed') {
           workspaceError = '';
-        } else {
-          if (message) workspaceError = message;
-          if (!restored) {
-            messages = messages.map((item) =>
-              item.id === assistantId ? { ...item, status: 'interrupted' } : item
-            );
-          }
+        } else if (
+          watchVersion === responseWatchVersion &&
+          restored &&
+          !isRunningResponse(restored)
+        ) {
+          workspaceError = localizedAPIError(
+            restored.errorCode || '',
+            message || t('回答生成未完成。', 'The response did not complete.')
+          );
         }
       } else {
         if (message) workspaceError = message;
-        text = outgoingText;
-        uploads = outgoingUploads;
-        generateImage = outgoingGenerateImage;
+        if (error instanceof APIError && error.status >= 400) {
+          text = outgoingText;
+          uploads = outgoingUploads;
+          generateImage = outgoingGenerateImage;
+        }
       }
     } finally {
-      generating = false;
-      stopGenerationClock();
-      abortController = null;
-      activeAssistantId = '';
-      contextStatus = '';
-      await refreshCheckpoints(conversation.id);
-      try {
-        const latest = await getConversations(showArchived);
-        conversations = latest;
-      } catch {
-        // The current conversation remains usable if refreshing the sidebar fails.
+      if (watchVersion === responseWatchVersion) {
+        generating = false;
+        stopGenerationClock();
+        abortController = null;
+        activeAssistantId = '';
+        activeResponseCancelId = '';
+        contextStatus = '';
+        await refreshCheckpoints(conversation.id);
+        try {
+          const latest = await getConversations(showArchived);
+          conversations = latest;
+        } catch {
+          // The current conversation remains usable if refreshing the sidebar fails.
+        }
+        await refreshStorage();
+        queueScroll();
       }
-      await refreshStorage();
-      queueScroll();
     }
   }
 
   async function regenerate(message: Message) {
     if (generating || !activeConversation || activeConversationReadOnly) return;
+    const conversationId = activeConversation.id;
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
     generating = true;
+    activeResponseCancelId = requestId;
     beginGenerationClock('sending');
     followStream = true;
     showJumpToLatest = false;
@@ -1289,7 +1432,7 @@
     try {
       await regenerateResponse(
         message.id,
-        crypto.randomUUID(),
+        requestId,
         (item) => {
           if (item.event === 'response.queued') {
             setGenerationStage('queued');
@@ -1303,6 +1446,7 @@
             const assistantMessage = item.data.assistantMessage as Message;
             assistantId = assistantMessage.id;
             activeAssistantId = assistantMessage.id;
+            activeResponseCancelId = assistantMessage.id;
             messages = [...messages, assistantMessage];
           } else if (item.event === 'response.stage') {
             setGenerationStage(String(item.data.stage || ''));
@@ -1350,30 +1494,48 @@
       );
     } catch (error) {
       const value = errorMessage(error);
+      if (!assistantId) {
+        const recovered = await recoverRunningResponse(conversationId);
+        if (recovered) {
+          assistantId = recovered.id;
+          activeAssistantId = recovered.id;
+          activeResponseCancelId = recovered.id;
+        }
+      }
       if (assistantId) {
-        const restored = await reconcileStreamFailure(activeConversation.id, assistantId);
+        setGenerationStage('background');
+        contextStatus = '';
+        workspaceError = '';
+        const restored = await watchPersistedResponse(
+          conversationId, assistantId, watchVersion
+        );
         if (restored?.status === 'completed') {
           workspaceError = '';
-        } else {
-          if (value) workspaceError = value;
-          if (!restored) {
-            messages = messages.map((item) =>
-              item.id === assistantId ? { ...item, status: 'interrupted' } : item
-            );
-          }
+        } else if (
+          watchVersion === responseWatchVersion &&
+          restored &&
+          !isRunningResponse(restored)
+        ) {
+          workspaceError = localizedAPIError(
+            restored.errorCode || '',
+            value || t('回答生成未完成。', 'The response did not complete.')
+          );
         }
       } else if (value) {
         workspaceError = value;
       }
     } finally {
-      generating = false;
-      stopGenerationClock();
-      abortController = null;
-      activeAssistantId = '';
-      contextStatus = '';
-      await refreshCheckpoints(activeConversation.id);
-      await refreshStorage();
-      queueScroll();
+      if (watchVersion === responseWatchVersion) {
+        generating = false;
+        stopGenerationClock();
+        abortController = null;
+        activeAssistantId = '';
+        activeResponseCancelId = '';
+        contextStatus = '';
+        await refreshCheckpoints(conversationId);
+        await refreshStorage();
+        queueScroll();
+      }
     }
   }
 
@@ -1523,7 +1685,9 @@
   }
 
   function replaceMessage(updated: Message) {
-    messages = messages.map((message) => (message.id === updated.id ? updated : message));
+    messages = messages.some((message) => message.id === updated.id)
+      ? messages.map((message) => (message.id === updated.id ? updated : message))
+      : [...messages, updated];
   }
 
   function contextLabel(status: string): string {
@@ -1549,11 +1713,15 @@
 
   async function stopGeneration() {
     const controller = abortController;
-    if (activeAssistantId) {
+    if (activeResponseCancelId) {
       try {
-        await cancelResponse(activeAssistantId);
+        await cancelResponse(activeResponseCancelId);
       } catch {
-        // Disconnecting the stream still cancels the upstream request.
+        workspaceError = t(
+          '停止请求未送达服务器；回答可能仍在后台继续。',
+          'The stop request did not reach the server; the response may still be continuing.'
+        );
+        return;
       }
     }
     controller?.abort();
