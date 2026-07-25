@@ -170,6 +170,18 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		strings.Contains(safetyIdentifier, user.Username) {
 		t.Fatalf("provider safety_identifier = %q", safetyIdentifier)
 	}
+	instructions, _ := gotRequest["instructions"].(string)
+	for _, expected := range []string{
+		"China-first web-search strategy",
+		"Simplified Chinese queries",
+		"高德地图",
+		"same-named foreign entity",
+		"distinguish official facts from reviews",
+	} {
+		if !strings.Contains(instructions, expected) {
+			t.Fatalf("provider instructions missing %q: %q", expected, instructions)
+		}
+	}
 	reasoning, _ := gotRequest["reasoning"].(map[string]any)
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("provider reasoning = %#v", reasoning)

@@ -25,6 +25,7 @@
   import { locale, setLocale, translate } from './lib/i18n';
   import Icon from './lib/Icon.svelte';
   import MessageView from './lib/MessageView.svelte';
+  import Onboarding from './lib/Onboarding.svelte';
   import ProgressiveSummarySettings from './lib/ProgressiveSummarySettings.svelte';
   import type {
     Attachment,
@@ -106,6 +107,7 @@
   let generationStartedAt = 0;
   let generationNow = Date.now();
   let generationTimer: number | undefined;
+  let onboardingOpen = false;
   let visibleSuggestions: Suggestion[] = [];
   const reasoningChoices = [
     {
@@ -369,6 +371,7 @@
       user = await getSession();
       await loadWorkspace();
       phase = 'ready';
+      openOnboardingIfNeeded();
     } catch (error) {
       if (error instanceof APIError && error.status === 401) {
         phase = 'login';
@@ -592,6 +595,7 @@
       loginPassword = '';
       await loadWorkspace();
       phase = 'ready';
+      openOnboardingIfNeeded();
     } catch (error) {
       loginError = errorMessage(error);
     } finally {
@@ -610,6 +614,7 @@
       conversations = [];
       storageStatus = null;
       profileOpen = false;
+      onboardingOpen = false;
       phase = 'login';
     }
   }
@@ -623,6 +628,7 @@
     storageStatus = null;
     profileOpen = false;
     dialog = '';
+    onboardingOpen = false;
     phase = 'login';
   }
 
@@ -1551,6 +1557,31 @@
     profileOpen = false;
   }
 
+  function onboardingStorageKey(): string {
+    return user ? `personal-chat-onboarding-v1:${user.id}` : '';
+  }
+
+  function openOnboardingIfNeeded() {
+    const key = onboardingStorageKey();
+    onboardingOpen = Boolean(key && localStorage.getItem(key) !== 'complete');
+  }
+
+  function openOnboarding() {
+    profileOpen = false;
+    sidebarOpen = false;
+    modelPickerOpen = false;
+    effortPickerOpen = false;
+    onboardingOpen = true;
+  }
+
+  async function dismissOnboarding() {
+    const key = onboardingStorageKey();
+    if (key) localStorage.setItem(key, 'complete');
+    onboardingOpen = false;
+    await tick();
+    textareaElement?.focus();
+  }
+
   function effortChoice(effort: string) {
     return reasoningChoices.find((choice) => choice.value === effort);
   }
@@ -1913,6 +1944,9 @@
             </button>
             <button on:click={toggleLocale}>
               <Icon name="globe" size={17} />{$locale === 'zh-CN' ? 'English' : '中文'}
+            </button>
+            <button on:click={openOnboarding}>
+              <Icon name="plan" size={17} />{t('新手指南', 'Getting started')}
             </button>
             <button on:click={refreshModels}><Icon name="refresh" size={17} />{t('刷新模型目录', 'Refresh model catalog')}</button>
             {#if user?.role === 'admin'}
@@ -2338,6 +2372,10 @@
       </div>
     </main>
   </div>
+
+  {#if onboardingOpen}
+    <Onboarding locale={$locale} on:dismiss={dismissOnboarding} />
+  {/if}
 
   {#if dialog}
     <div class="modal-layer">

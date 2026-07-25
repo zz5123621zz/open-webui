@@ -41,11 +41,16 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
 
 ## Layout
 
-- Desktop: 288 px persistent sidebar, 64 px top bar, centered message measure
-  capped at 820 px.
+- Desktop: 288 px persistent sidebar, 64 px top bar, and a centered 1020 px
+  message shell with up to 900 px of assistant content width. Prose remains capped near
+  76 characters per line while tables, code, images and citations may use the
+  full content width.
 - Tablet: persistent sidebar may narrow to 256 px.
 - Mobile: sidebar becomes a modal drawer with a 50% scrim. The app uses `100dvh`,
   honors top and bottom safe areas, and never scrolls horizontally.
+- On mobile, assistant content uses the full message lane and omits the
+  decorative avatar. User messages are content-sized, right aligned and capped
+  at 88% of the lane.
 - The composer shares the message column width, remains above the mobile gesture
   area, and reserves enough scroll padding that the last answer is never hidden.
 - Model and reasoning controls stay visible in the top bar. On narrow screens
@@ -70,6 +75,10 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
   remain clear on touch devices.
 - Motion is limited to 160–240 ms opacity/transform transitions and is disabled
   under `prefers-reduced-motion`.
+- A per-user, browser-local first-run guide introduces model choice, reasoning
+  strength, conversation lifecycle and composer tools. It is skippable,
+  keyboard accessible and can be reopened from the profile menu; no tutorial
+  state is added to the backend.
 
 ## Core components
 
@@ -92,9 +101,18 @@ All normal text pairs must meet WCAG AA. Statuses combine icon, label and color.
 - Messages: user text on a subtle blue surface; assistant responses on the canvas
   without a heavy bubble. Tool calls are compact status cards, not oversized
   panels.
+- Markdown tables live inside a labelled, keyboard-focusable horizontal
+  scroller. An overflow hint appears only when needed. Code blocks, display
+  math, long links, blockquotes, nested lists, raw HTML details and media must
+  remain inside the message lane at 320 / 375 px widths.
 - Web/tool cards use localized action labels, display the actual allowlisted
   query/page/pattern, and link up to five sanitized result sources. Raw JSON and
   the ambiguous "security parameters" disclosure are not user-facing.
+- Web search follows a China-first intent policy for mainland places,
+  businesses, people, events, policies and services: begin with Chinese queries
+  containing known location context, prefer current official/local sources,
+  distinguish user reviews from facts, and cross-check practical business
+  details. Global questions still use the strongest international sources.
 - Composer: solid white surface, blue focus ring, explicit upload and image-mode
   actions, 44 px send/stop control, and nearby recoverable error feedback.
 - Empty chats draw three non-repeating suggestions from a 30-item pool and offer
