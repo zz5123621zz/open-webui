@@ -1852,6 +1852,7 @@ func (a *responseAccumulator) parts() []store.NewMessagePart {
 		if emitted[identity] {
 			return
 		}
+		emitted[identity] = true
 		switch partType {
 		case "reasoning":
 			for _, section := range a.reasoning {
@@ -1903,7 +1904,6 @@ func (a *responseAccumulator) parts() []store.NewMessagePart {
 				}
 			}
 		}
-		emitted[identity] = true
 	}
 	for _, part := range a.partOrder {
 		appendPart(part.Type, part.Key)
