@@ -60,6 +60,17 @@ func (s *Server) csrf(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) administrator(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, ok := sessionFromContext(r.Context())
+		if !ok || session.User.Role != "admin" {
+			writeError(w, http.StatusNotFound, "not_found", "Not found.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) origin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := strings.TrimSpace(r.Header.Get("Origin"))

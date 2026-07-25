@@ -161,6 +161,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("record schema v3: %w", err)
 		}
 	}
+	var hasV4 int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 4`).Scan(&hasV4); err != nil {
+		return fmt.Errorf("inspect schema v4: %w", err)
+	}
+	if hasV4 == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV4); err != nil {
+			return fmt.Errorf("apply schema v4: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(version, applied_at) VALUES(4, ?)
+		`, time.Now().Unix()); err != nil {
+			return fmt.Errorf("record schema v4: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}

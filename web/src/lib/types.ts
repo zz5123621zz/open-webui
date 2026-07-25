@@ -49,6 +49,30 @@ export interface StorageStatus {
   retentionDays: number;
 }
 
+export type ProgressiveSummaryMode = 'auto' | 'off';
+export type ProgressiveSummaryState =
+  | 'unknown'
+  | 'probing'
+  | 'active'
+  | 'cooldown'
+  | 'disabled'
+  | 'mixed';
+
+export interface ProgressiveSummaryModelStatus {
+  model: string;
+  state: Exclude<ProgressiveSummaryState, 'mixed' | 'disabled'>;
+  lastCheckedAt?: number;
+  cooldownUntil?: number;
+}
+
+export interface ProgressiveSummarySettings {
+  mode: ProgressiveSummaryMode;
+  hardDisabled: boolean;
+  effectiveState: ProgressiveSummaryState;
+  models: ProgressiveSummaryModelStatus[];
+  updatedAt: number;
+}
+
 export interface MessagePart {
   id?: string;
   sequence?: number;

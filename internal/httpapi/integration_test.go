@@ -18,6 +18,7 @@ import (
 
 	"github.com/owui-personal-slim/owui-personal-slim/internal/auth"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/config"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -59,7 +60,10 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			events := []string{
 				`{"type":"response.created","response":{"id":"resp_test"}}`,
-				`{"type":"response.reasoning_summary_text.delta","delta":"Checked the request."}`,
+				`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_1","output_index":0,"summary_index":0,"delta":"Checked the request."}`,
+				`{"type":"response.reasoning_summary_text.done","item_id":"reasoning_1","output_index":0,"summary_index":0,"text":"Checked the request."}`,
+				`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_1","output_index":0,"summary_index":1,"delta":"Verified the source."}`,
+				`{"type":"response.reasoning_summary_text.done","item_id":"reasoning_1","output_index":0,"summary_index":1,"text":"Verified the source."}`,
 				`{"type":"response.output_item.added","item":{"id":"search_1","type":"web_search_call","status":"in_progress","action":{"type":"search","query":"example"}}}`,
 				`{"type":"response.output_item.done","item":{"id":"search_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}}}`,
 				`{"type":"response.output_text.delta","delta":"Hello from CPA."}`,
@@ -149,7 +153,8 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	}
 	streamText := string(streamBody)
 	for _, expected := range []string{
-		"event: response.started", "event: response.reasoning.delta", "event: response.tool",
+		"event: response.started", "event: response.reasoning.delta",
+		"event: response.reasoning.done", "event: response.tool",
 		"event: response.text.delta", "event: response.image", "event: response.completed",
 	} {
 		if !strings.Contains(streamText, expected) {
@@ -168,6 +173,10 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	reasoning, _ := gotRequest["reasoning"].(map[string]any)
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("provider reasoning = %#v", reasoning)
+	}
+	streamOptions, _ := gotRequest["stream_options"].(map[string]any)
+	if streamOptions["reasoning_summary_delivery"] != "sequential_cutoff" {
+		t.Fatalf("provider stream_options = %#v", streamOptions)
 	}
 	rawTools, _ := gotRequest["tools"].([]any)
 	if len(rawTools) != 2 {
@@ -205,17 +214,32 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	for index, part := range assistant.Parts {
 		partTypes[index] = part.Type
 	}
-	if got, want := strings.Join(partTypes, ","), "reasoning,tool,text,citations,tool,image"; got != want {
+	if got, want := strings.Join(partTypes, ","), "reasoning,reasoning,tool,text,citations,tool,image"; got != want {
 		t.Fatalf("assistant part order = %s, want %s", got, want)
 	}
 	var reasoningPartData struct {
-		DurationMS int64 `json:"durationMs"`
+		DurationMS     int64  `json:"durationMs"`
+		ProviderItemID string `json:"providerItemId"`
+		SummaryIndex   int    `json:"summaryIndex"`
+		Completed      bool   `json:"completed"`
 	}
 	if err := json.Unmarshal(assistant.Parts[0].JSONContent, &reasoningPartData); err != nil {
 		t.Fatal(err)
 	}
-	if reasoningPartData.DurationMS < 1 {
-		t.Fatalf("reasoning duration = %d", reasoningPartData.DurationMS)
+	if reasoningPartData.DurationMS < 1 || reasoningPartData.ProviderItemID != "reasoning_1" ||
+		reasoningPartData.SummaryIndex != 0 || !reasoningPartData.Completed {
+		t.Fatalf("reasoning metadata = %#v", reasoningPartData)
+	}
+	var secondReasoningPartData struct {
+		ProviderItemID string `json:"providerItemId"`
+		SummaryIndex   int    `json:"summaryIndex"`
+	}
+	if err := json.Unmarshal(assistant.Parts[1].JSONContent, &secondReasoningPartData); err != nil {
+		t.Fatal(err)
+	}
+	if secondReasoningPartData.ProviderItemID != "reasoning_1" ||
+		secondReasoningPartData.SummaryIndex != 1 {
+		t.Fatalf("second reasoning metadata = %#v", secondReasoningPartData)
 	}
 	var generatedAttachmentID string
 	for _, part := range assistant.Parts {
@@ -316,6 +340,15 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		t.Fatalf("cross-user image status=%d body=%s", crossUserImage.StatusCode, body)
 	}
 	crossUserImage.Body.Close()
+	regularSetting := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/admin/progressive-summaries",
+		otherToken, "", "",
+	)
+	if regularSetting.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(regularSetting.Body)
+		t.Fatalf("regular user setting status=%d body=%s", regularSetting.StatusCode, body)
+	}
+	regularSetting.Body.Close()
 
 	adminToken, err := createTestSession(dataStore, admin.ID)
 	if err != nil {
@@ -373,6 +406,59 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	}
 	adminWrite.Body.Close()
 
+	adminSetting := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/admin/progressive-summaries",
+		adminToken, "", "",
+	)
+	var settingPayload struct {
+		ProgressiveSummary struct {
+			Mode           string `json:"mode"`
+			EffectiveState string `json:"effectiveState"`
+		} `json:"progressiveSummary"`
+	}
+	if err := json.NewDecoder(adminSetting.Body).Decode(&settingPayload); err != nil {
+		t.Fatal(err)
+	}
+	adminSetting.Body.Close()
+	if adminSetting.StatusCode != http.StatusOK ||
+		settingPayload.ProgressiveSummary.Mode != "auto" ||
+		settingPayload.ProgressiveSummary.EffectiveState != "active" {
+		t.Fatalf("admin setting = status %d payload %#v", adminSetting.StatusCode, settingPayload)
+	}
+
+	adminSettingUpdate := authenticatedRequest(
+		t, http.MethodPut, server.URL+"/api/v1/admin/progressive-summaries",
+		adminToken, app.csrfToken(adminToken), `{"mode":"off"}`,
+	)
+	if err := json.NewDecoder(adminSettingUpdate.Body).Decode(&settingPayload); err != nil {
+		t.Fatal(err)
+	}
+	adminSettingUpdate.Body.Close()
+	if adminSettingUpdate.StatusCode != http.StatusOK ||
+		settingPayload.ProgressiveSummary.Mode != "off" ||
+		settingPayload.ProgressiveSummary.EffectiveState != "disabled" {
+		t.Fatalf("updated admin setting = status %d payload %#v", adminSettingUpdate.StatusCode, settingPayload)
+	}
+
+	adminRecheck := authenticatedRequest(
+		t, http.MethodPost,
+		server.URL+"/api/v1/admin/progressive-summaries/recheck",
+		adminToken, app.csrfToken(adminToken), "",
+	)
+	if adminRecheck.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(adminRecheck.Body)
+		t.Fatalf("admin recheck status=%d body=%s", adminRecheck.StatusCode, body)
+	}
+	adminRecheck.Body.Close()
+	audit, err := dataStore.ListServiceSettingAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(audit) < 2 || audit[0].Action != "recheck" || audit[1].Action != "update" ||
+		audit[0].ActorUserID != admin.ID || audit[1].ActorUserID != admin.ID {
+		t.Fatalf("service setting audit = %#v", audit)
+	}
+
 	generatedRoot := filepath.Join(dataDir, "generated")
 	if _, err := os.Stat(generatedRoot); err != nil {
 		t.Fatalf("generated image was not written: %v", err)
@@ -413,6 +499,211 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 	if remainingGenerated != 0 {
 		t.Fatalf("generated files after conversation delete = %d", remainingGenerated)
 	}
+}
+
+func TestProgressiveSummaryFallbackRetriesOnlyTheRejectedAttempt(t *testing.T) {
+	var providerMu sync.Mutex
+	requests := make([]map[string]any, 0, 3)
+	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeReasoningTestModel(w)
+		case "/v1/responses":
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			providerMu.Lock()
+			requests = append(requests, request)
+			attempt := len(requests)
+			providerMu.Unlock()
+			if attempt == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{
+					"type":"invalid_parameter",
+					"message":"Unknown parameter: stream_options.reasoning_summary_delivery"
+				}}`)
+				return
+			}
+			writeCompletedTextStream(w, "resp_fallback", "Fallback succeeded.")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockProvider.Close()
+
+	app, server, _, cookie, csrf := startReasoningIntegrationApp(t, mockProvider.URL)
+	conversation := createTestConversation(
+		t, server.URL, cookie, csrf, "gpt-reasoning", "high",
+	)
+	first := authenticatedRequest(
+		t, http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		cookie, csrf, `{"text":"first","attachmentIds":[],"requestId":"fallback-1"}`,
+	)
+	firstBody, _ := io.ReadAll(first.Body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK ||
+		!strings.Contains(string(firstBody), "event: response.completed") {
+		t.Fatalf("first response status=%d body=%s", first.StatusCode, firstBody)
+	}
+
+	providerMu.Lock()
+	if len(requests) != 2 {
+		providerMu.Unlock()
+		t.Fatalf("provider attempts = %d, want 2", len(requests))
+	}
+	firstOptions, _ := requests[0]["stream_options"].(map[string]any)
+	_, secondHasOptions := requests[1]["stream_options"]
+	providerMu.Unlock()
+	if firstOptions["reasoning_summary_delivery"] != "sequential_cutoff" ||
+		secondHasOptions {
+		t.Fatalf("fallback request options first=%#v secondHasOptions=%v", firstOptions, secondHasOptions)
+	}
+	statuses := app.summaries.Snapshot(app.cfg.Provider.BaseURL.String())
+	if len(statuses) != 1 || statuses[0].State != progressivesummary.StateCooldown {
+		t.Fatalf("compatibility status = %#v", statuses)
+	}
+
+	second := authenticatedRequest(
+		t, http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		cookie, csrf, `{"text":"second","attachmentIds":[],"requestId":"fallback-2"}`,
+	)
+	secondBody, _ := io.ReadAll(second.Body)
+	second.Body.Close()
+	if second.StatusCode != http.StatusOK ||
+		!strings.Contains(string(secondBody), "event: response.completed") {
+		t.Fatalf("second response status=%d body=%s", second.StatusCode, secondBody)
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("provider attempts after cooldown request = %d, want 3", len(requests))
+	}
+	if _, exists := requests[2]["stream_options"]; exists {
+		t.Fatalf("cooldown request unexpectedly contained stream_options: %#v", requests[2])
+	}
+}
+
+func TestAcceptedProviderStreamIsNeverAutomaticallyRetried(t *testing.T) {
+	var providerMu sync.Mutex
+	attempts := 0
+	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeReasoningTestModel(w)
+		case "/v1/responses":
+			providerMu.Lock()
+			attempts++
+			providerMu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.created","response":{"id":"resp_incomplete"}}`+
+				"\n\n")
+			_, _ = io.WriteString(w, "data: "+
+				`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_1","summary_index":0,"delta":"Partial summary."}`+
+				"\n\n")
+			// Deliberately close without response.completed or [DONE].
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockProvider.Close()
+
+	_, server, _, cookie, csrf := startReasoningIntegrationApp(t, mockProvider.URL)
+	conversation := createTestConversation(
+		t, server.URL, cookie, csrf, "gpt-reasoning", "high",
+	)
+	response := authenticatedRequest(
+		t, http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		cookie, csrf, `{"text":"do not retry","attachmentIds":[],"requestId":"accepted-1"}`,
+	)
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK ||
+		!strings.Contains(string(body), `"code":"provider_stream_incomplete"`) {
+		t.Fatalf("response status=%d body=%s", response.StatusCode, body)
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("accepted provider stream attempts = %d, want exactly 1", attempts)
+	}
+}
+
+func startReasoningIntegrationApp(
+	t *testing.T,
+	providerBaseURL string,
+) (*Server, *httptest.Server, *store.Store, *http.Cookie, string) {
+	t.Helper()
+	dataDir := t.TempDir()
+	dataStore, err := store.Open(context.Background(), filepath.Join(dataDir, "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataStore.Close() })
+	passwordHash, err := auth.HashPassword("test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dataStore.CreateUser(
+		context.Background(), "reasoning-user", "Reasoning User", passwordHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	baseURL, _ := url.Parse("http://chat.test")
+	providerURL, _ := url.Parse(providerBaseURL + "/v1")
+	cfg := config.Config{
+		Environment: "test", HTTPAddr: ":0", BaseURL: baseURL, DataDir: dataDir,
+		DatabasePath: filepath.Join(dataDir, "app.db"),
+		AppSecret:    []byte("01234567890123456789012345678901"),
+		SessionTTL:   time.Hour, SessionCookieName: "owui_session",
+		Provider: config.Provider{
+			Kind: "cpa", BaseURL: providerURL, APIKey: "provider-test-key",
+			DefaultModel: "gpt-reasoning", ModelsTimeout: time.Second,
+			DefaultReasoningEffort: "high", UnknownModelContextTokens: 128000,
+			RequestBodyMaxBytes: 50 << 20,
+		},
+		Jobs: config.Jobs{
+			MaxConcurrentGlobal: 4, MaxConcurrentPerUser: 2,
+			MaxQueuedPerUser: 2, QueueTimeout: time.Second,
+		},
+		Tools: config.Tools{WebSearchEnabled: true, ImageGenerationEnabled: true},
+	}
+	client := provider.NewClient(cfg.Provider, "test")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app := New(cfg, dataStore, client, logger)
+	server := httptest.NewServer(app.Handler())
+	t.Cleanup(server.Close)
+	cookie, csrf := loginTestUser(t, server.URL, "reasoning-user", "test-password")
+	return app, server, dataStore, cookie, csrf
+}
+
+func writeReasoningTestModel(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"models":[{
+		"slug":"gpt-reasoning","display_name":"GPT Reasoning",
+		"context_window":128000,"input_modalities":["text"],
+		"supported_reasoning_levels":[{"effort":"high"}],
+		"default_reasoning_level":"high","priority":1
+	}]}`)
+}
+
+func writeCompletedTextStream(w http.ResponseWriter, responseID, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	encodedText, _ := json.Marshal(text)
+	_, _ = io.WriteString(w, "data: "+
+		`{"type":"response.output_text.delta","delta":`+string(encodedText)+`}`+
+		"\n\n")
+	_, _ = io.WriteString(w, "data: "+
+		`{"type":"response.completed","response":{"id":"`+responseID+`","status":"completed"}}`+
+		"\n\n")
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 }
 
 func loginTestUser(t *testing.T, baseURL, username, password string) (*http.Cookie, string) {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -17,7 +18,7 @@ func TestSafeWebActionUsesStrictAllowlist(t *testing.T) {
 	raw := safeWebAction(map[string]any{
 		"type":          "search",
 		"query":         "safe query",
-		"url":           "https://user:password@example.com/result",
+		"url":           "https://user:password@example.com/result?page=2&utm_source=test&token=secret#private",
 		"pattern":       "needle",
 		"authorization": "Bearer secret",
 		"headers":       map[string]string{"X-Secret": "do not expose"},
@@ -31,6 +32,9 @@ func TestSafeWebActionUsesStrictAllowlist(t *testing.T) {
 	}
 	if strings.Contains(got["url"], "password") || strings.Contains(string(raw), "secret") {
 		t.Fatalf("safe action leaked credentials: %s", raw)
+	}
+	if got["url"] != "https://example.com/result?page=2" {
+		t.Fatalf("sanitized action URL = %q", got["url"])
 	}
 }
 
@@ -47,6 +51,53 @@ func TestCitationURLRejectsUnsafeSchemes(t *testing.T) {
 	}
 	if got := sanitizeCitationURL("https://user:pass@example.com/path"); got != "https://example.com/path" {
 		t.Fatalf("sanitized URL = %q", got)
+	}
+	if got := sanitizeCitationURL(
+		"https://example.com/path?page=2&utm_campaign=x&fbclid=track&access_token=secret#section",
+	); got != "https://example.com/path?page=2" {
+		t.Fatalf("sanitized URL query = %q", got)
+	}
+	if got := sanitizeCitationURL(
+		"https://example.com/object?page=2&X-Amz-Credential=credential&X-Amz-Signature=secret",
+	); got != "https://example.com/object?page=2" {
+		t.Fatalf("sanitized signed URL query = %q", got)
+	}
+	if got := sanitizeCitationURL("https://[::1"); got != "" {
+		t.Fatalf("malformed URL = %q", got)
+	}
+}
+
+func TestProviderReplayItemIsSanitizedBeforePersistence(t *testing.T) {
+	accumulator := &responseAccumulator{}
+	accumulator.captureProviderItem(json.RawMessage(`{
+		"id":"message_1",
+		"type":"message",
+		"authorization":"Bearer provider-secret",
+		"headers":{"Cookie":"session=provider-secret"},
+		"encrypted_content":"opaque-private-reasoning",
+		"content":[{
+			"type":"output_text",
+			"text":"Safe answer",
+			"annotations":[{
+				"type":"url_citation",
+				"url":"https://user:pass@example.com/page?page=2&utm_source=test&token=secret#private"
+			}]
+		}]
+	}`))
+	if len(accumulator.providerItems) != 1 {
+		t.Fatalf("provider items = %#v", accumulator.providerItems)
+	}
+	raw := string(accumulator.providerItems[0].ReplayJSON)
+	for _, forbidden := range []string{
+		"provider-secret", "opaque-private-reasoning", "user", "pass",
+		"utm_source", "token", "#private",
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("provider replay item contains %q: %s", forbidden, raw)
+		}
+	}
+	if !strings.Contains(raw, `"url":"https://example.com/page?page=2"`) {
+		t.Fatalf("provider replay URL was not safely preserved: %s", raw)
 	}
 }
 
@@ -150,7 +201,10 @@ func TestResponsePartsPreserveStreamOrderAndReasoningDuration(t *testing.T) {
 	stream := newSSEWriter(recorder)
 	accumulator := &responseAccumulator{}
 	events := []providerStreamEvent{
-		{Type: "response.reasoning_summary_text.delta", Delta: "Checked the request."},
+		{
+			Type: "response.reasoning_summary_text.delta", ItemID: "reasoning_1",
+			OutputIndex: 0, SummaryIndex: 0, Delta: "Checked the request.",
+		},
 		{
 			Type: "response.output_item.added",
 			Item: json.RawMessage(`{
@@ -187,7 +241,9 @@ func TestResponsePartsPreserveStreamOrderAndReasoningDuration(t *testing.T) {
 		t.Fatalf("part types = %v, want %v", types, want)
 	}
 	var reasoningData struct {
-		DurationMS int64 `json:"durationMs"`
+		DurationMS     int64  `json:"durationMs"`
+		ProviderItemID string `json:"providerItemId"`
+		SummaryIndex   int    `json:"summaryIndex"`
 	}
 	if err := json.Unmarshal(parts[0].JSONContent, &reasoningData); err != nil {
 		t.Fatal(err)
@@ -195,12 +251,146 @@ func TestResponsePartsPreserveStreamOrderAndReasoningDuration(t *testing.T) {
 	if reasoningData.DurationMS < 1 {
 		t.Fatalf("reasoning duration = %d", reasoningData.DurationMS)
 	}
+	if reasoningData.ProviderItemID != "reasoning_1" || reasoningData.SummaryIndex != 0 {
+		t.Fatalf("reasoning identity = %#v", reasoningData)
+	}
 	var tool toolSnapshot
 	if err := json.Unmarshal(parts[1].JSONContent, &tool); err != nil {
 		t.Fatal(err)
 	}
 	if tool.Status != "in_progress" || tool.CallID != "search_1" {
 		t.Fatalf("interrupted tool snapshot = %#v", tool)
+	}
+}
+
+func TestReasoningSectionsPreserveProviderIdentityAndDeduplicateCompletedItem(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := &responseAccumulator{}
+	events := []providerStreamEvent{
+		{
+			Type: "response.reasoning_summary_text.delta", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 0, Delta: "第一段",
+		},
+		{
+			Type: "response.reasoning_summary_text.done", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 0, Text: "第一段完成",
+		},
+		{
+			Type: "response.reasoning_summary_text.done", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 0, Text: "第一段完成",
+		},
+		{
+			Type: "response.reasoning_summary_text.done", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 9,
+		},
+		{
+			Type: "response.reasoning_summary_text.delta", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 1, Delta: "第二段",
+		},
+		{
+			Type: "response.reasoning_summary_text.done", ItemID: "reasoning_1",
+			OutputIndex: 2, SummaryIndex: 1, Text: "第二段完成",
+		},
+		{
+			Type: "response.output_item.done", OutputIndex: 2,
+			Item: json.RawMessage(`{
+				"id":"reasoning_1","type":"reasoning","status":"completed",
+				"encrypted_content":"must-not-be-saved",
+				"summary":[
+					{"type":"summary_text","text":"第一段完成"},
+					{"type":"summary_text","text":"第二段完成"}
+				]
+			}`),
+		},
+	}
+	for _, event := range events {
+		if err := accumulator.handle(stream, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	parts := accumulator.parts()
+	if len(parts) != 2 || parts[0].Type != "reasoning" || parts[1].Type != "reasoning" {
+		t.Fatalf("parts = %#v", parts)
+	}
+	if parts[0].TextContent != "第一段完成" || parts[1].TextContent != "第二段完成" {
+		t.Fatalf("reasoning texts = %q, %q", parts[0].TextContent, parts[1].TextContent)
+	}
+	for index, part := range parts {
+		var metadata struct {
+			ProviderItemID string `json:"providerItemId"`
+			SummaryIndex   int    `json:"summaryIndex"`
+			OutputIndex    int    `json:"outputIndex"`
+			Completed      bool   `json:"completed"`
+		}
+		if err := json.Unmarshal(part.JSONContent, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata.ProviderItemID != "reasoning_1" ||
+			metadata.SummaryIndex != index || metadata.OutputIndex != 2 ||
+			!metadata.Completed {
+			t.Fatalf("metadata[%d] = %#v", index, metadata)
+		}
+	}
+	if len(accumulator.providerItems) != 0 {
+		t.Fatalf("reasoning provider item was captured: %#v", accumulator.providerItems)
+	}
+	body := recorder.Body.String()
+	if strings.Count(body, "event: response.reasoning.done") != 2 {
+		t.Fatalf("completed section events were duplicated:\n%s", body)
+	}
+	if strings.Contains(body, "encrypted_content") ||
+		strings.Contains(string(parts[0].JSONContent), "encrypted_content") {
+		t.Fatalf("encrypted reasoning leaked:\n%s", body)
+	}
+}
+
+func TestProgressiveSummaryUnsupportedMatcherIsExact(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "known unsupported field",
+			err: &provider.HTTPError{
+				StatusCode: http.StatusBadRequest,
+				Code:       "invalid_parameter",
+				Message:    "Unknown parameter: stream_options.reasoning_summary_delivery",
+			},
+			want: true,
+		},
+		{
+			name: "wrong status",
+			err: &provider.HTTPError{
+				StatusCode: http.StatusUnprocessableEntity,
+				Code:       "invalid_parameter",
+				Message:    "Unknown parameter: stream_options.reasoning_summary_delivery",
+			},
+		},
+		{
+			name: "field mentioned without unsupported marker",
+			err: &provider.HTTPError{
+				StatusCode: http.StatusBadRequest,
+				Code:       "invalid_request",
+				Message:    "stream_options could not be processed",
+			},
+		},
+		{
+			name: "unrelated unknown field",
+			err: &provider.HTTPError{
+				StatusCode: http.StatusBadRequest,
+				Code:       "invalid_parameter",
+				Message:    "Unknown parameter: temperature",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isProgressiveSummaryUnsupported(test.err); got != test.want {
+				t.Fatalf("isProgressiveSummaryUnsupported() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

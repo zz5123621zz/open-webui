@@ -1295,11 +1295,24 @@ button:disabled {
 }
 
 .reasoning-spark {
+  display: grid;
   width: 24px;
   height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
   color: var(--primary);
   border-radius: 8px;
   background: var(--primary-soft);
+}
+
+.reasoning-index {
+  padding: 2px 6px;
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--border));
+  border-radius: 999px;
+  background: var(--primary-soft);
+  font-size: 10px;
+  font-weight: 620;
 }
 
 .reasoning-content {
@@ -1336,8 +1349,11 @@ button:disabled {
 }
 
 .tool-icon {
+  display: grid;
   width: 38px;
   height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
   color: var(--primary);
   border-color: var(--border);
   border-radius: 11px;
@@ -1459,6 +1475,20 @@ button:disabled {
   border-radius: 13px;
   background: var(--surface);
   box-shadow: var(--shadow-sm);
+}
+
+.thinking-progress.compact {
+  min-height: 54px;
+  margin-top: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  background: var(--surface-soft);
+  box-shadow: none;
+}
+
+.thinking-progress.compact .thinking-progress-icon {
+  width: 30px;
+  height: 30px;
 }
 
 .thinking-progress-icon {

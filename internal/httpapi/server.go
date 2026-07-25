@@ -17,6 +17,7 @@ import (
 	"github.com/owui-personal-slim/owui-personal-slim/internal/activecontext"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/config"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/jobs"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -25,18 +26,19 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	cfg      config.Config
-	store    *store.Store
-	models   *provider.Client
-	jobs     *jobs.Scheduler
-	contexts *activecontext.Manager
-	logins   *loginLimiter
-	actions  *actionLimiter
-	uploads  *keyedGate
-	activeMu sync.Mutex
-	active   map[string]activeResponse
-	logger   *slog.Logger
-	mux      *http.ServeMux
+	cfg       config.Config
+	store     *store.Store
+	models    *provider.Client
+	jobs      *jobs.Scheduler
+	contexts  *activecontext.Manager
+	summaries *progressivesummary.Manager
+	logins    *loginLimiter
+	actions   *actionLimiter
+	uploads   *keyedGate
+	activeMu  sync.Mutex
+	active    map[string]activeResponse
+	logger    *slog.Logger
+	mux       *http.ServeMux
 }
 
 type activeResponse struct {
@@ -55,10 +57,11 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 			cfg.Jobs.QueueTimeout,
 		),
 		logger: logger, mux: http.NewServeMux(),
-		logins:  newLoginLimiter(),
-		actions: newActionLimiter(),
-		uploads: newKeyedGate(),
-		active:  make(map[string]activeResponse),
+		logins:    newLoginLimiter(),
+		actions:   newActionLimiter(),
+		uploads:   newKeyedGate(),
+		active:    make(map[string]activeResponse),
+		summaries: progressivesummary.New(30 * time.Minute),
 	}
 	server.contexts = activecontext.New(dataStore, modelClient, server.providerSafetyIdentifier)
 	server.routes()
@@ -82,6 +85,24 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/v1/me/password", s.auth(s.origin(s.csrf(http.HandlerFunc(s.changePassword)))))
 	s.mux.Handle("GET /api/v1/me/storage", s.auth(http.HandlerFunc(s.storageStatus)))
 	s.mux.Handle("GET /api/v1/models", s.auth(http.HandlerFunc(s.listModels)))
+	s.mux.Handle(
+		"GET /api/v1/admin/progressive-summaries",
+		s.auth(s.administrator(http.HandlerFunc(s.getProgressiveSummarySetting))),
+	)
+	s.mux.Handle(
+		"PUT /api/v1/admin/progressive-summaries",
+		s.auth(s.administrator(s.limitAction(
+			"service_setting", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateProgressiveSummarySetting))),
+		))),
+	)
+	s.mux.Handle(
+		"POST /api/v1/admin/progressive-summaries/recheck",
+		s.auth(s.administrator(s.limitAction(
+			"service_setting", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.recheckProgressiveSummaryCompatibility))),
+		))),
+	)
 
 	s.mux.Handle("GET /api/v1/conversations", s.auth(http.HandlerFunc(s.listConversations)))
 	s.mux.Handle("POST /api/v1/conversations", s.auth(s.limitAction("conversation_write", 120, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.createConversation))))))

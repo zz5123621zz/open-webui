@@ -349,9 +349,18 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 			}
 		}
 	}
-	for sequence, item := range result.ProviderItems {
+	providerSequence := 0
+	for _, item := range result.ProviderItems {
+		// Reasoning provider items can contain opaque encrypted chain-of-thought.
+		// Safe, user-visible summaries are persisted as message parts instead.
+		if item.ItemType == "reasoning" {
+			continue
+		}
 		if item.ItemType == "" || !json.Valid(item.ReplayJSON) {
 			return Message{}, errors.New("invalid provider replay item")
+		}
+		if item.ItemType != "message" && item.ItemType != "web_search_call" {
+			return Message{}, errors.New("unsupported provider replay item")
 		}
 		itemID, idErr := ids.New()
 		if idErr != nil {
@@ -360,9 +369,10 @@ func (s *Store) CompleteAssistant(ctx context.Context, userID, messageID string,
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO provider_items(id, message_id, sequence, item_type, replay_json, created_at)
 			VALUES(?, ?, ?, ?, ?, ?)
-		`, itemID, messageID, sequence, item.ItemType, string(item.ReplayJSON), completedAt); err != nil {
+		`, itemID, messageID, providerSequence, item.ItemType, string(item.ReplayJSON), completedAt); err != nil {
 			return Message{}, fmt.Errorf("insert provider item: %w", err)
 		}
+		providerSequence++
 	}
 	if err := tx.Commit(); err != nil {
 		return Message{}, err
