@@ -446,8 +446,8 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     expect(profileMenu!.y).toBeGreaterThanOrEqual(0);
     expect(profileMenu!.y + profileMenu!.height).toBeLessThanOrEqual(376);
     await page.getByRole('button', { name: /Alice/ }).click();
-    await page.locator('.mobile-close').click();
     await page.setViewportSize({ width: 375, height: 812 });
+    await page.locator('.mobile-close').click();
   }
 
   const initialSuggestions = await page.locator('.suggestion-grid strong').allTextContents();
