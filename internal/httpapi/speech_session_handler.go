@@ -212,7 +212,19 @@ func (s *Server) speechSession(w http.ResponseWriter, r *http.Request) {
 		case read := <-providerReads:
 			if read.err != nil {
 				s.logger.Error("read speech provider event", "provider", setting.Provider, "error", read.err)
-				writeSpeechError(connection, "speech_provider_failed", "The speech provider connection ended.")
+				if errors.Is(read.err, speech.ErrProviderVoiceModel) {
+					writeSpeechError(
+						connection,
+						"speech_voice_model_mismatch",
+						"The selected voice does not support the configured speech model.",
+					)
+				} else {
+					writeSpeechError(
+						connection,
+						"speech_provider_failed",
+						"The speech provider connection ended.",
+					)
+				}
 				return
 			}
 			switch read.event.Type {

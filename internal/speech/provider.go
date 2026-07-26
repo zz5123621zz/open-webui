@@ -12,6 +12,7 @@ var (
 	ErrProviderUnavailable = errors.New("speech provider is not configured")
 	ErrProviderAuth        = errors.New("speech provider authentication failed")
 	ErrProviderNotGranted  = errors.New("speech provider resource is not granted")
+	ErrProviderVoiceModel  = errors.New("speech voice does not match the provider model")
 )
 
 type Voice struct {

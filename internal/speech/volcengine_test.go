@@ -244,6 +244,23 @@ func TestVolcengineProviderReportsMissingResourceGrant(t *testing.T) {
 	}
 }
 
+func TestVolcengineProviderReportsVoiceModelMismatch(t *testing.T) {
+	session := &volcengineSession{logID: "voice-model-test-log-id"}
+	err := session.providerError("request", volcMessage{
+		ErrorCode: 55000000,
+		Payload: []byte(
+			`{"error":"resource ID is mismatched with speaker related resource"}`,
+		),
+	})
+	if !errors.Is(err, ErrProviderVoiceModel) {
+		t.Fatalf("providerError() = %v, want ErrProviderVoiceModel", err)
+	}
+	if message := err.Error(); !strings.Contains(message, "55000000") ||
+		!strings.Contains(message, "voice-model-test-log-id") {
+		t.Fatalf("providerError() = %q", message)
+	}
+}
+
 func TestVolcProtocolRejectsTruncatedPayload(t *testing.T) {
 	frame, err := marshalVolcClientEvent(
 		volcEventTaskRequest, "session", []byte(`{"event":200}`),
