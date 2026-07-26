@@ -31,6 +31,7 @@
   import SpeechAdminSettings from './lib/SpeechAdminSettings.svelte';
   import SpeechPlayer from './lib/SpeechPlayer.svelte';
   import SpeechSettings from './lib/SpeechSettings.svelte';
+  import UpdateAnnouncement from './lib/UpdateAnnouncement.svelte';
   import {
     initializeSpeech,
     refreshSpeechPreference,
@@ -140,6 +141,7 @@
   let generationTimer: number | undefined;
   let responseWatchVersion = 0;
   let onboardingOpen = false;
+  let updateAnnouncementOpen = false;
   let visibleSuggestions: Suggestion[] = [];
   const fontSizeChoices = [
     {
@@ -437,7 +439,7 @@
       user = await getSession();
       await Promise.all([loadWorkspace(), initializeSpeech(user.id)]);
       phase = 'ready';
-      openOnboardingIfNeeded();
+      openEntryPrompts();
     } catch (error) {
       if (error instanceof APIError && error.status === 401) {
         phase = 'login';
@@ -698,7 +700,7 @@
       loginPassword = '';
       await Promise.all([loadWorkspace(), initializeSpeech(user.id)]);
       phase = 'ready';
-      openOnboardingIfNeeded();
+      openEntryPrompts();
     } catch (error) {
       loginError = errorMessage(error);
     } finally {
@@ -728,6 +730,7 @@
       resetSpeech();
       profileOpen = false;
       onboardingOpen = false;
+      updateAnnouncementOpen = false;
       phase = 'login';
     }
   }
@@ -752,6 +755,7 @@
     profileOpen = false;
     dialog = '';
     onboardingOpen = false;
+    updateAnnouncementOpen = false;
     phase = 'login';
   }
 
@@ -1878,11 +1882,28 @@
     onboardingOpen = Boolean(key && localStorage.getItem(key) !== 'complete');
   }
 
+  function updateAnnouncementStorageKey(): string {
+    return user ? `personal-chat-update-tts-v1:${user.id}` : '';
+  }
+
+  function openUpdateAnnouncementIfNeeded() {
+    const key = updateAnnouncementStorageKey();
+    updateAnnouncementOpen = Boolean(
+      !onboardingOpen && key && localStorage.getItem(key) !== 'complete'
+    );
+  }
+
+  function openEntryPrompts() {
+    openOnboardingIfNeeded();
+    openUpdateAnnouncementIfNeeded();
+  }
+
   function openOnboarding() {
     profileOpen = false;
     sidebarOpen = false;
     modelPickerOpen = false;
     effortPickerOpen = false;
+    updateAnnouncementOpen = false;
     onboardingOpen = true;
   }
 
@@ -1890,6 +1911,24 @@
     const key = onboardingStorageKey();
     if (key) localStorage.setItem(key, 'complete');
     onboardingOpen = false;
+    openUpdateAnnouncementIfNeeded();
+    await tick();
+    if (!updateAnnouncementOpen) textareaElement?.focus();
+  }
+
+  function openUpdateAnnouncement() {
+    profileOpen = false;
+    sidebarOpen = false;
+    modelPickerOpen = false;
+    effortPickerOpen = false;
+    onboardingOpen = false;
+    updateAnnouncementOpen = true;
+  }
+
+  async function dismissUpdateAnnouncement() {
+    const key = updateAnnouncementStorageKey();
+    if (key) localStorage.setItem(key, 'complete');
+    updateAnnouncementOpen = false;
     await tick();
     textareaElement?.focus();
   }
@@ -2276,6 +2315,9 @@
             </button>
             <button on:click={openOnboarding}>
               <Icon name="plan" size={17} />{t('新手指南', 'Getting started')}
+            </button>
+            <button on:click={openUpdateAnnouncement}>
+              <Icon name="speaker" size={17} />{t('更新公告', 'What’s new')}
             </button>
             <button on:click={reloadApplication}><Icon name="refresh" size={17} />{t('刷新应用', 'Reload app')}</button>
             {#if user?.role === 'admin'}
@@ -2709,6 +2751,10 @@
 
   {#if onboardingOpen}
     <Onboarding locale={$locale} on:dismiss={dismissOnboarding} />
+  {/if}
+
+  {#if updateAnnouncementOpen}
+    <UpdateAnnouncement locale={$locale} on:dismiss={dismissUpdateAnnouncement} />
   {/if}
 
   {#if dialog}

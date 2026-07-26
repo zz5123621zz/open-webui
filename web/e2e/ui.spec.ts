@@ -478,6 +478,32 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
       page.evaluate(() => localStorage.getItem('personal-chat-onboarding-v1:user-1'))
     )
     .toBe('complete');
+  const updateDialog = page.getByRole('dialog', { name: '让回答为你读出来' });
+  await expect(updateDialog).toBeVisible();
+  await expect(updateDialog).toContainText('头像菜单');
+  await expect(updateDialog).toContainText('语音与朗读');
+  await expect(updateDialog).toContainText('自动朗读');
+  await expect(updateDialog).toContainText('默认音色与语速');
+  await expect(updateDialog).toContainText('Agent 回答下方');
+  await expect(updateDialog).toContainText('网页链接会继续显示在回答中');
+  await page.screenshot({
+    path: testInfo.outputPath('update-announcement.png'),
+    fullPage: true
+  });
+  if (testInfo.project.name === 'mobile') {
+    const updateBounds = await updateDialog.boundingBox();
+    expect(updateBounds).not.toBeNull();
+    expect(updateBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(updateBounds!.x + updateBounds!.width).toBeLessThanOrEqual(376);
+    expect(updateBounds!.y + updateBounds!.height).toBeLessThanOrEqual(813);
+  }
+  await updateDialog.getByRole('button', { name: '知道了' }).click();
+  await expect(updateDialog).toHaveCount(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem('personal-chat-update-tts-v1:user-1'))
+    )
+    .toBe('complete');
 
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: '打开侧边栏' }).click();
@@ -537,6 +563,11 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '新手指南' }).click();
     await expect(page.getByText('首次使用指南')).toBeVisible();
     await page.getByRole('button', { name: '跳过', exact: true }).click();
+
+    await page.getByRole('button', { name: /Alice/ }).click();
+    await page.getByRole('button', { name: '更新公告' }).click();
+    await expect(page.getByRole('heading', { name: '让回答为你读出来' })).toBeVisible();
+    await page.getByRole('button', { name: '知道了' }).click();
 
     await page.locator('.model-picker-trigger').click();
     await expect(page.getByRole('option')).toHaveCount(3);
@@ -714,6 +745,7 @@ test('a persisted background response resumes after reopening its chat', async (
 
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-tts-v1:user-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -817,6 +849,7 @@ test('administrator can inspect another user chat and manage summary compatibili
   let speechEnabled = true;
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
+    localStorage.setItem('personal-chat-update-tts-v1:admin-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
