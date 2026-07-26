@@ -112,7 +112,26 @@ func (s *Server) speechSession(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logger.Error("open speech provider session", "provider", setting.Provider, "error", err)
-		writeSpeechError(connection, "speech_provider_failed", "The speech provider could not start.")
+		switch {
+		case errors.Is(err, speech.ErrProviderNotGranted):
+			writeSpeechError(
+				connection,
+				"speech_provider_not_granted",
+				"The speech resource is not enabled for the provider project.",
+			)
+		case errors.Is(err, speech.ErrProviderAuth):
+			writeSpeechError(
+				connection,
+				"speech_provider_auth_failed",
+				"The speech provider rejected its API credentials.",
+			)
+		default:
+			writeSpeechError(
+				connection,
+				"speech_provider_failed",
+				"The speech provider could not start.",
+			)
+		}
 		return
 	}
 	defer providerSession.Close()

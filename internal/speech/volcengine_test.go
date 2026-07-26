@@ -3,9 +3,11 @@ package speech
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,6 +206,41 @@ func TestVolcengineProviderRejectsUnknownVoiceBeforeNetwork(t *testing.T) {
 		context.Background(), SessionConfig{Voice: "unknown", Speed: 1},
 	); err == nil {
 		t.Fatal("Open() error = nil, want unknown voice error")
+	}
+}
+
+func TestVolcengineProviderReportsMissingResourceGrant(t *testing.T) {
+	speechServer := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Tt-Logid", "grant-test-log-id")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(
+				`{"error":"[resource_id=volc.seedtts.default] requested resource not granted"}`,
+			))
+		},
+	))
+	defer speechServer.Close()
+
+	speechEndpoint, _ := url.Parse("ws" + speechServer.URL[len("http"):])
+	provider := NewVolcengineProvider(config.VolcengineSpeech{
+		Endpoint: speechEndpoint, APIKey: "new-console-api-key",
+		ResourceID: "seed-tts-2.0",
+		Voices: []config.SpeechVoice{{
+			ID: "zh_female_tianmeitaozi_mars_bigtts", Label: "甜美桃子",
+		}},
+		Format: "pcm", SampleRate: 24000,
+	})
+	_, err := provider.Open(context.Background(), SessionConfig{
+		Voice: "zh_female_tianmeitaozi_mars_bigtts", Speed: 1,
+	})
+	if !errors.Is(err, ErrProviderNotGranted) {
+		t.Fatalf("Open() error = %v, want ErrProviderNotGranted", err)
+	}
+	if message := err.Error(); !strings.Contains(message, "HTTP 403") ||
+		!strings.Contains(message, "grant-test-log-id") ||
+		strings.Contains(message, "new-console-api-key") {
+		t.Fatalf("Open() error = %q", message)
 	}
 }
 

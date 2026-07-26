@@ -73,6 +73,33 @@ The audio stream is 24 kHz, 16-bit, mono PCM. Every binary WebSocket frame is a
 piece of one continuous PCM stream. The browser must append frames in order and
 must not treat each frame as a standalone audio file.
 
+## Reverse proxy requirement
+
+The public speech endpoint must preserve the WebSocket hop-by-hop headers.
+Keep this as an exact Nginx location so normal HTTP and Responses SSE requests
+continue to clear the `Connection` header:
+
+```nginx
+location = /api/v1/speech/sessions {
+    proxy_pass http://127.0.0.1:3001;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_buffering off;
+    proxy_request_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+}
+```
+
+A missing upgrade forwarding rule reaches the Go handler as HTTP 400 before a
+provider session is opened.
+
 ## Provider boundary
 
 `internal/speech.Provider` exposes provider identity, configuration state,
@@ -222,6 +249,11 @@ start with speech disabled.
 
 Only use the API Key created in the Doubao Voice new console. Do not substitute
 an IAM AccessKey ID/Secret, legacy APP ID, or legacy Access Token.
+
+The API Key and the `seed-tts-2.0` entitlement must belong to the same
+Volcengine project. Projects are isolated. An upstream HTTP 403 containing
+`requested resource not granted` means the key was recognized but the selected
+project has not enabled Doubao Speech Synthesis 2.0 under **开通管理**.
 
 1. In the same Volcengine project that owns the trial or paid TTS entitlement,
    create an API Key:
