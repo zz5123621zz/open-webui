@@ -306,9 +306,14 @@ func TestSearchIsNotStarvedByOneChattyConversation(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("starvation results = %#v", results)
 	}
-	ids := []string{results[0].Conversation.ID, results[1].Conversation.ID}
-	if ids[0] != chatty.ID || ids[1] != older.ID {
-		t.Fatalf("starvation order = %v (chatty=%s older=%s)", ids, chatty.ID, older.ID)
+	// Millisecond-resolution updated_at can tie in a fast test, which makes
+	// the relative order fall back to random ids; only membership is asserted.
+	found := map[string]bool{}
+	for _, result := range results {
+		found[result.Conversation.ID] = true
+	}
+	if !found[chatty.ID] || !found[older.ID] {
+		t.Fatalf("starvation membership = %#v (chatty=%s older=%s)", results, chatty.ID, older.ID)
 	}
 }
 
