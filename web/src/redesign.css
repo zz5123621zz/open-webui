@@ -3837,3 +3837,259 @@ button:disabled {
     font-size: 0.75rem;
   }
 }
+
+/* ============================================================
+   Interaction polish
+   - Press feedback on every pressable (scale, strong ease-out)
+   - Entry motion for overlays and occasional-frequency surfaces
+   - Touch affordances for hover-revealed controls
+   Durations stay under 300ms; entrances use a strong ease-out so
+   the first frames carry most of the movement.
+   ============================================================ */
+
+:root {
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* --- Press feedback ------------------------------------------------ */
+/* The transition list is a superset of the per-element lists it
+   overrides (all of them animate color-ish properties at 160ms ease),
+   plus transform for the press scale. */
+
+.new-chat,
+.icon-button,
+.mini-action,
+.toolbar-button,
+.suggestion-grid button,
+.suggestion-heading button,
+.copy-answer,
+.message-edit-send,
+.message-edit-cancel,
+.search-result,
+.jump-to-latest,
+.primary-button,
+.send-button,
+.profile-button,
+.profile-menu button,
+.dialog-close,
+.dialog-primary,
+.logout-everywhere,
+.sidebar-search-clear,
+.model-picker-trigger,
+.effort-picker-trigger,
+.font-size-options button,
+.effort-options button,
+.model-options button {
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease,
+    transform 140ms var(--ease-out-strong);
+}
+
+.new-chat:active,
+.icon-button:active,
+.mini-action:active,
+.toolbar-button:not(:disabled):active,
+.suggestion-grid button:active,
+.suggestion-heading button:active,
+.copy-answer:active,
+.message-edit-send:not(:disabled):active,
+.message-edit-cancel:active,
+.search-result:active,
+.primary-button:active,
+.send-button:not(:disabled):active,
+.profile-button:active,
+.profile-menu button:active,
+.dialog-close:active,
+.dialog-primary:not(:disabled):active,
+.logout-everywhere:not(:disabled):active,
+.sidebar-search-clear:active,
+.model-picker-trigger:not(:disabled):active,
+.effort-picker-trigger:not(:disabled):active,
+.font-size-options button:active,
+.effort-options button:not(:disabled):active,
+.model-options button:active {
+  transform: scale(0.97);
+}
+
+/* Composes with its own centering transform. */
+.jump-to-latest:active {
+  transform: translateX(-50%) scale(0.96);
+}
+
+/* --- Entry motion --------------------------------------------------- */
+/* Dialogs (centered, so they scale from center). */
+
+.modal-backdrop {
+  transition: opacity 160ms ease-out;
+}
+
+.account-dialog {
+  transition:
+    opacity 180ms var(--ease-out-strong),
+    transform 180ms var(--ease-out-strong);
+}
+
+@starting-style {
+  .modal-backdrop {
+    opacity: 0;
+  }
+
+  .account-dialog {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* Popovers scale in from their trigger edge, not from center. */
+
+.model-picker-panel {
+  transform-origin: top left;
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+.effort-picker-panel {
+  transform-origin: top center;
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+.profile-menu {
+  transform-origin: bottom center;
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+@starting-style {
+  .model-picker-panel {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  .effort-picker-panel {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.96);
+  }
+
+  .profile-menu {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* Occasional-frequency surfaces: message editor, drop overlay,
+   status and error strips, jump-to-latest. */
+
+.message-edit {
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+.drop-overlay {
+  transition: opacity 120ms ease-out;
+}
+
+.workspace-error,
+.context-status,
+.context-advice {
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+@starting-style {
+  .message-edit {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  .drop-overlay {
+    opacity: 0;
+  }
+
+  .workspace-error,
+  .context-status,
+  .context-advice {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+
+  .jump-to-latest {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+
+  .sidebar-scrim {
+    opacity: 0;
+  }
+}
+
+.sidebar-scrim {
+  transition: opacity 150ms ease-out;
+}
+
+/* New messages fade in; streaming updates mutate the same node and do
+   not retrigger this. */
+.message {
+  transition: opacity 120ms ease-out;
+}
+
+@starting-style {
+  .message {
+    opacity: 0;
+  }
+}
+
+/* Welcome suggestions cascade in; they render rarely (empty chats) and
+   are replaced wholesale, so keyframes cannot be interrupted mid-run. */
+@keyframes suggestion-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.suggestion-grid button {
+  animation: suggestion-in 240ms var(--ease-out-strong) backwards;
+}
+
+.suggestion-grid button:nth-child(2) {
+  animation-delay: 45ms;
+}
+
+.suggestion-grid button:nth-child(3) {
+  animation-delay: 90ms;
+}
+
+/* --- Touch affordances --------------------------------------------- */
+/* Hover cannot reveal these on touch screens; show them outright.
+   (Screens <=760px already do this; hover:none also covers tablets.) */
+
+@media (hover: none) {
+  .copy-answer,
+  .message-meta {
+    opacity: 1;
+  }
+
+  .conversation-item.active .conversation-actions {
+    display: flex;
+  }
+}
+
+/* iOS-like drawer feel for the mobile sidebar slide. */
+
+@media (max-width: 760px) {
+  .sidebar {
+    transition: transform 260ms var(--ease-drawer);
+  }
+}
