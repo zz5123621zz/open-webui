@@ -28,6 +28,18 @@
   import MessageView from './lib/MessageView.svelte';
   import Onboarding from './lib/Onboarding.svelte';
   import ProgressiveSummarySettings from './lib/ProgressiveSummarySettings.svelte';
+  import SpeechAdminSettings from './lib/SpeechAdminSettings.svelte';
+  import SpeechPlayer from './lib/SpeechPlayer.svelte';
+  import SpeechSettings from './lib/SpeechSettings.svelte';
+  import {
+    initializeSpeech,
+    refreshSpeechPreference,
+    resetSpeech,
+    speechController,
+    speechDeviceAuthorization,
+    speechPlayerState,
+    speechPreference
+  } from './lib/speech';
   import type {
     Attachment,
     Conversation,
@@ -94,7 +106,14 @@
   let contextStatus = '';
   let sidebarOpen = false;
   let profileOpen = false;
-  let dialog: '' | 'appearance' | 'security' | 'service' | 'about' = '';
+  let dialog:
+    | ''
+    | 'appearance'
+    | 'security'
+    | 'service'
+    | 'speech'
+    | 'speech-admin'
+    | 'about' = '';
   let accountError = '';
   let accountPending = false;
   let showArchived = false;
@@ -386,6 +405,15 @@
   $: generationElapsedSeconds = generationStartedAt
     ? Math.max(0, Math.floor((generationNow - generationStartedAt) / 1000))
     : 0;
+  $: if (activeAssistantId) {
+    const speechMessage = messages.find((message) => message.id === activeAssistantId);
+    if (speechMessage) {
+      speechController.syncMessage(speechMessage);
+      if ($speechPreference?.mode === 'auto') {
+        speechController.syncAutomatic(speechMessage);
+      }
+    }
+  }
 
   onMount(() => {
     setLocale($locale);
@@ -400,13 +428,14 @@
       responseWatchVersion += 1;
       systemTheme.removeEventListener('change', updateSystemTheme);
       stopGenerationClock();
+      speechController.stop();
     };
   });
 
   async function initialize() {
     try {
       user = await getSession();
-      await loadWorkspace();
+      await Promise.all([loadWorkspace(), initializeSpeech(user.id)]);
       phase = 'ready';
       openOnboardingIfNeeded();
     } catch (error) {
@@ -497,6 +526,22 @@
       ],
       service_stopping: ['服务正在重启，请稍后再试。', 'The service is restarting. Try again shortly.'],
       too_many_requests: ['当前请求较多，请稍后再试。', 'The request queue is full. Try again shortly.'],
+      speech_disabled: [
+        '管理员暂时关闭了文字转语音服务。',
+        'The administrator has disabled text-to-speech.'
+      ],
+      speech_provider_unavailable: [
+        '语音提供商尚未正确配置。',
+        'The speech provider is not configured.'
+      ],
+      speech_session_limit: [
+        '当前朗读任务较多，请稍后重试。',
+        'Too many read-aloud sessions are active. Try again shortly.'
+      ],
+      invalid_speech_voice: [
+        '所选音色已经不可用，请重新选择。',
+        'The selected voice is no longer available.'
+      ],
       storage_quota_exceeded: [
         '你的 3 GB 活跃空间已满，请先将对话移入临时留档或删除图片。',
         'Your 3 GB active storage is full. Retain a chat or delete images before continuing.'
@@ -651,7 +696,7 @@
         localStorage.removeItem('personal-chat-remember-username');
       }
       loginPassword = '';
-      await loadWorkspace();
+      await Promise.all([loadWorkspace(), initializeSpeech(user.id)]);
       phase = 'ready';
       openOnboardingIfNeeded();
     } catch (error) {
@@ -680,6 +725,7 @@
       uploads = [];
       generateImage = false;
       storageStatus = null;
+      resetSpeech();
       profileOpen = false;
       onboardingOpen = false;
       phase = 'login';
@@ -702,6 +748,7 @@
     uploads = [];
     generateImage = false;
     storageStatus = null;
+    resetSpeech();
     profileOpen = false;
     dialog = '';
     onboardingOpen = false;
@@ -743,7 +790,9 @@
     }
   }
 
-  async function openDialog(value: 'appearance' | 'security' | 'service' | 'about') {
+  async function openDialog(
+    value: 'appearance' | 'security' | 'service' | 'speech' | 'speech-admin' | 'about'
+  ) {
     profileOpen = false;
     accountError = '';
     dialog = value;
@@ -751,11 +800,23 @@
     dialogElement?.focus();
   }
 
+  async function authorizeSpeechPlayback() {
+    workspaceError = '';
+    try {
+      await speechController.authorize();
+      const speechMessage = messages.find((message) => message.id === activeAssistantId);
+      if (speechMessage) speechController.syncAutomatic(speechMessage);
+    } catch (error) {
+      workspaceError = errorMessage(error);
+    }
+  }
+
   async function openConversation(id: string) {
     if (generating || id === activeConversationId && messages.length) {
       sidebarOpen = false;
       return;
     }
+    if (id !== activeConversationId) speechController.stop();
     activeConversationId = id;
     const conversation = conversations.find((item) => item.id === id);
     const conversationModel = models.find((item) => item.id === conversation?.model);
@@ -824,6 +885,7 @@
 
   async function startNewChat() {
     if (generating || creatingConversation || !selectableModels.length) return;
+    speechController.stop();
     const ownedConversation = ownsConversation(activeConversation) ? activeConversation : null;
     const requestedModel = ownedConversation?.model || draftModel;
     const nextModel =
@@ -1263,6 +1325,7 @@
       (!outgoingText && outgoingUploads.length === 0)
     ) return;
 
+    speechController.stop();
     let conversation = activeConversation;
     if (!conversation) conversation = await newConversation();
     if (!conversation) return;
@@ -2201,6 +2264,9 @@
             <button on:click={() => openDialog('appearance')}>
               <Icon name="text-size" size={17} />{t('显示与字体', 'Display & text')}
             </button>
+            <button on:click={() => openDialog('speech')}>
+              <Icon name="speaker" size={17} />{t('语音与朗读', 'Speech & read aloud')}
+            </button>
             <button on:click={toggleArchiveView}>
               <Icon name={showArchived ? 'chat' : 'archive'} size={17} />
               {showArchived ? t('返回对话记录', 'Back to chats') : t('临时留档', 'Retained chats')}
@@ -2214,6 +2280,7 @@
             <button on:click={reloadApplication}><Icon name="refresh" size={17} />{t('刷新应用', 'Reload app')}</button>
             {#if user?.role === 'admin'}
               <button on:click={() => openDialog('service')}><Icon name="sparkles" size={17} />{t('推理摘要设置', 'Reasoning summary settings')}</button>
+              <button on:click={() => openDialog('speech-admin')}><Icon name="speaker" size={17} />{t('语音服务设置', 'Speech service settings')}</button>
             {/if}
             <button on:click={() => openDialog('security')}><Icon name="shield" size={17} />{t('账户与安全', 'Account & security')}</button>
             <button on:click={() => openDialog('about')}><Icon name="info" size={17} />{t('关于', 'About')}</button>
@@ -2384,6 +2451,9 @@
       {/if}
 
       <div
+        class:speech-active={Boolean(
+          $speechPlayerState.messageId || $speechDeviceAuthorization.needsGesture
+        )}
         class="messages-scroll"
         bind:this={scrollElement}
         on:scroll={handleMessageScroll}
@@ -2469,7 +2539,12 @@
         {/if}
       </div>
 
-      <div class="composer-zone">
+      <div
+        class:speech-active={Boolean(
+          $speechPlayerState.messageId || $speechDeviceAuthorization.needsGesture
+        )}
+        class="composer-zone"
+      >
         {#if showJumpToLatest}
           <button
             type="button"
@@ -2504,6 +2579,16 @@
             </button>
           </div>
         {/if}
+        {#if $speechDeviceAuthorization.needsGesture && $speechPreference?.mode === 'auto'}
+          <div class="speech-authorization-prompt" role="status">
+            <span><Icon name="speaker" size={16} /></span>
+            <strong>{t('自动朗读需要当前设备允许播放声音', 'Auto-read needs audio permission on this device')}</strong>
+            <button type="button" on:click={authorizeSpeechPlayback}>
+              {t('允许播放', 'Enable audio')}
+            </button>
+          </div>
+        {/if}
+        <SpeechPlayer locale={$locale} />
         <div class:busy={generating} class:image-mode={generateImage} class="composer">
           {#if uploads.length}
             <div class="upload-strip">
@@ -2634,6 +2719,7 @@
         on:click={() => (dialog = '')}
       ></button>
       <div
+        class:speech-dialog={dialog === 'speech' || dialog === 'speech-admin'}
         class="account-dialog"
         bind:this={dialogElement}
         role="dialog"
@@ -2738,8 +2824,17 @@
               'This setting is stored in this browser and does not affect other devices.'
             )}
           </p>
+        {:else if dialog === 'speech'}
+          <SpeechSettings locale={$locale} />
         {:else if dialog === 'service'}
           <ProgressiveSummarySettings locale={$locale} />
+        {:else if dialog === 'speech-admin'}
+          <SpeechAdminSettings
+            locale={$locale}
+            on:changed={() => {
+              if (user) void refreshSpeechPreference();
+            }}
+          />
         {:else}
           <div class="dialog-icon"><Icon name="sparkles" size={23} /></div>
           <h2 id="dialog-title">La4RainGPT</h2>

@@ -5,6 +5,7 @@
   import { translate, type Locale } from './i18n';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
+  import SpeechMessageControl from './SpeechMessageControl.svelte';
 
   export let message: Message;
   export let locale: Locale = 'zh-CN';
@@ -346,9 +347,11 @@
         {/if}
       </div>
     {/if}
-    {#if message.role === 'assistant' && message.status !== 'streaming'}
-      <div class="message-footer">
-        {#if message.parts.some((part) => part.type === 'text' && part.text)}
+    {#if message.role === 'assistant' &&
+      message.parts.some((part) => part.type === 'text' && part.text)}
+      <div class:streaming={message.status === 'streaming'} class="message-footer">
+        <SpeechMessageControl {message} {locale} />
+        {#if message.status !== 'streaming'}
           <button
             class="copy-answer"
             aria-label={t('复制回答', 'Copy response')}
@@ -359,7 +362,7 @@
             {copied ? t('已复制', 'Copied') : t('复制', 'Copy')}
           </button>
         {/if}
-        {#if canRegenerate}
+        {#if canRegenerate && message.status !== 'streaming'}
           <button
             class="copy-answer"
             title={message.status === 'completed'

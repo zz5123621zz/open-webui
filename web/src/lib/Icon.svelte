@@ -21,20 +21,26 @@
     | 'plan'
     | 'pin'
     | 'pin-off'
+    | 'play'
     | 'plus'
+    | 'pause'
     | 'refresh'
+    | 'rewind'
     | 'restore'
     | 'retry'
     | 'search'
     | 'send'
     | 'shield'
+    | 'speaker'
     | 'sparkles'
     | 'stop'
     | 'sun'
     | 'text-size'
     | 'theme'
     | 'trash'
-    | 'upload';
+    | 'upload'
+    | 'forward'
+    | 'volume-off';
 
   export let name: IconName;
   export let size = 16;
@@ -122,6 +128,22 @@
   {:else if name === 'pin-off'}
     <path d="M3 3l18 18" />
     <path d="m9.8 3h5.2l-.8 5.1 3.3 3.3v1.1h-5M8.7 12.5H6.5v-1.1l2.1-2.1M12 15.8V21" />
+  {:else if name === 'play'}
+    <path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none" />
+  {:else if name === 'pause'}
+    <path d="M8 5v14M16 5v14" stroke-width="2.4" />
+  {:else if name === 'speaker'}
+    <path d="M5 10H2.8v4H5l4 3V7Z" />
+    <path d="M13 9.2a4 4 0 0 1 0 5.6M16 6.5a7.5 7.5 0 0 1 0 11" />
+  {:else if name === 'volume-off'}
+    <path d="M5 10H2.8v4H5l4 3V7Z" />
+    <path d="m14 10 5 5M19 10l-5 5" />
+  {:else if name === 'rewind'}
+    <path d="M5 6v12" />
+    <path d="m18 6-9 6 9 6Z" />
+  {:else if name === 'forward'}
+    <path d="M19 6v12" />
+    <path d="m6 6 9 6-9 6Z" />
   {:else if name === 'plus'}
     <path d="M12 5v14M5 12h14" />
   {:else if name === 'refresh' || name === 'retry'}

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/owui-personal-slim/owui-personal-slim/internal/config"
@@ -37,5 +38,21 @@ func TestOriginMiddlewareRequiresExactOrigin(t *testing.T) {
 				t.Fatalf("status = %d, want %d", response.Code, testCase.want)
 			}
 		})
+	}
+}
+
+func TestSecurityHeadersAllowConfiguredWebSocketOrigin(t *testing.T) {
+	baseURL, _ := url.Parse("https://chat.example.test")
+	server := &Server{cfg: config.Config{BaseURL: baseURL}}
+	handler := server.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	policy := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "connect-src 'self' wss://chat.example.test") {
+		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
 }

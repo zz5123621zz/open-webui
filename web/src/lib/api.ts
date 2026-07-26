@@ -7,6 +7,9 @@ import type {
   Model,
   ProgressiveSummaryMode,
   ProgressiveSummarySettings,
+  SpeechMode,
+  SpeechPreference,
+  SpeechServiceSettings,
   StorageStatus,
   StreamEvent,
   User
@@ -136,6 +139,40 @@ export async function recheckProgressiveSummaryCompatibility(): Promise<Progress
     { method: 'POST' }
   );
   return body.progressiveSummary;
+}
+
+export async function getSpeechPreference(): Promise<SpeechPreference> {
+  const body = await request<{ speech: SpeechPreference }>('/api/v1/me/speech');
+  return body.speech;
+}
+
+export async function updateSpeechPreference(
+  mode: SpeechMode,
+  speed: number,
+  voice: string
+): Promise<SpeechPreference> {
+  const body = await request<{ speech: SpeechPreference }>('/api/v1/me/speech', {
+    method: 'PUT',
+    body: JSON.stringify({ mode, speed, voice })
+  });
+  return body.speech;
+}
+
+export async function getSpeechServiceSettings(): Promise<SpeechServiceSettings> {
+  const body = await request<{ speech: SpeechServiceSettings }>('/api/v1/admin/speech');
+  return body.speech;
+}
+
+export async function updateSpeechServiceSettings(
+  enabled: boolean,
+  provider: string,
+  defaultVoice: string
+): Promise<SpeechServiceSettings> {
+  const body = await request<{ speech: SpeechServiceSettings }>('/api/v1/admin/speech', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled, provider, defaultVoice })
+  });
+  return body.speech;
 }
 
 export async function getConversations(archived = false): Promise<Conversation[]> {
