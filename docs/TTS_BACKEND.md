@@ -2,11 +2,15 @@
 
 ## Status
 
-The backend has a provider-neutral streaming speech boundary and an Aliyun
-`FlowingSpeechSynthesizer` adapter. Speech remains disabled after migration.
-The Volcengine adapter is intentionally not implemented yet; it can implement
-the same `speech.Provider` and `speech.Session` interfaces without changing the
-browser protocol, stored preferences, or administrator API.
+The backend has a provider-neutral streaming speech boundary plus two
+adapters:
+
+- Aliyun `FlowingSpeechSynthesizer`
+- Volcengine V3 bidirectional streaming TTS
+
+Speech remains disabled after migration. Enabling and provider selection are
+administrator service settings and do not require an application or CPA
+restart.
 
 The administrator and user frontend controls are a separate UI task. This
 document describes the backend contract they consume.
@@ -25,13 +29,29 @@ document describes the backend contract they consume.
   <https://www.volcengine.com/docs/6561/2228192?lang=zh>
 - Volcengine V3 bidirectional streaming TTS:
   <https://www.volcengine.com/docs/6561/2532486?lang=zh>
-- Volcengine authentication:
-  <https://www.volcengine.com/docs/6561/1105162?lang=zh>
+- Volcengine model 2.0 voice list:
+  <https://www.volcengine.com/docs/6561/1257544?lang=zh>
+- Volcengine new-console API Key management:
+  <https://console.volcengine.com/speech/new/setting/apikeys?projectName=default>
 
-Aliyun was selected first because its flowing protocol accepts incremental
-`RunSynthesis` text and emits one continuous audio stream. The adapter obtains
-and caches temporary tokens through `CreateToken`; long-lived AccessKeys are
-never sent to the browser.
+The Volcengine adapter follows the current new-console V3 protocol. The
+WebSocket handshake sends only `X-Api-Key`, `X-Api-Resource-Id`,
+`X-Api-Connect-Id`, and the optional usage-return control header. It does not
+send the legacy `X-Api-App-Key`, `X-Api-Access-Key`, or `Authorization`
+headers. It uses the official binary event envelope in this order:
+
+1. `StartConnection` / `ConnectionStarted`
+2. `StartSession` / `SessionStarted`
+3. zero or more `TaskRequest` events and `TTSResponse` audio events
+4. `FinishSession` / `SessionFinished`
+5. `FinishConnection` / `ConnectionFinished`
+
+The default resource is `seed-tts-2.0`; output is 24 kHz, 16-bit, mono PCM.
+The request enables the provider's documented Markdown and emoji filtering.
+
+The Aliyun adapter obtains and caches temporary tokens through `CreateToken`.
+Long-lived provider credentials for either adapter are never sent to the
+browser.
 
 ## Runtime model
 
@@ -64,8 +84,10 @@ voices, and `Open`. `internal/speech.Session` exposes:
 - `ReadEvent`
 - `Close`
 
-Adding Volcengine requires a new adapter plus registry/config wiring. It does
-not require changes to the database or public WebSocket protocol.
+Provider IDs are `aliyun` and `volcengine`. Switching providers does not
+require database or public WebSocket protocol changes. A user voice retained
+from the previous provider is ignored when it is not available in the newly
+selected provider; the new provider's administrator-selected default is used.
 
 ## Administrator API
 
@@ -88,8 +110,8 @@ The request requires the normal CSRF header:
 ```json
 {
   "enabled": true,
-  "provider": "aliyun",
-  "defaultVoice": "longxiaochun"
+  "provider": "volcengine",
+  "defaultVoice": "zh_female_tianmeitaozi_mars_bigtts"
 }
 ```
 
@@ -104,7 +126,7 @@ down sessions that were already speaking.
 
 `GET /api/v1/me/speech`
 
-New users receive:
+With Volcengine selected, a new user receives:
 
 ```json
 {
@@ -113,7 +135,7 @@ New users receive:
     "autoRead": false,
     "speed": 1,
     "voice": "",
-    "effectiveVoice": "longxiaochun",
+    "effectiveVoice": "zh_female_tianmeitaozi_mars_bigtts",
     "audioAuthorization": "required_on_each_device"
   }
 }
@@ -129,7 +151,7 @@ An empty `voice` inherits the administrator's current default.
 {
   "mode": "auto",
   "speed": 1.1,
-  "voice": "longxiaochun"
+  "voice": "zh_female_tianmeitaozi_mars_bigtts"
 }
 ```
 
@@ -152,7 +174,7 @@ Open an authenticated, same-origin WebSocket:
 The server sends:
 
 ```json
-{"type":"speech.connecting","provider":"aliyun"}
+{"type":"speech.connecting","provider":"volcengine"}
 ```
 
 then:
@@ -160,8 +182,8 @@ then:
 ```json
 {
   "type": "speech.started",
-  "provider": "aliyun",
-  "voice": "longxiaochun",
+  "provider": "volcengine",
+  "voice": "zh_female_tianmeitaozi_mars_bigtts",
   "speed": 1,
   "audio": {
     "format": "pcm",
@@ -194,7 +216,68 @@ speaking half-formed Markdown.
 ## Docker configuration
 
 The normal `compose.yaml` does not require TTS credentials and continues to
-start with speech disabled. To configure Aliyun:
+start with speech disabled.
+
+### Volcengine new-console V3
+
+Only use the API Key created in the Doubao Voice new console. Do not substitute
+an IAM AccessKey ID/Secret, legacy APP ID, or legacy Access Token.
+
+1. In the same Volcengine project that owns the trial or paid TTS entitlement,
+   create an API Key:
+   <https://console.volcengine.com/speech/new/setting/apikeys?projectName=default>
+2. Select a `seed-tts-2.0` voice in the voice library and copy its exact
+   Speaker ID:
+   <https://console.volcengine.com/speech/new/voices?projectName=default>
+3. Create the deployment secret without placing the value in shell history:
+
+   ```sh
+   sudo install -m 0400 -o 65532 -g 65532 /dev/null \
+     /opt/owui-personal-slim/secrets/tts_volcengine_api_key
+   read -rsp 'Volcengine TTS API Key: ' VOLCENGINE_TTS_SECRET_INPUT; echo
+   printf '%s' "$VOLCENGINE_TTS_SECRET_INPUT" |
+     sudo tee /opt/owui-personal-slim/secrets/tts_volcengine_api_key >/dev/null
+   unset VOLCENGINE_TTS_SECRET_INPUT
+   sudo chown 65532:65532 \
+     /opt/owui-personal-slim/secrets/tts_volcengine_api_key
+   sudo chmod 0400 \
+     /opt/owui-personal-slim/secrets/tts_volcengine_api_key
+   ```
+
+4. Set only non-secret values in `.env`:
+
+   ```dotenv
+   TTS_VOLCENGINE_RESOURCE_ID=seed-tts-2.0
+   TTS_VOLCENGINE_VOICES=zh_female_tianmeitaozi_mars_bigtts:甜美桃子
+   ```
+
+   Multiple allowlisted voices use comma-separated `id:label` entries. Every
+   ID must be available to the same Volcengine project.
+
+5. Recreate only the Go application once to mount the secret:
+
+   ```sh
+   docker compose \
+     -f compose.yaml \
+     -f compose.tts-volcengine.yaml \
+     up -d app
+   ```
+
+6. Select `volcengine`, its default voice, and enable speech through
+   `PUT /api/v1/admin/speech`.
+
+The adapter always sends:
+
+```text
+X-Api-Key: <server-side secret>
+X-Api-Resource-Id: seed-tts-2.0
+X-Api-Connect-Id: <new UUID per provider connection>
+X-Control-Require-Usage-Tokens-Return: *
+```
+
+### Aliyun
+
+To configure Aliyun:
 
 1. Put the project AppKey in `.env` as `TTS_ALIYUN_APP_KEY`.
 2. Create `secrets/tts_aliyun_access_key_id` and
@@ -213,9 +296,9 @@ The one-time app recreation is needed only to add or rotate provider
 credentials. Routine enable/disable, provider selection, and default voice
 changes are runtime operations. CPA is never restarted.
 
-Do not place AccessKey values in `.env`, the database, frontend bundles, or
-administrator responses. Use a restricted RAM user rather than an Alibaba
-account root AccessKey.
+Do not place any provider key in `.env`, the database, frontend bundles,
+administrator responses, or GitHub. Use a restricted RAM user rather than an
+Alibaba account root AccessKey.
 
 ## Reverse proxy
 

@@ -159,10 +159,6 @@ func (s *Server) userSpeechPreferencePayload(
 	preference store.UserSpeechPreference,
 	setting store.SpeechServiceSetting,
 ) map[string]any {
-	voice := preference.Voice
-	if voice == "" {
-		voice = setting.DefaultVoice
-	}
 	provider, _ := s.speechProviders.Provider(setting.Provider)
 	voices := []speech.Voice{}
 	configured := false
@@ -170,6 +166,7 @@ func (s *Server) userSpeechPreferencePayload(
 		voices = provider.Voices()
 		configured = provider.Configured()
 	}
+	voice := effectiveSpeechVoice(preference.Voice, setting.DefaultVoice, voices)
 	return map[string]any{
 		"mode": preference.Mode, "autoRead": preference.Mode == store.SpeechModeAuto,
 		"speed": preference.Speed, "voice": preference.Voice,

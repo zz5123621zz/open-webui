@@ -1,0 +1,13 @@
+services:
+  app:
+    environment:
+      TTS_VOLCENGINE_API_KEY_FILE: /run/secrets/tts_volcengine_api_key
+      TTS_VOLCENGINE_RESOURCE_ID: ${TTS_VOLCENGINE_RESOURCE_ID:-seed-tts-2.0}
+      TTS_VOLCENGINE_VOICES: ${TTS_VOLCENGINE_VOICES:-zh_female_tianmeitaozi_mars_bigtts:甜美桃子}
+      TTS_SESSION_TTL_SECONDS: ${TTS_SESSION_TTL_SECONDS:-1800}
+    secrets:
+      - tts_volcengine_api_key
+
+secrets:
+  tts_volcengine_api_key:
+    file: ./secrets/tts_volcengine_api_key

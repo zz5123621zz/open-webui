@@ -47,3 +47,16 @@ func TestSpeedToAliyunRate(t *testing.T) {
 		}
 	}
 }
+
+func TestSpeedToVolcengineRate(t *testing.T) {
+	for speed, expected := range map[float64]int{
+		0.5: -50,
+		1.0: 0,
+		1.5: 50,
+		2.0: 100,
+	} {
+		if actual := speedToVolcengineRate(speed); actual != expected {
+			t.Fatalf("speedToVolcengineRate(%v) = %d, want %d", speed, actual, expected)
+		}
+	}
+}

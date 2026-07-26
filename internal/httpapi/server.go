@@ -75,7 +75,10 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 		responseContext: responseContext,
 		responseCancel:  responseCancel,
 		summaries:       progressivesummary.New(30 * time.Minute),
-		speechProviders: speech.NewRegistry(speech.NewAliyunProvider(cfg.Speech.Alibaba)),
+		speechProviders: speech.NewRegistry(
+			speech.NewAliyunProvider(cfg.Speech.Alibaba),
+			speech.NewVolcengineProvider(cfg.Speech.Volcengine),
+		),
 		speechGate: speech.NewGate(
 			cfg.Speech.MaxConcurrentGlobal,
 			cfg.Speech.MaxConcurrentPerUser,

@@ -67,10 +67,7 @@ func (s *Server) speechSession(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, "read speech preference for session", err)
 		return
 	}
-	voice := preference.Voice
-	if voice == "" {
-		voice = setting.DefaultVoice
-	}
+	voice := effectiveSpeechVoice(preference.Voice, setting.DefaultVoice, provider.Voices())
 	if !speechVoiceAllowed(voice, provider.Voices()) {
 		writeError(
 			w, http.StatusConflict, "speech_voice_unavailable",
@@ -216,6 +213,13 @@ func (s *Server) speechSession(w http.ResponseWriter, r *http.Request) {
 			go readSpeechProvider(speechContext, providerSession, providerReads)
 		}
 	}
+}
+
+func effectiveSpeechVoice(preferred, fallback string, voices []speech.Voice) string {
+	if speechVoiceAllowed(preferred, voices) {
+		return preferred
+	}
+	return fallback
 }
 
 func readSpeechClient(connection *websocket.Conn, output chan<- speechClientRead) {
