@@ -66,7 +66,7 @@
   >
     <header>
       <div class="release-mark">
-        <span><Icon name="speaker" size={19} /></span>
+        <span><Icon name="sparkles" size={19} /></span>
         <div>
           <strong>{t('更新公告', 'What’s new')}</strong>
           <small>La4RainGPT · 2026.07</small>
@@ -82,69 +82,83 @@
 
     <section class="update-content">
       <div class="release-copy">
-        <span class="release-tag">{t('新功能', 'New feature')}</span>
-        <h2 id="update-title">{t('让回答为你读出来', 'Listen to answers as they arrive')}</h2>
+        <span class="release-tag">{t('功能更新', 'Feature update')}</span>
+        <h2 id="update-title">{t('搜索、编辑与更顺手的输入', 'Search, editing, and a smoother composer')}</h2>
         <p id="update-description">
           {t(
-            '语音朗读已经上线。你可以手动朗读任意回答，也可以开启自动朗读并选择喜欢的音色。',
-            'Read aloud is now available. Play any answer manually, or turn on automatic reading and choose a voice you like.'
+            '这次更新带来对话搜索、消息编辑重发、粘贴或拖拽上传、草稿自动保存与用量统计，手机还能把应用添加到主屏幕。',
+            'This update adds chat search, message editing, paste-or-drop uploads, automatic drafts, usage stats, and add-to-home-screen on mobile.'
           )}
         </p>
       </div>
 
       <div class="feature-list">
         <article>
-          <span class="feature-icon"><Icon name="speaker" size={18} /></span>
+          <span class="feature-icon"><Icon name="search" size={18} /></span>
           <div>
-            <strong>{t('开启自动朗读', 'Turn on automatic reading')}</strong>
+            <strong>{t('搜索所有对话', 'Search every chat')}</strong>
             <p>
               {t(
-                '打开头像菜单，进入“语音与朗读”，选择“自动朗读”。首次开启时请按提示允许本设备播放声音。',
-                'Open the profile menu, choose “Speech & read aloud,” then select “Automatic.” The first use asks this device for audio permission.'
+                '侧边栏新增搜索框，可按标题和消息内容查找对话，结果附带匹配片段，点击直接打开。',
+                'A search box in the sidebar finds chats by title or message text, shows a matching snippet, and opens the chat with one tap.'
+              )}
+            </p>
+            <span class="location">
+              {t('侧边栏', 'Sidebar')}
+              <i aria-hidden="true">›</i>
+              {t('搜索对话', 'Search chats')}
+            </span>
+          </div>
+        </article>
+
+        <article>
+          <span class="feature-icon"><Icon name="edit" size={18} /></span>
+          <div>
+            <strong>{t('编辑并重新发送', 'Edit and resend')}</strong>
+            <p>
+              {t(
+                '最新一条你的消息下方有“编辑”按钮，改完点“重新发送”即可得到新回答；之前的回答仍会保留，方便对照。',
+                'Your latest message now has an “Edit” button. Resend it to get a fresh answer while earlier answers stay in the chat for comparison.'
+              )}
+            </p>
+            <span class="location">
+              {t('最新一条你的消息', 'Your latest message')}
+              <i aria-hidden="true">›</i>
+              {t('编辑', 'Edit')}
+            </span>
+          </div>
+        </article>
+
+        <article>
+          <span class="feature-icon"><Icon name="image-plus" size={18} /></span>
+          <div>
+            <strong>{t('粘贴上传与自动草稿', 'Paste, drop, and drafts')}</strong>
+            <p>
+              {t(
+                '截图可以直接粘贴进输入框，图片也可以拖进聊天窗口上传；没发送的文字会按对话自动保存，刷新页面后自动恢复。',
+                'Paste screenshots straight into the composer or drop images onto the chat. Unsent text is saved per chat and restored after a reload.'
+              )}
+            </p>
+            <span class="location">
+              {t('输入框', 'Composer')}
+            </span>
+          </div>
+        </article>
+
+        <article>
+          <span class="feature-icon"><Icon name="plan" size={18} /></span>
+          <div>
+            <strong>{t('用量统计与主屏幕', 'Usage stats and home screen')}</strong>
+            <p>
+              {t(
+                '头像菜单新增“用量统计”，按月查看回答次数与 token 消耗；手机浏览器现在可以把 La4RainGPT 添加到主屏幕全屏使用。',
+                'The profile menu gains “Usage stats” with monthly response and token totals, and mobile browsers can add La4RainGPT to the home screen.'
               )}
             </p>
             <span class="location">
               {t('头像菜单', 'Profile')}
               <i aria-hidden="true">›</i>
-              {t('语音与朗读', 'Speech & read aloud')}
-              <i aria-hidden="true">›</i>
-              {t('自动朗读', 'Automatic')}
-            </span>
-          </div>
-        </article>
-
-        <article>
-          <span class="feature-icon"><Icon name="sparkles" size={18} /></span>
-          <div>
-            <strong>{t('选择音色与语速', 'Choose a voice and speed')}</strong>
-            <p>
-              {t(
-                '同一设置页可以试听和切换音色，并调整默认语速；新设置会用于下一次朗读。',
-                'Preview and switch voices on the same settings page, and adjust the default speed for your next reading.'
-              )}
-            </p>
-            <span class="location">
-              {t('语音与朗读', 'Speech & read aloud')}
-              <i aria-hidden="true">›</i>
-              {t('默认音色与语速', 'Voice & speed')}
-            </span>
-          </div>
-        </article>
-
-        <article>
-          <span class="feature-icon"><Icon name="play" size={17} /></span>
-          <div>
-            <strong>{t('随时手动朗读', 'Read any answer manually')}</strong>
-            <p>
-              {t(
-                '每条 Agent 回答下方都有“朗读”按钮。播放后可以暂停、快退或快进、拖动进度、调整倍速和音量。',
-                'Every Agent answer has a “Read aloud” button below it, with pause, skip, seek, speed, and volume controls.'
-              )}
-            </p>
-            <span class="location">
-              {t('Agent 回答下方', 'Below an Agent answer')}
-              <i aria-hidden="true">›</i>
-              {t('朗读', 'Read aloud')}
+              {t('用量统计', 'Usage stats')}
             </span>
           </div>
         </article>
@@ -154,8 +168,8 @@
         <Icon name="info" size={17} />
         <span>
           {t(
-            '网页链接会继续显示在回答中，但朗读时会自动跳过网址，只读链接标题和正文。',
-            'Web links remain visible in answers, while read aloud skips raw addresses and speaks only link titles and answer text.'
+            '搜索覆盖你自己的全部活跃对话，临时留档中的对话暂不参与；草稿只保存在当前浏览器。',
+            'Search covers all of your active chats; retained chats are not searched yet, and drafts stay in this browser only.'
           )}
         </span>
       </aside>

@@ -2172,7 +2172,7 @@
   }
 
   function updateAnnouncementStorageKey(): string {
-    return user ? `personal-chat-update-tts-v1:${user.id}` : '';
+    return user ? `personal-chat-update-ux-v1:${user.id}` : '';
   }
 
   function openUpdateAnnouncementIfNeeded() {

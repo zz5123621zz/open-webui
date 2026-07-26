@@ -3557,7 +3557,14 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--surface);
-  font-size: 0.8125rem;
+  /* Never below 16px, or iOS Safari zooms the page on focus. */
+  font-size: max(0.9375rem, 15px);
+}
+
+@media (pointer: coarse) {
+  .sidebar-search input {
+    font-size: max(1rem, 16px);
+  }
 }
 
 .sidebar-search input::placeholder {
@@ -3660,7 +3667,8 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--surface-soft);
-  font-size: 0.875rem;
+  /* Matches the composer: never below 16px so iOS keeps its zoom level. */
+  font-size: max(1rem, 16px);
   line-height: 1.6;
   resize: vertical;
 }

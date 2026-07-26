@@ -479,14 +479,13 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
       page.evaluate(() => localStorage.getItem('personal-chat-onboarding-v1:user-1'))
     )
     .toBe('complete');
-  const updateDialog = page.getByRole('dialog', { name: '让回答为你读出来' });
+  const updateDialog = page.getByRole('dialog', { name: '搜索、编辑与更顺手的输入' });
   await expect(updateDialog).toBeVisible();
-  await expect(updateDialog).toContainText('头像菜单');
-  await expect(updateDialog).toContainText('语音与朗读');
-  await expect(updateDialog).toContainText('自动朗读');
-  await expect(updateDialog).toContainText('默认音色与语速');
-  await expect(updateDialog).toContainText('Agent 回答下方');
-  await expect(updateDialog).toContainText('网页链接会继续显示在回答中');
+  await expect(updateDialog).toContainText('搜索所有对话');
+  await expect(updateDialog).toContainText('编辑并重新发送');
+  await expect(updateDialog).toContainText('粘贴上传与自动草稿');
+  await expect(updateDialog).toContainText('用量统计与主屏幕');
+  await expect(updateDialog).toContainText('临时留档中的对话暂不参与');
   await page.screenshot({
     path: testInfo.outputPath('update-announcement.png'),
     fullPage: true
@@ -502,7 +501,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(updateDialog).toHaveCount(0);
   await expect
     .poll(() =>
-      page.evaluate(() => localStorage.getItem('personal-chat-update-tts-v1:user-1'))
+      page.evaluate(() => localStorage.getItem('personal-chat-update-ux-v1:user-1'))
     )
     .toBe('complete');
 
@@ -571,7 +570,9 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '更新公告' }).click();
-    await expect(page.getByRole('heading', { name: '让回答为你读出来' })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: '搜索、编辑与更顺手的输入' })
+    ).toBeVisible();
     await page.getByRole('button', { name: '知道了' }).click();
 
     await page.locator('.model-picker-trigger').click();
@@ -751,7 +752,7 @@ test('a persisted background response resumes after reopening its chat', async (
 
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
-    localStorage.setItem('personal-chat-update-tts-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-ux-v1:user-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -868,7 +869,7 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
 
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
-    localStorage.setItem('personal-chat-update-tts-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-ux-v1:user-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -1057,7 +1058,7 @@ test('administrator can inspect another user chat and manage summary compatibili
   let speechEnabled = true;
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
-    localStorage.setItem('personal-chat-update-tts-v1:admin-1', 'complete');
+    localStorage.setItem('personal-chat-update-ux-v1:admin-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
