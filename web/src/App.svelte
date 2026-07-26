@@ -28,6 +28,7 @@
   } from './lib/api';
   import { locale, setLocale, translate } from './lib/i18n';
   import Icon from './lib/Icon.svelte';
+  import { messageText } from './lib/messages';
   import MessageView from './lib/MessageView.svelte';
   import Onboarding from './lib/Onboarding.svelte';
   import ProgressiveSummarySettings from './lib/ProgressiveSummarySettings.svelte';
@@ -164,6 +165,7 @@
   let usageError = '';
   let dragDepth = 0;
   let draftStorageKey = '';
+  let draftSaveTimer: number | undefined;
   const fontSizeChoices = [
     {
       value: 'compact',
@@ -423,8 +425,7 @@
         activeConversation.ownerId !== user.id
     );
   $: activeConversationReadOnly = showArchived || viewingOtherUser;
-  $: lastUserMessageId =
-    [...messages].reverse().find((message) => message.role === 'user')?.id || '';
+  $: lastUserMessageId = findLastUserMessageId(messages);
   $: dragActive = dragDepth > 0;
   $: selectableModels = visibleModeModels(models);
   $: t = (chinese: string, english: string) => translate($locale, chinese, english);
@@ -446,6 +447,14 @@
     const systemTheme = matchMedia('(prefers-color-scheme: dark)');
     const updateSystemTheme = () => applyTheme();
     systemTheme.addEventListener('change', updateSystemTheme);
+    // Flush a pending debounced draft write when the page is being hidden or
+    // torn down (mobile tab switches, browser kills).
+    const flushDraft = () => persistDraft();
+    const flushDraftOnHide = () => {
+      if (document.visibilityState === 'hidden') persistDraft();
+    };
+    window.addEventListener('pagehide', flushDraft);
+    document.addEventListener('visibilitychange', flushDraftOnHide);
     applyTheme();
     applyFontSize();
     refreshSuggestions();
@@ -453,6 +462,8 @@
     return () => {
       responseWatchVersion += 1;
       systemTheme.removeEventListener('change', updateSystemTheme);
+      window.removeEventListener('pagehide', flushDraft);
+      document.removeEventListener('visibilitychange', flushDraftOnHide);
       stopGenerationClock();
       speechController.stop();
     };
@@ -1272,12 +1283,21 @@
   }
 
   function persistDraft() {
+    window.clearTimeout(draftSaveTimer);
     if (!draftStorageKey) return;
     if (text.trim()) {
       localStorage.setItem(draftStorageKey, text);
     } else {
       localStorage.removeItem(draftStorageKey);
     }
+  }
+
+  // localStorage writes are synchronous main-thread I/O; batching keystrokes
+  // keeps large pasted drafts from adding typing latency. persistDraft is the
+  // flush and is still called directly at every state transition.
+  function scheduleDraftSave() {
+    window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = window.setTimeout(persistDraft, 300);
   }
 
   function restoreDraft(conversationId: string) {
@@ -1292,7 +1312,7 @@
 
   function composerInput() {
     resizeComposer();
-    persistDraft();
+    scheduleDraftSave();
   }
 
   function composerKeydown(event: KeyboardEvent) {
@@ -1360,6 +1380,15 @@
       ]
     };
     return stage ? t(...labels[stage]) : t('正在处理', 'Working');
+  }
+
+  // Runs on every `messages` reassignment (dozens per second while
+  // streaming), so it must not allocate.
+  function findLastUserMessageId(items: Message[]): string {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index].role === 'user') return items[index].id;
+    }
+    return '';
   }
 
   function isRunningResponse(message: Message | undefined): boolean {
@@ -1679,13 +1708,6 @@
   function titleFrom(value: string): string {
     const line = value.replace(/\s+/g, ' ').trim();
     return Array.from(line).slice(0, 36).join('') || 'New chat';
-  }
-
-  function messageText(message: Message): string {
-    return message.parts
-      .filter((part) => part.type === 'text')
-      .map((part) => part.text || '')
-      .join('\n\n');
   }
 
   async function beginMessageEdit(message: Message) {

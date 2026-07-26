@@ -98,15 +98,24 @@ func (s *Store) searchConversations(
 
 	// GROUP BY collapses matches to one row per conversation inside SQLite, so
 	// one chatty conversation cannot starve the result window and at most
-	// `limit` message texts cross into Go. The bare text_content column pairs
-	// with MAX(m.created_at): SQLite's min/max aggregate rule makes it come
-	// from that newest matching message.
+	// `limit` snippet windows cross into Go. The bare text_content expression
+	// pairs with MAX(m.created_at): SQLite's min/max aggregate rule makes it
+	// come from that newest matching message. substr/instr count characters,
+	// not bytes, and SQLite lower() folds only ASCII — the same folding LIKE
+	// applies, so an instr miss (0) can only happen for exotic case pairs and
+	// then degrades to a window at the start of the message.
 	messageQuery := `
 		SELECT ` + conversationColumns
 	if withOwner {
 		messageQuery += `, u.username, u.display_name`
 	}
-	messageQuery += `, p.text_content, MAX(m.created_at)
+	messageQuery += `,
+		       substr(
+		         p.text_content,
+		         max(1, instr(lower(p.text_content), lower(?)) - 120),
+		         240 + length(?)
+		       ),
+		       MAX(m.created_at)
 		FROM message_parts p
 		JOIN messages m ON m.id = p.message_id
 		JOIN conversations c ON c.id = m.conversation_id`
@@ -117,7 +126,7 @@ func (s *Store) searchConversations(
 	messageQuery += `
 		WHERE c.archived_at IS NULL
 		  AND p.type = 'text' AND p.text_content LIKE ? ESCAPE '\'`
-	messageArguments := []any{pattern}
+	messageArguments := []any{query, query, pattern}
 	if !withOwner {
 		messageQuery += ` AND c.user_id = ?`
 		messageArguments = append(messageArguments, userID)
@@ -140,15 +149,9 @@ func (s *Store) searchConversations(
 		var conversation Conversation
 		var textContent string
 		var newestMatch int64
-		destinations := []any{
-			&conversation.ID, &conversation.UserID, &conversation.Title, &conversation.Model,
-			&conversation.ReasoningEffort, &conversation.CreatedAt, &conversation.UpdatedAt,
-			&conversation.ArchivedAt, &conversation.PinnedAt, &conversation.RetentionReason,
-		}
-		if withOwner {
-			destinations = append(destinations, &conversation.OwnerUsername, &conversation.OwnerDisplayName)
-		}
-		destinations = append(destinations, &textContent, &newestMatch)
+		destinations := append(
+			conversationDestinations(&conversation, withOwner), &textContent, &newestMatch,
+		)
 		if err := messageRows.Scan(destinations...); err != nil {
 			return nil, fmt.Errorf("scan search match: %w", err)
 		}

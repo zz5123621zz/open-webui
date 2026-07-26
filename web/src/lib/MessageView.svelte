@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import type { Message, MessagePart } from './types';
   import { attachmentURL } from './api';
+  import { messageText } from './messages';
   import { translate, type Locale } from './i18n';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
@@ -203,10 +204,7 @@
   }
 
   async function copyAnswer() {
-    const value = message.parts
-      .filter((part) => part.type === 'text')
-      .map((part) => part.text || '')
-      .join('\n\n');
+    const value = messageText(message);
     if (!value) return;
     await navigator.clipboard.writeText(value);
     copied = true;

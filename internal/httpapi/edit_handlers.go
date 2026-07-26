@@ -4,10 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
-	"github.com/owui-personal-slim/owui-personal-slim/internal/ids"
-	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
 
@@ -27,18 +24,11 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "message_too_large", "Message text is too large.")
 		return
 	}
-	if request.RequestID == "" {
-		generated, err := ids.New()
-		if err != nil {
-			s.internalError(w, "generate edit request id", err)
-			return
-		}
-		request.RequestID = generated
-	}
-	if len(request.RequestID) > 128 || !utf8.ValidString(request.RequestID) {
-		writeError(w, http.StatusBadRequest, "invalid_request_id", "Request ID is invalid.")
+	requestID, ok := s.ensureStreamRequestID(w, request.RequestID)
+	if !ok {
 		return
 	}
+	request.RequestID = requestID
 
 	session, _ := sessionFromContext(r.Context())
 	original, err := s.store.MessageByID(r.Context(), session.User.ID, r.PathValue("id"))
@@ -64,18 +54,8 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	catalog, err := s.models.Models(r.Context())
-	if err != nil {
-		s.providerCatalogError(w, err)
-		return
-	}
-	model, ok := s.models.FindSelectable(catalog, conversation.Model)
+	model, ok := s.resolveConversationModel(w, r, conversation)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "provider_model_unavailable", "The conversation model is no longer available.")
-		return
-	}
-	if !provider.SupportsEffort(model, conversation.ReasoningEffort) {
-		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The conversation reasoning effort is no longer supported.")
 		return
 	}
 
@@ -158,7 +138,7 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 	s.streamAssistantResponse(
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
-		summaryMode, assistant, &updatedUser, history, queuedStream, generateImage,
+		summaryMode, "edit", assistant, &updatedUser, history, queuedStream, generateImage,
 		latestUserText(history),
 	)
 }

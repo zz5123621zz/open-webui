@@ -35,8 +35,10 @@ type conversationScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanConversation(scanner conversationScanner, withOwner bool) (Conversation, error) {
-	var conversation Conversation
+// conversationDestinations is the single source of truth for the scan targets
+// matching conversationColumns (plus the owner columns when selected); every
+// query that selects those columns must build its destination list here.
+func conversationDestinations(conversation *Conversation, withOwner bool) []any {
 	destinations := []any{
 		&conversation.ID, &conversation.UserID, &conversation.Title, &conversation.Model,
 		&conversation.ReasoningEffort, &conversation.CreatedAt, &conversation.UpdatedAt,
@@ -45,7 +47,12 @@ func scanConversation(scanner conversationScanner, withOwner bool) (Conversation
 	if withOwner {
 		destinations = append(destinations, &conversation.OwnerUsername, &conversation.OwnerDisplayName)
 	}
-	if err := scanner.Scan(destinations...); err != nil {
+	return destinations
+}
+
+func scanConversation(scanner conversationScanner, withOwner bool) (Conversation, error) {
+	var conversation Conversation
+	if err := scanner.Scan(conversationDestinations(&conversation, withOwner)...); err != nil {
 		return Conversation{}, err
 	}
 	return conversation, nil
