@@ -543,7 +543,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .getByRole('button', { name: '关闭', exact: true })
     .click();
   if (testInfo.project.name === 'mobile') {
-    await page.getByRole('button', { name: '关闭侧边栏' }).click();
+    await page.locator('.mobile-close').click();
   }
   await previewPlayer.getByRole('button', { name: '停止并关闭朗读' }).click();
   await expect(previewPlayer).toHaveCount(0);
