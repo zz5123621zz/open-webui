@@ -57,3 +57,16 @@ source of truth; speech controls must feel native to the existing workspace.
   concurrency, network and unsupported audio formats.
 - Audio remains in browser memory only and is cleared on stop, logout,
   conversation navigation or replacement by another answer.
+
+## Release announcement
+
+- The TTS launch announcement appears once per user, browser/device and release
+  version. It uses browser-local storage and adds no backend state.
+- If onboarding is still pending, it is shown first; the announcement opens
+  only after onboarding is dismissed so dialogs never overlap.
+- The announcement remains available from the profile menu and identifies the
+  three user entry points: automatic reading, voice/speed settings, and the
+  manual read-aloud action below each Agent answer.
+- Desktop uses a centered dialog; mobile uses a safe-area-aware bottom sheet.
+  Escape, backdrop, close, and confirmation all dismiss it, with a trapped
+  keyboard focus order and 44 px controls.

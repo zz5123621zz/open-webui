@@ -93,7 +93,14 @@ func (s *Server) speechSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer connection.Close()
+	defer func() {
+		_ = connection.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(2*time.Second),
+		)
+		_ = connection.Close()
+	}()
 	connection.SetReadLimit(16 * 1024)
 	_ = connection.SetReadDeadline(time.Now().Add(s.cfg.Speech.SessionTTL))
 	connection.SetPongHandler(func(string) error {
