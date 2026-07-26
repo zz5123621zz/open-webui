@@ -963,7 +963,8 @@ test('administrator can inspect another user chat and manage summary compatibili
     'true'
   );
   await expect(page.getByText('API 凭据已通过安全文件配置')).toBeVisible();
-  await expect(page.getByText(/每用户 1.*全应用 2/)).toBeVisible();
+  await expect(page.locator('.speech-admin-status small')).toContainText('每用户 1');
+  await expect(page.locator('.speech-admin-status small')).toContainText('全应用 2');
   await page.getByRole('button', { name: '保存语音服务设置' }).click();
   await expect(page.getByText('设置已即时生效。')).toBeVisible();
   await page
