@@ -798,7 +798,6 @@
     value: 'appearance' | 'security' | 'service' | 'speech' | 'speech-admin' | 'about'
   ) {
     profileOpen = false;
-    sidebarOpen = false;
     accountError = '';
     dialog = value;
     await tick();
