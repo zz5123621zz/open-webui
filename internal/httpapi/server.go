@@ -19,6 +19,7 @@ import (
 	"github.com/owui-personal-slim/owui-personal-slim/internal/jobs"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/speech"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
 
@@ -32,6 +33,8 @@ type Server struct {
 	jobs            *jobs.Scheduler
 	contexts        *activecontext.Manager
 	summaries       *progressivesummary.Manager
+	speechProviders *speech.Registry
+	speechGate      *speech.Gate
 	logins          *loginLimiter
 	actions         *actionLimiter
 	uploads         *keyedGate
@@ -53,6 +56,7 @@ type activeResponse struct {
 
 func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client, logger *slog.Logger) *Server {
 	cfg.Lifecycle = cfg.Lifecycle.Normalized()
+	cfg.Speech = cfg.Speech.Normalized()
 	responseContext, responseCancel := context.WithCancelCause(context.Background())
 	server := &Server{
 		cfg: cfg, store: dataStore, models: modelClient,
@@ -71,6 +75,11 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 		responseContext: responseContext,
 		responseCancel:  responseCancel,
 		summaries:       progressivesummary.New(30 * time.Minute),
+		speechProviders: speech.NewRegistry(speech.NewAliyunProvider(cfg.Speech.Alibaba)),
+		speechGate: speech.NewGate(
+			cfg.Speech.MaxConcurrentGlobal,
+			cfg.Speech.MaxConcurrentPerUser,
+		),
 	}
 	server.contexts = activecontext.New(dataStore, modelClient, server.providerSafetyIdentifier)
 	server.routes()
@@ -93,7 +102,30 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/me", s.auth(http.HandlerFunc(s.me)))
 	s.mux.Handle("PUT /api/v1/me/password", s.auth(s.origin(s.csrf(http.HandlerFunc(s.changePassword)))))
 	s.mux.Handle("GET /api/v1/me/storage", s.auth(http.HandlerFunc(s.storageStatus)))
+	s.mux.Handle("GET /api/v1/me/speech", s.auth(http.HandlerFunc(s.getMySpeechPreference)))
+	s.mux.Handle(
+		"PUT /api/v1/me/speech",
+		s.auth(s.limitAction(
+			"speech_preference", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateMySpeechPreference))),
+		)),
+	)
 	s.mux.Handle("GET /api/v1/models", s.auth(http.HandlerFunc(s.listModels)))
+	s.mux.Handle(
+		"GET /api/v1/speech/sessions",
+		s.auth(s.origin(http.HandlerFunc(s.speechSession))),
+	)
+	s.mux.Handle(
+		"GET /api/v1/admin/speech",
+		s.auth(s.administrator(http.HandlerFunc(s.getSpeechServiceSetting))),
+	)
+	s.mux.Handle(
+		"PUT /api/v1/admin/speech",
+		s.auth(s.administrator(s.limitAction(
+			"service_setting", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateSpeechServiceSetting))),
+		))),
+	)
 	s.mux.Handle(
 		"GET /api/v1/admin/progressive-summaries",
 		s.auth(s.administrator(http.HandlerFunc(s.getProgressiveSummarySetting))),

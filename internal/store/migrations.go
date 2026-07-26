@@ -200,3 +200,45 @@ ON CONFLICT(key) DO NOTHING;
 
 DELETE FROM provider_items WHERE item_type = 'reasoning';
 `
+
+const schemaV5 = `
+CREATE TABLE IF NOT EXISTS speech_service_settings (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+	provider TEXT NOT NULL DEFAULT 'aliyun',
+	default_voice TEXT NOT NULL DEFAULT 'longxiaochun',
+	updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS speech_service_setting_audit (
+	id TEXT PRIMARY KEY,
+	old_value_json TEXT NOT NULL,
+	new_value_json TEXT NOT NULL,
+	actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_speech_service_setting_audit_created
+ON speech_service_setting_audit(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_speech_preferences (
+	user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+	mode TEXT NOT NULL DEFAULT 'manual' CHECK (mode IN ('manual', 'auto')),
+	speed REAL NOT NULL DEFAULT 1.0 CHECK (speed >= 0.5 AND speed <= 2.0),
+	voice TEXT NOT NULL DEFAULT '',
+	updated_at INTEGER NOT NULL
+);
+
+INSERT INTO speech_service_settings(
+	id, enabled, provider, default_voice, updated_by, updated_at
+)
+VALUES(
+	1,
+	0,
+	'aliyun',
+	'longxiaochun',
+	NULL,
+	CAST(strftime('%s', 'now') AS INTEGER) * 1000
+)
+ON CONFLICT(id) DO NOTHING;
+`

@@ -1,5 +1,8 @@
 # 部署与运维
 
+流式朗读提供商配置、运行时接口和 WebSocket 协议见
+[TTS_BACKEND.md](TTS_BACKEND.md)。
+
 ## 1. 前置条件
 
 - `chat.la4rain.com` 的 DNS 已指向 VPS。

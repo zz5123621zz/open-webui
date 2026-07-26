@@ -158,3 +158,35 @@ The provider-controlled time until it emits the first safe reasoning summary,
 search, tool, or answer event. La4RainGPT reports elapsed time but cannot
 guarantee a maximum.
 _Avoid_: Observed event latency, first-token transport latency
+
+**Speech provider**:
+An administrator-selected external service that converts committed answer text
+into audio without participating in answer generation.
+_Avoid_: Chat provider, voice model
+
+**Speech session**:
+A user-owned, short-lived stream that accepts ordered answer-text segments and
+returns playable audio while a listener is present.
+_Avoid_: Response job, stored recording
+
+**Spoken answer text**:
+User-visible assistant answer text selected for speech after markup and
+non-speech content are removed. Reasoning summaries and tool activity are never
+spoken answer text.
+_Avoid_: Raw response stream, chain-of-thought
+
+**Automatic reading preference**:
+A user's persistent choice to start a speech session when an answer begins.
+It is disabled by default and does not itself grant a browser permission to
+play audio.
+_Avoid_: Autoplay permission, service setting
+
+**Manual reading**:
+An explicit user action that starts speech for visible answer text regardless
+of the user's automatic reading preference.
+_Avoid_: Automatic reading
+
+**Speech activation boundary**:
+The start of a new speech session. Speech service-setting changes affect new
+sessions and never reconfigure or interrupt an existing session.
+_Avoid_: Response activation boundary, live provider mutation
