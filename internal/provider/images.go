@@ -58,24 +58,25 @@ func (c *Client) GenerateImage(ctx context.Context, request ImageGenerationReque
 		return ImageGenerationResult{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer response.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(response.Body, c.requestMax+1))
-	if readErr != nil {
-		return ImageGenerationResult{}, fmt.Errorf("%w: read image response", ErrBadResponse)
-	}
-	if int64(len(raw)) > c.requestMax {
-		return ImageGenerationResult{}, fmt.Errorf("%w: image response exceeds %d bytes", ErrBadResponse, c.requestMax)
-	}
+
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return ImageGenerationResult{}, decodeHTTPError(response.StatusCode, raw)
+		// Provider error bodies are small; read a bounded amount for diagnostics.
+		errBody, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+		return ImageGenerationResult{}, decodeHTTPError(response.StatusCode, errBody)
 	}
 
+	// Stream-decode the success envelope instead of buffering the entire
+	// (up to tens of MiB base64) response in memory first. The LimitReader
+	// caps how much the decoder can pull, so an oversized response fails to
+	// parse rather than ballooning past the container memory budget.
 	var payload struct {
 		Created int64 `json:"created"`
 		Data    []struct {
 			B64JSON string `json:"b64_json"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(response.Body, c.requestMax+1))
+	if err := decoder.Decode(&payload); err != nil {
 		return ImageGenerationResult{}, fmt.Errorf("%w: decode image response", ErrBadResponse)
 	}
 	if len(payload.Data) != 1 || strings.TrimSpace(payload.Data[0].B64JSON) == "" {
