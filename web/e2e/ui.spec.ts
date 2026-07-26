@@ -832,6 +832,208 @@ test('a persisted background response resumes after reopening its chat', async (
   await expect(page.getByText('回答正在服务器后台继续生成')).toHaveCount(0);
 });
 
+test('search, drafts, message editing, and usage stats work', async ({ page }, testInfo) => {
+  const conversation = {
+    id: 'conversation-bread',
+    ownerId: user.id,
+    title: '面包烘焙',
+    model: model.id,
+    reasoningEffort: 'high',
+    createdAt: Date.now() - 5000,
+    updatedAt: Date.now()
+  };
+  let userText = '如何烤出松软的全麦面包？';
+  const originalAssistant = {
+    id: 'message-assistant',
+    conversationId: conversation.id,
+    role: 'assistant',
+    model: model.id,
+    status: 'completed',
+    parentMessageId: 'message-user',
+    createdAt: Date.now() - 3000,
+    outputTokens: 64,
+    parts: [{ type: 'text', text: '先用中种法发酵。' }]
+  };
+  let conversationMessages = [
+    {
+      id: 'message-user',
+      conversationId: conversation.id,
+      role: 'user',
+      status: 'completed',
+      createdAt: Date.now() - 4000,
+      parts: [{ type: 'text', text: userText }]
+    },
+    originalAssistant
+  ];
+
+  await page.addInitScript(() => {
+    localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-tts-v1:user-1', 'complete');
+  });
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    const json = (status: number, body: unknown) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body)
+      });
+    if (path === '/api/v1/me') return json(200, { user, csrfToken: 'csrf-search' });
+    if (path === '/api/v1/models') return json(200, { models });
+    if (path === '/api/v1/me/storage') {
+      return json(200, {
+        storage: {
+          usedBytes: 0,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 0,
+          activeConversations: 1,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/conversations' && request.method() === 'GET') {
+      return json(200, { conversations: [conversation] });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/messages`) {
+      return json(200, { messages: conversationMessages });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/context-checkpoints`) {
+      return json(200, { checkpoints: [] });
+    }
+    if (path === '/api/v1/search') {
+      const query = url.searchParams.get('q') || '';
+      return json(200, {
+        results: query.includes('全麦')
+          ? [
+              {
+                conversation,
+                snippet: '…如何烤出松软的全麦面包？…',
+                matchedIn: 'message'
+              }
+            ]
+          : []
+      });
+    }
+    if (path === '/api/v1/usage') {
+      return json(200, {
+        usage: [
+          {
+            month: '2026-07',
+            model: model.id,
+            responses: 12,
+            inputTokens: 84210,
+            outputTokens: 12345,
+            reasoningTokens: 2048
+          }
+        ]
+      });
+    }
+    if (path === '/api/v1/messages/message-user/edit' && request.method() === 'POST') {
+      const body = request.postDataJSON() as { text: string };
+      userText = body.text;
+      const now = Date.now();
+      const editedUser = {
+        id: 'message-user',
+        conversationId: conversation.id,
+        role: 'user',
+        status: 'completed',
+        createdAt: now - 4000,
+        parts: [{ type: 'text', text: body.text }]
+      };
+      const assistant = {
+        id: 'message-assistant-2',
+        conversationId: conversation.id,
+        role: 'assistant',
+        model: model.id,
+        status: 'streaming',
+        parentMessageId: 'message-user',
+        createdAt: now,
+        parts: []
+      };
+      const final = {
+        ...assistant,
+        status: 'completed',
+        outputTokens: 48,
+        parts: [{ type: 'text', text: '换成高筋粉再试一次。' }]
+      };
+      conversationMessages = [editedUser, originalAssistant, final];
+      const sse = [
+        [
+          'response.started',
+          { requestId: 'edit-1', userMessage: editedUser, assistantMessage: assistant }
+        ],
+        ['response.text.delta', { delta: '换成高筋粉再试一次。' }],
+        ['response.completed', { message: final }]
+      ]
+        .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        .join('');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: { 'Cache-Control': 'no-cache' },
+        body: sse
+      });
+    }
+    return json(404, { error: { code: 'not_found', message: 'Not found.' } });
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+
+  // A composer draft survives a reload.
+  await page.getByLabel('聊天消息').fill('周末去哪里玩比较好？');
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem('personal-chat-draft:user-1:new'))
+    )
+    .toBe('周末去哪里玩比较好？');
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+  await expect(page.getByLabel('聊天消息')).toHaveValue('周末去哪里玩比较好？');
+  await page.getByLabel('聊天消息').fill('');
+
+  // Sidebar search finds message text and opens the matching chat.
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByLabel('搜索对话').fill('全麦');
+  await expect(page.locator('.search-result')).toHaveCount(1);
+  await expect(page.locator('.search-snippet')).toContainText('全麦面包');
+  await page.locator('.search-result').click();
+  await expect(page.getByText('先用中种法发酵。')).toBeVisible();
+
+  // The latest user message can be edited and resent.
+  await page.locator('.message.user').hover();
+  await page.getByRole('button', { name: '编辑并重新发送' }).click();
+  const editBox = page.getByLabel('编辑消息内容');
+  await expect(editBox).toHaveValue('如何烤出松软的全麦面包？');
+  await editBox.fill('如何烤出高纤维的全麦贝果？');
+  await page.getByRole('button', { name: '重新发送' }).click();
+  await expect(page.getByText('如何烤出高纤维的全麦贝果？')).toBeVisible();
+  await expect(page.getByText('换成高筋粉再试一次。')).toBeVisible();
+  await expect(page.getByText('先用中种法发酵。')).toBeVisible();
+
+  // The usage dialog shows monthly aggregates.
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByRole('button', { name: /Alice/ }).click();
+  await page.getByRole('button', { name: '用量统计' }).click();
+  const usageDialog = page.getByRole('dialog', { name: '用量统计' });
+  await expect(usageDialog).toBeVisible();
+  await expect(usageDialog).toContainText('2026 年 7 月');
+  await expect(usageDialog).toContainText('专家');
+  await expect(usageDialog).toContainText('12,345');
+  await expect(usageDialog).toContainText('含推理 2,048');
+  await usageDialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(usageDialog).toHaveCount(0);
+});
+
 test('administrator can inspect another user chat and manage summary compatibility', async ({ page }, testInfo) => {
   const admin = {
     ...user,

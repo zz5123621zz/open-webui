@@ -7,6 +7,7 @@
     createConversation,
     deleteAttachment,
     deleteConversation,
+    editResponse,
     getConversations,
     getContextCheckpoints,
     getMessages,
@@ -14,10 +15,12 @@
     getResponse,
     getSession,
     getStorageStatus,
+    getUsage,
     login,
     logout,
     logoutAll,
     regenerateResponse,
+    searchConversations,
     streamResponse,
     updateConversation,
     updateConversationWithMeta,
@@ -44,11 +47,13 @@
   import type {
     Attachment,
     Conversation,
+    ConversationSearchResult,
     ContextCheckpoint,
     Message,
     MessagePart,
     Model,
     StorageStatus,
+    UsageRow,
     User
   } from './lib/types';
 
@@ -114,6 +119,7 @@
     | 'service'
     | 'speech'
     | 'speech-admin'
+    | 'usage'
     | 'about' = '';
   let accountError = '';
   let accountPending = false;
@@ -143,6 +149,20 @@
   let onboardingOpen = false;
   let updateAnnouncementOpen = false;
   let visibleSuggestions: Suggestion[] = [];
+  let searchQuery = '';
+  let searchResults: ConversationSearchResult[] = [];
+  let searching = false;
+  let searchError = '';
+  let searchTimer: number | undefined;
+  let searchVersion = 0;
+  let editingMessageId = '';
+  let editingMessageText = '';
+  let editTextareaElement: HTMLTextAreaElement | null = null;
+  let usageRows: UsageRow[] = [];
+  let usageLoading = false;
+  let usageError = '';
+  let dragDepth = 0;
+  let draftStorageKey = '';
   const fontSizeChoices = [
     {
       value: 'compact',
@@ -402,6 +422,9 @@
         activeConversation.ownerId !== user.id
     );
   $: activeConversationReadOnly = showArchived || viewingOtherUser;
+  $: lastUserMessageId =
+    [...messages].reverse().find((message) => message.role === 'user')?.id || '';
+  $: dragActive = dragDepth > 0;
   $: selectableModels = visibleModeModels(models);
   $: t = (chinese: string, english: string) => translate($locale, chinese, english);
   $: generationElapsedSeconds = generationStartedAt
@@ -486,6 +509,15 @@
       attachment_in_use: ['这张图片已用于消息，无法删除。', 'This image is already used by a message.'],
       message_required: ['请输入文字或上传图片。', 'Enter a message or attach an image.'],
       message_too_large: ['消息文字过长。', 'The message text is too large.'],
+      not_latest_message: [
+        '只能编辑最新一条消息，请刷新后重试。',
+        'Only the latest message can be edited. Refresh and try again.'
+      ],
+      message_not_editable: [
+        '这条消息现在无法编辑。',
+        'This message cannot be edited right now.'
+      ],
+      query_too_long: ['搜索内容过长。', 'The search query is too long.'],
       too_many_images: ['每条消息最多包含四张图片。', 'A message can contain at most four images.'],
       model_image_input_unsupported: [
         '当前模型不支持图片输入。',
@@ -619,7 +651,7 @@
     activeConversationId = '';
     messages = [];
     checkpoints = [];
-    text = '';
+    restoreDraft('');
     uploads = [];
     generateImage = false;
     contextStatus = '';
@@ -795,7 +827,7 @@
   }
 
   async function openDialog(
-    value: 'appearance' | 'security' | 'service' | 'speech' | 'speech-admin' | 'about'
+    value: 'appearance' | 'security' | 'service' | 'speech' | 'speech-admin' | 'usage' | 'about'
   ) {
     profileOpen = false;
     accountError = '';
@@ -826,6 +858,8 @@
     const conversationModel = models.find((item) => item.id === conversation?.model);
     if (!conversationModel?.imageGenerationMode) generateImage = false;
     localStorage.setItem('personal-chat-conversation', id);
+    restoreDraft(id);
+    editingMessageId = '';
     loadingMessages = true;
     workspaceError = '';
     sidebarOpen = false;
@@ -874,6 +908,8 @@
       showJumpToLatest = false;
       refreshSuggestions();
       localStorage.setItem('personal-chat-conversation', conversation.id);
+      clearDraft('');
+      draftStorageKey = draftKeyFor(conversation.id);
       sidebarOpen = false;
       await refreshStorage();
       await tick();
@@ -911,7 +947,15 @@
     modelPickerOpen = false;
     effortPickerOpen = false;
     sidebarOpen = false;
+    editingMessageId = '';
     localStorage.removeItem('personal-chat-conversation');
+    if (text.trim()) {
+      // Keep the typed text in the fresh chat and re-home its draft there.
+      draftStorageKey = draftKeyFor('');
+      persistDraft();
+    } else {
+      restoreDraft('');
+    }
     await tick();
     refreshSuggestions();
     textareaElement?.focus();
@@ -1098,12 +1142,9 @@
       });
   }
 
-  async function chooseFiles(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    const files = Array.from(input.files || []);
-    input.value = '';
+  async function addFiles(files: File[]) {
     if (!files.length) return;
-    if (activeConversationReadOnly) return;
+    if (activeConversationReadOnly || generating || uploading) return;
     if (generateImage) {
       workspaceError = localizedAPIError(
         'image_generation_attachments_unsupported',
@@ -1111,6 +1152,13 @@
           '生成图片模式暂不支持同时上传参考图。',
           'Image generation mode does not support uploaded reference images yet.'
         )
+      );
+      return;
+    }
+    if (activeModel?.capabilitiesComplete && !activeModel.inputModalities?.includes('image')) {
+      workspaceError = localizedAPIError(
+        'model_image_input_unsupported',
+        t('当前模型不支持图片输入。', 'The current model does not support image input.')
       );
       return;
     }
@@ -1144,6 +1192,51 @@
     }
   }
 
+  async function chooseFiles(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files || []);
+    input.value = '';
+    await addFiles(files);
+  }
+
+  function composerPaste(event: ClipboardEvent) {
+    const files = Array.from(event.clipboardData?.items || [])
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (!files.length) return;
+    event.preventDefault();
+    void addFiles(files);
+  }
+
+  function isFileDrag(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types || []).includes('Files');
+  }
+
+  function chatDragEnter(event: DragEvent) {
+    if (!isFileDrag(event) || activeConversationReadOnly) return;
+    event.preventDefault();
+    dragDepth += 1;
+  }
+
+  function chatDragOver(event: DragEvent) {
+    if (!isFileDrag(event) || activeConversationReadOnly) return;
+    event.preventDefault();
+  }
+
+  function chatDragLeave(event: DragEvent) {
+    if (!isFileDrag(event)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+  }
+
+  function chatDrop(event: DragEvent) {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    if (activeConversationReadOnly) return;
+    void addFiles(Array.from(event.dataTransfer?.files || []));
+  }
+
   async function removeUpload(attachment: Attachment) {
     uploads = uploads.filter((item) => item.id !== attachment.id);
     try {
@@ -1158,6 +1251,34 @@
     if (!textareaElement) return;
     textareaElement.style.height = '0px';
     textareaElement.style.height = `${Math.min(textareaElement.scrollHeight, 190)}px`;
+  }
+
+  function draftKeyFor(conversationId: string): string {
+    return `personal-chat-draft:${user?.id || 'anonymous'}:${conversationId || 'new'}`;
+  }
+
+  function persistDraft() {
+    if (!draftStorageKey) return;
+    if (text.trim()) {
+      localStorage.setItem(draftStorageKey, text);
+    } else {
+      localStorage.removeItem(draftStorageKey);
+    }
+  }
+
+  function restoreDraft(conversationId: string) {
+    draftStorageKey = draftKeyFor(conversationId);
+    text = localStorage.getItem(draftStorageKey) || '';
+    void tick().then(resizeComposer);
+  }
+
+  function clearDraft(conversationId: string) {
+    localStorage.removeItem(draftKeyFor(conversationId));
+  }
+
+  function composerInput() {
+    resizeComposer();
+    persistDraft();
   }
 
   function composerKeydown(event: KeyboardEvent) {
@@ -1344,6 +1465,7 @@
     workspaceError = '';
     contextStatus = '';
     text = '';
+    persistDraft();
     uploads = [];
     generateImage = false;
     await tick();
@@ -1457,6 +1579,7 @@
         if (message) workspaceError = message;
         if (error instanceof APIError && error.status >= 400) {
           text = outgoingText;
+          persistDraft();
           uploads = outgoingUploads;
           generateImage = outgoingGenerateImage;
         }
@@ -1609,6 +1732,172 @@
   function titleFrom(value: string): string {
     const line = value.replace(/\s+/g, ' ').trim();
     return Array.from(line).slice(0, 36).join('') || 'New chat';
+  }
+
+  function messageText(message: Message): string {
+    return message.parts
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text || '')
+      .join('\n\n');
+  }
+
+  async function beginMessageEdit(message: Message) {
+    if (generating || activeConversationReadOnly) return;
+    editingMessageId = message.id;
+    editingMessageText = messageText(message);
+    await tick();
+    editTextareaElement?.focus();
+  }
+
+  function cancelMessageEdit() {
+    editingMessageId = '';
+    editingMessageText = '';
+  }
+
+  function editKeydown(event: KeyboardEvent, message: Message) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelMessageEdit();
+      return;
+    }
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void submitMessageEdit(message);
+    }
+  }
+
+  async function submitMessageEdit(message: Message) {
+    const newText = editingMessageText.trim();
+    if (!newText || generating || !activeConversation || activeConversationReadOnly) return;
+    if (newText === messageText(message).trim()) {
+      cancelMessageEdit();
+      return;
+    }
+    const conversationId = activeConversation.id;
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
+    cancelMessageEdit();
+    speechController.stop();
+    generating = true;
+    activeResponseCancelId = requestId;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
+    workspaceError = '';
+    contextStatus = '';
+    abortController = new AbortController();
+    let assistantId = '';
+    try {
+      await editResponse(
+        message.id,
+        newText,
+        requestId,
+        (item) => {
+          if (item.event === 'response.queued') {
+            setGenerationStage('queued');
+            contextStatus = t(
+              `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
+              `Request queued (position ${Number(item.data.position || 1)})`
+            );
+          } else if (item.event === 'response.started') {
+            setGenerationStage('preparing_context');
+            contextStatus = '';
+            const userMessage = item.data.userMessage as Message | undefined;
+            if (userMessage) replaceMessage(userMessage);
+            const assistantMessage = item.data.assistantMessage as Message;
+            assistantId = assistantMessage.id;
+            activeAssistantId = assistantMessage.id;
+            activeResponseCancelId = assistantMessage.id;
+            messages = [...messages, assistantMessage];
+          } else if (item.event === 'response.stage') {
+            setGenerationStage(String(item.data.stage || ''));
+          } else if (item.event === 'response.reasoning.delta') {
+            setGenerationStage('reasoning');
+            updateReasoningPart(assistantId, item.data, false);
+          } else if (item.event === 'response.reasoning.done') {
+            updateReasoningPart(assistantId, item.data, true);
+            setGenerationStage('waiting_for_model');
+          } else if (item.event === 'response.text.delta') {
+            setGenerationStage('answering');
+            finishLiveReasoning(assistantId);
+            appendTextPart(assistantId, String(item.data.delta || ''));
+          } else if (item.event === 'response.tool') {
+            finishLiveReasoning(assistantId);
+            if (item.data.status === 'in_progress') {
+              setGenerationStage(
+                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
+              );
+            } else {
+              setGenerationStage('waiting_for_model');
+            }
+            updateToolPart(assistantId, item.data);
+          } else if (item.event === 'response.image' && item.data.attachmentId) {
+            appendImagePart(assistantId, String(item.data.attachmentId));
+          } else if (item.event === 'response.context') {
+            setGenerationStage(
+              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
+            );
+            contextStatus = contextLabel(String(item.data.status || ''));
+            if (item.data.status === 'completed') void refreshCheckpoints(conversationId);
+          } else if (item.event === 'response.completed') {
+            replaceMessage(item.data.message as Message);
+            contextStatus = '';
+          } else if (item.event === 'response.error') {
+            if (item.data.messageRecord) replaceMessage(item.data.messageRecord as Message);
+            workspaceError = localizedAPIError(
+              String(item.data.code || ''),
+              String(item.data.message || t('回答生成失败。', 'Response generation failed.'))
+            );
+          }
+          queueScroll();
+        },
+        abortController.signal
+      );
+    } catch (error) {
+      const value = errorMessage(error);
+      if (!assistantId) {
+        const recovered = await recoverRunningResponse(conversationId);
+        if (recovered) {
+          assistantId = recovered.id;
+          activeAssistantId = recovered.id;
+          activeResponseCancelId = recovered.id;
+        }
+      }
+      if (assistantId) {
+        setGenerationStage('background');
+        contextStatus = '';
+        workspaceError = '';
+        const restored = await watchPersistedResponse(
+          conversationId, assistantId, watchVersion
+        );
+        if (restored?.status === 'completed') {
+          workspaceError = '';
+        } else if (
+          watchVersion === responseWatchVersion &&
+          restored &&
+          !isRunningResponse(restored)
+        ) {
+          workspaceError = localizedAPIError(
+            restored.errorCode || '',
+            value || t('回答生成未完成。', 'The response did not complete.')
+          );
+        }
+      } else if (value) {
+        workspaceError = value;
+      }
+    } finally {
+      if (watchVersion === responseWatchVersion) {
+        generating = false;
+        stopGenerationClock();
+        abortController = null;
+        activeAssistantId = '';
+        activeResponseCancelId = '';
+        contextStatus = '';
+        await refreshCheckpoints(conversationId);
+        await refreshStorage();
+        queueScroll();
+      }
+    }
   }
 
   function appendTextPart(messageId: string, delta: string) {
@@ -1987,9 +2276,107 @@
     }
     workspaceError = '';
     text = t(suggestion.chinesePrompt, suggestion.englishPrompt);
+    persistDraft();
     await tick();
     resizeComposer();
     textareaElement?.focus();
+  }
+
+  function queueSearch() {
+    window.clearTimeout(searchTimer);
+    const query = searchQuery.trim();
+    if (!query) {
+      searchResults = [];
+      searching = false;
+      searchError = '';
+      return;
+    }
+    searching = true;
+    searchTimer = window.setTimeout(() => void runSearch(query), 250);
+  }
+
+  async function runSearch(query: string) {
+    const version = ++searchVersion;
+    try {
+      const results = await searchConversations(query);
+      if (version !== searchVersion || searchQuery.trim() !== query) return;
+      searchResults = results;
+      searchError = '';
+    } catch (error) {
+      if (version !== searchVersion) return;
+      searchError = errorMessage(error);
+      searchResults = [];
+    } finally {
+      if (version === searchVersion) searching = false;
+    }
+  }
+
+  function clearSearch() {
+    window.clearTimeout(searchTimer);
+    searchVersion += 1;
+    searchQuery = '';
+    searchResults = [];
+    searching = false;
+    searchError = '';
+  }
+
+  async function openSearchResult(result: ConversationSearchResult) {
+    if (generating) return;
+    const id = result.conversation.id;
+    clearSearch();
+    if (showArchived) {
+      showArchived = false;
+      try {
+        conversations = await getConversations(false);
+      } catch {
+        // The chat can still open; the sidebar refreshes on the next load.
+      }
+    }
+    await openConversation(id);
+  }
+
+  async function openUsageDialog() {
+    await openDialog('usage');
+    usageLoading = true;
+    usageError = '';
+    try {
+      usageRows = await getUsage();
+    } catch (error) {
+      usageError = errorMessage(error);
+    } finally {
+      usageLoading = false;
+    }
+  }
+
+  function usageMonths(rows: UsageRow[]): string[] {
+    const months: string[] = [];
+    for (const row of rows) {
+      if (!months.includes(row.month)) months.push(row.month);
+    }
+    return months;
+  }
+
+  function usageRowsFor(rows: UsageRow[], month: string): UsageRow[] {
+    return rows.filter((row) => row.month === month);
+  }
+
+  function usageMonthLabel(month: string): string {
+    const [year, monthNumber] = month.split('-');
+    if (!year || !monthNumber) return month;
+    return t(`${year} 年 ${Number(monthNumber)} 月`, `${year}-${monthNumber}`);
+  }
+
+  function usageModelLabel(modelId: string): string {
+    const known = models.find((item) => item.id === modelId);
+    const mode = modelModeInfo(known);
+    if (mode) {
+      return `${t(mode.chineseName, mode.englishName)} · ${mode.technicalName}`;
+    }
+    return known?.name || modelId || t('未知模型', 'Unknown model');
+  }
+
+  function usageOwnerLabel(row: UsageRow): string {
+    return row.ownerDisplayName || row.ownerUsername || '';
   }
 
   function modelModeInfo(model: Model | null | undefined): ModelModeInfo | null {
@@ -2154,9 +2541,71 @@
         <kbd>⌘ K</kbd>
       </button>
 
-      <div class="history-label">
-        {showArchived ? t('临时留档 · 7 天', 'Retained · 7 days') : t('对话记录', 'Chats')}
+      <div class="sidebar-search">
+        <span class="sidebar-search-icon"><Icon name="search" size={15} /></span>
+        <input
+          type="search"
+          placeholder={t('搜索对话', 'Search chats')}
+          aria-label={t('搜索对话', 'Search chats')}
+          bind:value={searchQuery}
+          on:input={queueSearch}
+          on:keydown={(event) => {
+            if (event.key === 'Escape') clearSearch();
+          }}
+        />
+        {#if searchQuery}
+          <button
+            type="button"
+            class="sidebar-search-clear"
+            aria-label={t('清除搜索', 'Clear search')}
+            on:click={clearSearch}
+          ><Icon name="close" size={14} /></button>
+        {/if}
       </div>
+
+      <div class="history-label">
+        {searchQuery.trim()
+          ? t('搜索结果', 'Search results')
+          : showArchived
+            ? t('临时留档 · 7 天', 'Retained · 7 days')
+            : t('对话记录', 'Chats')}
+      </div>
+      {#if searchQuery.trim()}
+        <nav class="conversation-list search-results" aria-label={t('搜索结果', 'Search results')}>
+          {#if searching}
+            <p class="no-history">{t('正在搜索…', 'Searching…')}</p>
+          {:else if searchError}
+            <p class="no-history">{searchError}</p>
+          {:else}
+            {#each searchResults as result (result.conversation.id)}
+              <button
+                type="button"
+                class="search-result"
+                on:click={() => openSearchResult(result)}
+              >
+                <span class="conversation-icon">
+                  <Icon name={result.matchedIn === 'title' ? 'chat' : 'search'} size={16} />
+                </span>
+                <span class="conversation-copy">
+                  <span class="conversation-title">{result.conversation.title}</span>
+                  {#if result.snippet}
+                    <small class="search-snippet">{result.snippet}</small>
+                  {/if}
+                  {#if user?.role === 'admin' && result.conversation.ownerUsername}
+                    <small>
+                      {result.conversation.ownerDisplayName || result.conversation.ownerUsername}
+                      {result.conversation.ownerId === user.id ? t('（我）', ' (me)') : ''}
+                    </small>
+                  {/if}
+                </span>
+              </button>
+            {/each}
+            {#if searchResults.length === 0}
+              <p class="no-history">{t('没有匹配的对话', 'No matching chats')}</p>
+            {/if}
+          {/if}
+        </nav>
+      {:else}
       <nav class="conversation-list" aria-label={t('对话记录', 'Chats')}>
         {#each conversations as conversation (conversation.id)}
           <div
@@ -2246,6 +2695,7 @@
           </p>
         {/if}
       </nav>
+      {/if}
 
       {#if storageStatus}
         <section class="storage-card" aria-label={t('我的空间用量', 'My storage usage')}>
@@ -2313,6 +2763,9 @@
             <button on:click={toggleLocale}>
               <Icon name="globe" size={17} />{$locale === 'zh-CN' ? 'English' : '中文'}
             </button>
+            <button on:click={openUsageDialog}>
+              <Icon name="plan" size={17} />{t('用量统计', 'Usage stats')}
+            </button>
             <button on:click={openOnboarding}>
               <Icon name="plan" size={17} />{t('新手指南', 'Getting started')}
             </button>
@@ -2332,7 +2785,22 @@
       </div>
     </aside>
 
-    <main class="chat-panel">
+    <main
+      class="chat-panel"
+      on:dragenter={chatDragEnter}
+      on:dragover={chatDragOver}
+      on:dragleave={chatDragLeave}
+      on:drop={chatDrop}
+    >
+      {#if dragActive && !activeConversationReadOnly}
+        <div class="drop-overlay" aria-hidden="true">
+          <div class="drop-overlay-card">
+            <Icon name="image-plus" size={22} />
+            <strong>{t('松开即可上传图片', 'Drop images to upload')}</strong>
+            <small>{t('支持 PNG、JPEG、WebP，最多 4 张', 'PNG, JPEG, or WebP · up to 4 images')}</small>
+          </div>
+        </div>
+      {/if}
       <header class="chat-header">
         <button
           class="icon-button menu-button"
@@ -2542,6 +3010,41 @@
         {:else}
           <div class="message-column">
             {#each messages as message (message.id)}
+              {#if editingMessageId === message.id}
+                <div class="message-edit">
+                  <div class="message-edit-heading">
+                    <Icon name="edit" size={15} />
+                    <strong>{t('编辑消息', 'Edit message')}</strong>
+                    <small>
+                      {t(
+                        '重新发送后会生成新的回答，原回答仍会保留',
+                        'Resending creates a new answer; earlier answers stay in the chat'
+                      )}
+                    </small>
+                  </div>
+                  <textarea
+                    bind:this={editTextareaElement}
+                    bind:value={editingMessageText}
+                    rows="3"
+                    aria-label={t('编辑消息内容', 'Edited message text')}
+                    on:keydown={(event) => editKeydown(event, message)}
+                  ></textarea>
+                  <div class="message-edit-actions">
+                    <button type="button" class="message-edit-cancel" on:click={cancelMessageEdit}>
+                      {t('取消', 'Cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      class="message-edit-send"
+                      disabled={!editingMessageText.trim()}
+                      on:click={() => submitMessageEdit(message)}
+                    >
+                      <Icon name="send" size={15} />
+                      {t('重新发送', 'Resend')}
+                    </button>
+                  </div>
+                </div>
+              {:else}
               <MessageView
                 {message}
                 locale={$locale}
@@ -2556,8 +3059,15 @@
                   message.id === messages.at(-1)?.id &&
                   !generating &&
                   !activeConversationReadOnly}
+                canEdit={message.role === 'user' &&
+                  message.id === lastUserMessageId &&
+                  message.parts.some((part) => part.type === 'text' && part.text) &&
+                  !generating &&
+                  !activeConversationReadOnly}
                 on:regenerate={(event) => regenerate(event.detail.message)}
+                on:edit={(event) => beginMessageEdit(event.detail.message)}
               />
+              {/if}
               {#each checkpointsAfter(checkpoints, message.id) as checkpoint (checkpoint.id)}
                 <details class="context-checkpoint">
                   <summary>
@@ -2648,8 +3158,9 @@
           <textarea
             bind:this={textareaElement}
             bind:value={text}
-            on:input={resizeComposer}
+            on:input={composerInput}
             on:keydown={composerKeydown}
+            on:paste={composerPaste}
             placeholder={viewingOtherUser
               ? t('管理员查看其他用户会话时为只读', 'Other users’ chats are read-only for administrators')
               : showArchived
@@ -2870,6 +3381,64 @@
               'This setting is stored in this browser and does not affect other devices.'
             )}
           </p>
+        {:else if dialog === 'usage'}
+          <div class="dialog-icon"><Icon name="plan" size={23} /></div>
+          <h2 id="dialog-title">{t('用量统计', 'Usage stats')}</h2>
+          <p class="dialog-lead">
+            {t(
+              '按月统计已完成回答的次数与 token 消耗。所有用户共享同一个上游额度。',
+              'Monthly totals of completed responses and token usage. All users share one upstream quota.'
+            )}
+          </p>
+          {#if usageLoading}
+            <p class="usage-empty">{t('正在加载…', 'Loading…')}</p>
+          {:else if usageError}
+            <div class="account-error" role="alert">{usageError}</div>
+          {:else if usageRows.length === 0}
+            <p class="usage-empty">{t('还没有任何用量记录。', 'No usage recorded yet.')}</p>
+          {:else}
+            <div class="usage-months">
+              {#each usageMonths(usageRows) as month (month)}
+                <section class="usage-month">
+                  <h3>{usageMonthLabel(month)}</h3>
+                  <div class="usage-table" role="table">
+                    <div class="usage-row usage-head" role="row">
+                      <span role="columnheader">{t('模型', 'Model')}</span>
+                      <span role="columnheader">{t('回答', 'Responses')}</span>
+                      <span role="columnheader">{t('输入 tokens', 'Input tokens')}</span>
+                      <span role="columnheader">{t('输出 tokens', 'Output tokens')}</span>
+                    </div>
+                    {#each usageRowsFor(usageRows, month) as row (row.model + (row.ownerId || ''))}
+                      <div class="usage-row" role="row">
+                        <span role="cell">
+                          {usageModelLabel(row.model)}
+                          {#if user?.role === 'admin' && usageOwnerLabel(row)}
+                            <small>{usageOwnerLabel(row)}</small>
+                          {/if}
+                        </span>
+                        <span role="cell">{row.responses.toLocaleString($locale)}</span>
+                        <span role="cell">{row.inputTokens.toLocaleString($locale)}</span>
+                        <span role="cell">
+                          {row.outputTokens.toLocaleString($locale)}
+                          {#if row.reasoningTokens}
+                            <small>
+                              {t('含推理', 'incl. reasoning')} {row.reasoningTokens.toLocaleString($locale)}
+                            </small>
+                          {/if}
+                        </span>
+                      </div>
+                    {/each}
+                  </div>
+                </section>
+              {/each}
+            </div>
+            <p class="appearance-note">
+              {t(
+                '统计按 UTC 月份汇总，仅包含已完成或中断的回答。',
+                'Months are aggregated in UTC and include only finished responses.'
+              )}
+            </p>
+          {/if}
         {:else if dialog === 'speech'}
           <SpeechSettings locale={$locale} />
         {:else if dialog === 'service'}

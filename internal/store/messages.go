@@ -272,6 +272,181 @@ func (s *Store) BeginRegeneration(
 	}, history, nil
 }
 
+// BeginEdit rewrites the text of the latest user message and starts a fresh
+// assistant response for it. Earlier assistant answers to the same message
+// stay in the transcript, exactly like a regeneration.
+func (s *Store) BeginEdit(
+	ctx context.Context,
+	userID string,
+	userMessageID string,
+	clientRequestID string,
+	newText string,
+	model string,
+	requestedEffort string,
+	sentEffort string,
+) (Message, []Message, error) {
+	newText = strings.TrimSpace(newText)
+	assistantID, err := ids.New()
+	if err != nil {
+		return Message{}, nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var conversationID, role string
+	err = tx.QueryRowContext(ctx, `
+		SELECT conversation_id, role FROM messages WHERE id = ? AND user_id = ?
+	`, userMessageID, userID).Scan(&conversationID, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, nil, err
+	}
+	if role != "user" {
+		return Message{}, nil, errors.New("only a user message can be edited")
+	}
+	var archivedExists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM conversations WHERE id = ? AND user_id = ? AND archived_at IS NULL
+	`, conversationID, userID).Scan(&archivedExists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Message{}, nil, ErrNotFound
+		}
+		return Message{}, nil, err
+	}
+	var latestUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM messages
+		WHERE conversation_id = ? AND user_id = ? AND role = 'user'
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, conversationID, userID).Scan(&latestUserID); err != nil {
+		return Message{}, nil, err
+	}
+	if latestUserID != userMessageID {
+		return Message{}, nil, ErrNotLatestMessage
+	}
+	var running int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM messages
+		WHERE conversation_id = ? AND status IN ('pending', 'streaming')
+	`, conversationID).Scan(&running); err != nil {
+		return Message{}, nil, err
+	}
+	if running > 0 {
+		return Message{}, nil, errors.New("response is still running")
+	}
+
+	var textPartID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM message_parts
+		WHERE message_id = ? AND type = 'text'
+		ORDER BY sequence LIMIT 1
+	`, userMessageID).Scan(&textPartID)
+	hasTextPart := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Message{}, nil, err
+	}
+	if newText == "" {
+		var imageParts int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM message_parts WHERE message_id = ? AND type = 'image'
+		`, userMessageID).Scan(&imageParts); err != nil {
+			return Message{}, nil, err
+		}
+		if imageParts == 0 {
+			return Message{}, nil, errors.New("message content is required")
+		}
+	}
+	switch {
+	case hasTextPart && newText != "":
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE message_parts SET text_content = ? WHERE id = ?
+		`, newText, textPartID); err != nil {
+			return Message{}, nil, fmt.Errorf("update edited text: %w", err)
+		}
+	case hasTextPart:
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM message_parts WHERE id = ?
+		`, textPartID); err != nil {
+			return Message{}, nil, fmt.Errorf("remove edited text: %w", err)
+		}
+	case newText != "":
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE message_parts SET sequence = sequence + 1 WHERE message_id = ?
+		`, userMessageID); err != nil {
+			return Message{}, nil, fmt.Errorf("shift edited parts: %w", err)
+		}
+		partID, idErr := ids.New()
+		if idErr != nil {
+			return Message{}, nil, idErr
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_parts(id, message_id, sequence, type, text_content, created_at)
+			VALUES(?, ?, 0, 'text', ?, ?)
+		`, partID, userMessageID, newText, time.Now().UnixMilli()); err != nil {
+			return Message{}, nil, fmt.Errorf("insert edited text: %w", err)
+		}
+	}
+
+	var latestCreatedAt int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT created_at FROM messages
+		WHERE conversation_id = ? AND user_id = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, conversationID, userID).Scan(&latestCreatedAt); err != nil {
+		return Message{}, nil, err
+	}
+	now := time.Now().UnixMilli()
+	if now <= latestCreatedAt {
+		now = latestCreatedAt + 1
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO messages(
+			id, conversation_id, user_id, role, model, reasoning_effort_requested,
+			reasoning_effort_sent, status, parent_message_id, client_request_id, created_at
+		)
+		VALUES(?, ?, ?, 'assistant', ?, ?, NULLIF(?, ''), 'streaming', ?, ?, ?)
+	`, assistantID, conversationID, userID, model, requestedEffort, sentEffort,
+		userMessageID, clientRequestID, now); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Message{}, nil, ErrDuplicateRequest
+		}
+		return Message{}, nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE conversations SET updated_at = ? WHERE id = ? AND user_id = ?
+	`, now, conversationID, userID); err != nil {
+		return Message{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, nil, err
+	}
+
+	allMessages, err := s.ListMessages(ctx, userID, conversationID)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	var history []Message
+	for index, message := range allMessages {
+		if message.ID == userMessageID {
+			history = append([]Message(nil), allMessages[:index+1]...)
+			break
+		}
+	}
+	if history == nil {
+		return Message{}, nil, errors.New("edited message is unavailable")
+	}
+	return Message{
+		ID: assistantID, ConversationID: conversationID, Role: "assistant", Model: model,
+		ReasoningEffortRequested: requestedEffort, ReasoningEffortSent: sentEffort,
+		Status: "streaming", ParentMessageID: userMessageID, CreatedAt: now, Parts: []MessagePart{},
+	}, history, nil
+}
+
 func (s *Store) SaveAssistantProgress(ctx context.Context, userID, messageID string, result AssistantResult) (Message, error) {
 	result.Status = "streaming"
 	result.ErrorCode = ""

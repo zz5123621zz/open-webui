@@ -2,6 +2,7 @@ import type {
   APIErrorBody,
   Attachment,
   Conversation,
+  ConversationSearchResult,
   ContextCheckpoint,
   Message,
   Model,
@@ -12,6 +13,7 @@ import type {
   SpeechServiceSettings,
   StorageStatus,
   StreamEvent,
+  UsageRow,
   User
 } from './types';
 
@@ -295,6 +297,39 @@ export async function regenerateResponse(
       'X-CSRF-Token': csrfToken
     },
     body: JSON.stringify({ requestId }),
+    signal
+  });
+  await consumeEventStream(response, onEvent);
+}
+
+export async function searchConversations(query: string): Promise<ConversationSearchResult[]> {
+  const body = await request<{ results: ConversationSearchResult[] }>(
+    `/api/v1/search?q=${encodeURIComponent(query)}`
+  );
+  return body.results;
+}
+
+export async function getUsage(): Promise<UsageRow[]> {
+  const body = await request<{ usage: UsageRow[] }>('/api/v1/usage');
+  return body.usage;
+}
+
+export async function editResponse(
+  messageId: string,
+  text: string,
+  requestId: string,
+  onEvent: (item: StreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}/edit`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'X-CSRF-Token': csrfToken
+    },
+    body: JSON.stringify({ text, requestId }),
     signal
   });
   await consumeEventStream(response, onEvent);
