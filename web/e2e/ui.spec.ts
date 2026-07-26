@@ -82,6 +82,7 @@ async function mockAPI(page: Page) {
       }
       if (message.type === 'speech.finish') {
         socket.send(JSON.stringify({ type: 'speech.completed', textBytes: 128 }));
+        setTimeout(() => socket.close({ code: 1000, reason: 'completed' }), 0);
       }
     });
   });
@@ -532,11 +533,17 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   );
   await expect(page.getByRole('option', { name: 'Vivi 2.0（女声·中英）' })).toBeAttached();
   await expect(page.getByRole('option', { name: 'Tim（男声·英文）' })).toBeAttached();
-  await expect(page.getByRole('button', { name: '试听当前音色' })).toBeVisible();
+  await page.getByRole('button', { name: '试听当前音色' }).click();
+  const previewPlayer = page.getByLabel('朗读播放器');
+  await expect(previewPlayer).toBeVisible();
+  await expect(previewPlayer.getByRole('slider', { name: '朗读进度' })).toBeEnabled();
+  await expect(previewPlayer).not.toContainText('朗读失败');
   await page
     .getByRole('dialog', { name: '语音与朗读' })
     .getByRole('button', { name: '关闭', exact: true })
     .click();
+  await previewPlayer.getByRole('button', { name: '停止并关闭朗读' }).click();
+  await expect(previewPlayer).toHaveCount(0);
   if (testInfo.project.name === 'mobile') {
     await page.setViewportSize({ width: 812, height: 375 });
     await page.getByRole('button', { name: /Alice/ }).click();

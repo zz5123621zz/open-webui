@@ -467,12 +467,18 @@ class SpeechController {
       }
     };
     socket.onerror = () => {
-      if (generation === this.generation) {
+      const state = get(speechPlayerState);
+      if (
+        generation === this.generation &&
+        !this.providerCompleted &&
+        !['idle', 'completed'].includes(state.status)
+      ) {
         this.fail('speech_network_error', '语音连接出现异常，请稍后重试。');
       }
     };
     socket.onclose = () => {
       if (generation !== this.generation) return;
+      if (this.socket === socket) this.socket = null;
       const state = get(speechPlayerState);
       if (
         !this.providerCompleted &&
