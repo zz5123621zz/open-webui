@@ -1,0 +1,17 @@
+services:
+  app:
+    environment:
+      TTS_ALIYUN_APP_KEY: ${TTS_ALIYUN_APP_KEY:?Set TTS_ALIYUN_APP_KEY in .env}
+      TTS_ALIYUN_ACCESS_KEY_ID_FILE: /run/secrets/tts_aliyun_access_key_id
+      TTS_ALIYUN_ACCESS_KEY_SECRET_FILE: /run/secrets/tts_aliyun_access_key_secret
+      TTS_ALIYUN_VOICES: ${TTS_ALIYUN_VOICES:-longxiaochun:龙小淳}
+      TTS_SESSION_TTL_SECONDS: ${TTS_SESSION_TTL_SECONDS:-1800}
+    secrets:
+      - tts_aliyun_access_key_id
+      - tts_aliyun_access_key_secret
+
+secrets:
+  tts_aliyun_access_key_id:
+    file: ./secrets/tts_aliyun_access_key_id
+  tts_aliyun_access_key_secret:
+    file: ./secrets/tts_aliyun_access_key_secret

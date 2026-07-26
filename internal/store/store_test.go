@@ -585,6 +585,66 @@ func TestProgressiveSummarySettingIsNarrowAndAudited(t *testing.T) {
 	}
 }
 
+func TestSpeechSettingsDefaultToManualAndRequireAdministrator(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "speech-user", "Speech User", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := dataStore.CreateUserWithRole(
+		ctx, "speech-admin", "Speech Admin", "hash", "admin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting, err := dataStore.SpeechServiceSetting(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setting.Enabled || setting.Provider != "aliyun" ||
+		setting.DefaultVoice != "longxiaochun" {
+		t.Fatalf("initial speech setting = %#v", setting)
+	}
+	preference, err := dataStore.UserSpeechPreference(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preference.Mode != SpeechModeManual || preference.Speed != 1 ||
+		preference.Voice != "" {
+		t.Fatalf("initial speech preference = %#v", preference)
+	}
+	if _, err := dataStore.SetSpeechServiceSetting(
+		ctx, user.ID, SpeechServiceSetting{
+			Enabled: true, Provider: "aliyun", DefaultVoice: "longxiaochun",
+		},
+	); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("member setting update error = %v, want ErrNotFound", err)
+	}
+	updated, err := dataStore.SetSpeechServiceSetting(
+		ctx, admin.ID, SpeechServiceSetting{
+			Enabled: true, Provider: "aliyun", DefaultVoice: "longxiaochun",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled || updated.UpdatedBy != admin.ID {
+		t.Fatalf("updated speech setting = %#v", updated)
+	}
+	preference, err = dataStore.SetUserSpeechPreference(
+		ctx, user.ID, UserSpeechPreference{
+			Mode: SpeechModeAuto, Speed: 1.25, Voice: "longxiaochun",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preference.Mode != SpeechModeAuto || preference.Speed != 1.25 {
+		t.Fatalf("updated speech preference = %#v", preference)
+	}
+}
+
 func TestCheckpointIsIdempotentAndRejectsStaleConversationHead(t *testing.T) {
 	ctx := context.Background()
 	dataStore := openTestStore(t)

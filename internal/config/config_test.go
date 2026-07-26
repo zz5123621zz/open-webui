@@ -56,6 +56,44 @@ func TestLoadParsesProgressiveSummaryHardDisable(t *testing.T) {
 	}
 }
 
+func TestLoadConfiguresVolcengineSpeechFromSecretFile(t *testing.T) {
+	apiKeyPath := filepath.Join(t.TempDir(), "volcengine-api-key")
+	if err := os.WriteFile(apiKeyPath, []byte("volcengine-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("TTS_VOLCENGINE_API_KEY_FILE", apiKeyPath)
+	t.Setenv(
+		"TTS_VOLCENGINE_VOICES",
+		"zh_female_tianmeitaozi_mars_bigtts:甜美桃子,custom_voice:自定义",
+	)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Speech.Volcengine.APIKey != "volcengine-secret" ||
+		cfg.Speech.Volcengine.ResourceID != "seed-tts-2.0" ||
+		cfg.Speech.Volcengine.Endpoint.String() !=
+			"wss://openspeech.bytedance.com/api/v3/tts/bidirection" ||
+		len(cfg.Speech.Volcengine.Voices) != 2 {
+		t.Fatalf("Volcengine speech config = %#v", cfg.Speech.Volcengine)
+	}
+}
+
+func TestLoadRejectsUnknownVolcengineSpeechResource(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("TTS_VOLCENGINE_RESOURCE_ID", "unknown-resource")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want invalid Volcengine resource error")
+	}
+}
+
 func TestLoadSecretFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(path, []byte("abcdefghijklmnopqrstuvwxyz-123456\n"), 0o600); err != nil {

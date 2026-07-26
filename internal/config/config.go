@@ -23,6 +23,7 @@ type Config struct {
 	SessionCookieName string
 	SecureCookies     bool
 	Provider          Provider
+	Speech            Speech
 	Jobs              Jobs
 	Tools             Tools
 	Lifecycle         Lifecycle
@@ -45,6 +46,75 @@ type Provider struct {
 	RequestBodyMaxBytes            int64
 	RequestTempDir                 string
 	ProgressiveSummaryHardDisabled bool
+}
+
+type Speech struct {
+	MaxConcurrentGlobal  int
+	MaxConcurrentPerUser int
+	SessionTTL           time.Duration
+	Alibaba              AlibabaSpeech
+	Volcengine           VolcengineSpeech
+}
+
+type AlibabaSpeech struct {
+	Endpoint        *url.URL
+	TokenEndpoint   *url.URL
+	AppKey          string
+	AccessKeyID     string
+	AccessKeySecret string
+	Voices          []SpeechVoice
+	Format          string
+	SampleRate      int
+}
+
+type VolcengineSpeech struct {
+	Endpoint   *url.URL
+	APIKey     string
+	ResourceID string
+	Voices     []SpeechVoice
+	Format     string
+	SampleRate int
+}
+
+type SpeechVoice struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+func (s Speech) Normalized() Speech {
+	if s.MaxConcurrentGlobal <= 0 {
+		s.MaxConcurrentGlobal = 2
+	}
+	if s.MaxConcurrentPerUser <= 0 {
+		s.MaxConcurrentPerUser = 1
+	}
+	if s.SessionTTL <= 0 {
+		s.SessionTTL = 30 * time.Minute
+	}
+	if s.Alibaba.Format == "" {
+		s.Alibaba.Format = "pcm"
+	}
+	if s.Alibaba.SampleRate == 0 {
+		s.Alibaba.SampleRate = 24000
+	}
+	if len(s.Alibaba.Voices) == 0 {
+		s.Alibaba.Voices = []SpeechVoice{{ID: "longxiaochun", Label: "龙小淳"}}
+	}
+	if s.Volcengine.Format == "" {
+		s.Volcengine.Format = "pcm"
+	}
+	if s.Volcengine.SampleRate == 0 {
+		s.Volcengine.SampleRate = 24000
+	}
+	if s.Volcengine.ResourceID == "" {
+		s.Volcengine.ResourceID = "seed-tts-2.0"
+	}
+	if len(s.Volcengine.Voices) == 0 {
+		s.Volcengine.Voices = []SpeechVoice{{
+			ID: "zh_female_tianmeitaozi_mars_bigtts", Label: "甜美桃子",
+		}}
+	}
+	return s
 }
 
 type Jobs struct {
@@ -234,6 +304,98 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Provider.APIKey = string(providerSecret)
+	speechEndpoint, err := parseAbsoluteURL(
+		"TTS_ALIYUN_ENDPOINT",
+		"wss://nls-gateway-cn-beijing.aliyuncs.com/ws/v1",
+		[]string{"ws", "wss"},
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	speechTokenEndpoint, err := parseAbsoluteURL(
+		"TTS_ALIYUN_TOKEN_ENDPOINT",
+		"https://nls-meta.cn-shanghai.aliyuncs.com/",
+		[]string{"http", "https"},
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	accessKeyID, err := readOptionalSecret(
+		"TTS_ALIYUN_ACCESS_KEY_ID", "TTS_ALIYUN_ACCESS_KEY_ID_FILE",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	accessKeySecret, err := readOptionalSecret(
+		"TTS_ALIYUN_ACCESS_KEY_SECRET", "TTS_ALIYUN_ACCESS_KEY_SECRET_FILE",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	speechTTLSeconds, err := intEnv("TTS_SESSION_TTL_SECONDS", 1800, 30, 3600)
+	if err != nil {
+		return Config{}, err
+	}
+	speechVoices, err := parseSpeechVoices(
+		"TTS_ALIYUN_VOICES",
+		env("TTS_ALIYUN_VOICES", "longxiaochun:龙小淳"),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	volcengineEndpoint, err := parseAbsoluteURL(
+		"TTS_VOLCENGINE_ENDPOINT",
+		"wss://openspeech.bytedance.com/api/v3/tts/bidirection",
+		[]string{"ws", "wss"},
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	volcengineAPIKey, err := readOptionalSecret(
+		"TTS_VOLCENGINE_API_KEY", "TTS_VOLCENGINE_API_KEY_FILE",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	volcengineResourceID := env("TTS_VOLCENGINE_RESOURCE_ID", "seed-tts-2.0")
+	if volcengineResourceID != "seed-tts-2.0" {
+		return Config{}, fmt.Errorf(
+			"TTS_VOLCENGINE_RESOURCE_ID must be seed-tts-2.0",
+		)
+	}
+	volcengineVoices, err := parseSpeechVoices(
+		"TTS_VOLCENGINE_VOICES",
+		env(
+			"TTS_VOLCENGINE_VOICES",
+			"zh_female_tianmeitaozi_mars_bigtts:甜美桃子",
+		),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Speech = Speech{
+		MaxConcurrentGlobal:  2,
+		MaxConcurrentPerUser: 1,
+		SessionTTL:           time.Duration(speechTTLSeconds) * time.Second,
+		Alibaba: AlibabaSpeech{
+			Endpoint:        speechEndpoint,
+			TokenEndpoint:   speechTokenEndpoint,
+			AppKey:          strings.TrimSpace(os.Getenv("TTS_ALIYUN_APP_KEY")),
+			AccessKeyID:     string(accessKeyID),
+			AccessKeySecret: string(accessKeySecret),
+			Voices:          speechVoices,
+			Format:          "pcm",
+			SampleRate:      24000,
+		},
+		Volcengine: VolcengineSpeech{
+			Endpoint:   volcengineEndpoint,
+			APIKey:     string(volcengineAPIKey),
+			ResourceID: volcengineResourceID,
+			Voices:     volcengineVoices,
+			Format:     "pcm",
+			SampleRate: 24000,
+		},
+	}
 	globalLimit, err := intEnv("PROVIDER_MAX_CONCURRENT_GLOBAL", 4, 1, 32)
 	if err != nil {
 		return Config{}, err
@@ -325,6 +487,63 @@ func readSecret(valueEnv, fileEnv string) ([]byte, error) {
 		return []byte(value), nil
 	}
 	return nil, fmt.Errorf("%s or %s is required", valueEnv, fileEnv)
+}
+
+func readOptionalSecret(valueEnv, fileEnv string) ([]byte, error) {
+	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", fileEnv, err)
+		}
+		return []byte(strings.TrimSpace(string(raw))), nil
+	}
+	return []byte(strings.TrimSpace(os.Getenv(valueEnv))), nil
+}
+
+func parseAbsoluteURL(name, fallback string, schemes []string) (*url.URL, error) {
+	value, err := url.Parse(env(name, fallback))
+	if err != nil || value.Host == "" {
+		return nil, fmt.Errorf("%s must be an absolute URL", name)
+	}
+	for _, scheme := range schemes {
+		if value.Scheme == scheme {
+			return value, nil
+		}
+	}
+	return nil, fmt.Errorf("%s has an unsupported URL scheme", name)
+}
+
+func parseSpeechVoices(name, raw string) ([]SpeechVoice, error) {
+	entries := splitCSV(raw)
+	if len(entries) == 0 || len(entries) > 32 {
+		return nil, fmt.Errorf("%s must contain between 1 and 32 voices", name)
+	}
+	voices := make([]SpeechVoice, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		id, label, hasLabel := strings.Cut(entry, ":")
+		id = strings.TrimSpace(id)
+		label = strings.TrimSpace(label)
+		if !hasLabel || label == "" {
+			label = id
+		}
+		if id == "" || len(id) > 100 || len(label) > 100 {
+			return nil, fmt.Errorf("%s contains an invalid entry", name)
+		}
+		for _, current := range id {
+			if current >= 'a' && current <= 'z' || current >= 'A' && current <= 'Z' ||
+				current >= '0' && current <= '9' || current == '-' || current == '_' {
+				continue
+			}
+			return nil, fmt.Errorf("%s contains an invalid voice ID", name)
+		}
+		if _, exists := seen[id]; exists {
+			return nil, fmt.Errorf("%s contains a duplicate voice", name)
+		}
+		seen[id] = struct{}{}
+		voices = append(voices, SpeechVoice{ID: id, Label: label})
+	}
+	return voices, nil
 }
 
 func splitCSV(raw string) []string {

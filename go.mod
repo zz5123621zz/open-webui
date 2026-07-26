@@ -3,6 +3,7 @@ module github.com/owui-personal-slim/owui-personal-slim
 go 1.26.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.44.0
 	golang.org/x/term v0.45.0
