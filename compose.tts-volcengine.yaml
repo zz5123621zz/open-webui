@@ -3,7 +3,7 @@ services:
     environment:
       TTS_VOLCENGINE_API_KEY_FILE: /run/secrets/tts_volcengine_api_key
       TTS_VOLCENGINE_RESOURCE_ID: ${TTS_VOLCENGINE_RESOURCE_ID:-seed-tts-2.0}
-      TTS_VOLCENGINE_VOICES: ${TTS_VOLCENGINE_VOICES:-zh_female_vv_uranus_bigtts:Vivi 2.0}
+      TTS_VOLCENGINE_VOICES: ${TTS_VOLCENGINE_VOICES:-}
       TTS_SESSION_TTL_SECONDS: ${TTS_SESSION_TTL_SECONDS:-1800}
     secrets:
       - tts_volcengine_api_key

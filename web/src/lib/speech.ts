@@ -79,6 +79,22 @@ export const speechDeviceAuthorization = writable<SpeechDeviceAuthorization>({
 
 let currentUserId = '';
 
+const speechURLSource =
+  String.raw`(?:https?:\/\/|www\.)[^\s<>()\[\]{}，。！？；：、]+`;
+const speechDomainSource =
+  String.raw`(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?:\/[^\s<>()\[\]{}，。！？；：、]+)?`;
+const speechAddressOnly = new RegExp(
+  `^(?:${speechURLSource}|${speechDomainSource})$`,
+  'i'
+);
+const speechParentheticalSource = new RegExp(
+  `[（(]\\s*(?:来源\\s*[:：]\\s*)?(?:${speechURLSource}|${speechDomainSource})\\s*[)）]`,
+  'gi'
+);
+const speechURL = new RegExp(speechURLSource, 'gi');
+const speechDomain = new RegExp(`\\b${speechDomainSource}`, 'gi');
+const speechEmail = /\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,24}\b/gi;
+
 function authorizationKey(userId: string): string {
   return `personal-chat-speech-authorized-v1:${userId}`;
 }
@@ -153,8 +169,15 @@ export function normalizeSpeechText(value: string): string {
   text = text.replace(/```[\s\S]*?```/g, '\n代码内容已省略。\n');
   text = text
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[([^\]]+)\]\((?:https?:\/\/|\/)[^)]*\)/g, '$1')
-    .replace(/https?:\/\/[^\s)]+/g, '相关链接')
+    .replace(speechParentheticalSource, ' ')
+    .replace(
+      /\[([^\]]+)\]\((?:https?:\/\/|\/)[^)]*\)/gi,
+      (_match, label: string) =>
+        speechAddressOnly.test(label.trim()) ? ' ' : label
+    )
+    .replace(speechEmail, ' ')
+    .replace(speechURL, ' ')
+    .replace(speechDomain, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
