@@ -575,18 +575,19 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: '知道了' }).click();
 
     await page.locator('.model-picker-trigger').click();
-    await expect(page.getByRole('option')).toHaveCount(3);
-    await expect(page.getByRole('option', { name: /^快速/ }))
+    const chatModelList = page.getByRole('listbox', { name: '聊天模型' });
+    await expect(chatModelList.getByRole('option')).toHaveCount(3);
+    await expect(chatModelList.getByRole('option', { name: /^快速/ }))
       .toContainText('响应最快的模型，适合日常问答、改写和快速检索。');
-    await expect(page.getByRole('option', { name: /^均衡/ }))
+    await expect(chatModelList.getByRole('option', { name: /^均衡/ }))
       .toContainText('智能与速度均衡的模型，适合大多数分析、写作和多步骤任务。');
-    await expect(page.getByRole('option', { name: /^专家/ }))
+    await expect(chatModelList.getByRole('option', { name: /^专家/ }))
       .toContainText('最高智能的模型，适合复杂推理、编程和高要求任务。');
-    await expect(page.getByRole('option', { name: /^快速/ })).toContainText('GPT · Luna');
-    await expect(page.getByRole('option', { name: /^均衡/ })).toContainText('GPT · Terra');
-    await expect(page.getByRole('option', { name: /^专家/ })).toContainText('GPT · Sol');
+    await expect(chatModelList.getByRole('option', { name: /^快速/ })).toContainText('GPT · Luna');
+    await expect(chatModelList.getByRole('option', { name: /^均衡/ })).toContainText('GPT · Terra');
+    await expect(chatModelList.getByRole('option', { name: /^专家/ })).toContainText('GPT · Sol');
     await expect(page.getByText('Grok 4.5')).toHaveCount(0);
-    await page.getByRole('option', { name: /^专家/ }).click();
+    await chatModelList.getByRole('option', { name: /^专家/ }).click();
 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '关于' }).click();
