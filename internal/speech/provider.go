@@ -10,6 +10,8 @@ import (
 var (
 	ErrBusy                = errors.New("speech session limit reached")
 	ErrProviderUnavailable = errors.New("speech provider is not configured")
+	ErrProviderAuth        = errors.New("speech provider authentication failed")
+	ErrProviderNotGranted  = errors.New("speech provider resource is not granted")
 )
 
 type Voice struct {

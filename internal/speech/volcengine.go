@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -82,14 +83,50 @@ func (p *VolcengineProvider) Open(
 		ctx, p.config.Endpoint.String(), headers,
 	)
 	logID := ""
+	statusCode := 0
+	handshakeDetail := ""
 	if response != nil {
+		statusCode = response.StatusCode
 		logID = strings.TrimSpace(response.Header.Get("X-Tt-Logid"))
 		if response.Body != nil {
+			if err != nil {
+				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+				handshakeDetail = volcengineHandshakeDetail(body)
+			}
 			_ = response.Body.Close()
 		}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("connect Volcengine speech service: %w", err)
+		detail := ""
+		if statusCode > 0 {
+			detail = fmt.Sprintf(" (HTTP %d", statusCode)
+			if handshakeDetail != "" {
+				detail += ": " + handshakeDetail
+			}
+			if logID != "" {
+				detail += "; log ID " + logID
+			}
+			detail += ")"
+		}
+		lowerDetail := strings.ToLower(handshakeDetail)
+		if statusCode == http.StatusForbidden &&
+			strings.Contains(lowerDetail, "requested resource not granted") {
+			return nil, fmt.Errorf(
+				"%w: connect Volcengine speech service%s",
+				ErrProviderNotGranted, detail,
+			)
+		}
+		if statusCode == http.StatusUnauthorized ||
+			strings.Contains(lowerDetail, "invalid api key") ||
+			strings.Contains(lowerDetail, "authentication") {
+			return nil, fmt.Errorf(
+				"%w: connect Volcengine speech service%s",
+				ErrProviderAuth, detail,
+			)
+		}
+		return nil, fmt.Errorf(
+			"connect Volcengine speech service: %w%s", err, detail,
+		)
 	}
 	connection.SetReadLimit(maxVolcProviderFrameBytes)
 	sessionID, err := randomUUID()
@@ -139,6 +176,20 @@ func (p *VolcengineProvider) Open(
 	}
 	_ = connection.SetReadDeadline(time.Time{})
 	return session, nil
+}
+
+func volcengineHandshakeDetail(body []byte) string {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	detail := strings.TrimSpace(payload.Error)
+	if len(detail) > 500 {
+		detail = detail[:500]
+	}
+	return detail
 }
 
 type volcengineSession struct {

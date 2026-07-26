@@ -561,6 +561,10 @@ class SpeechController {
       speech_session_limit: '当前朗读任务较多，请稍后重试。',
       speech_disabled: '管理员暂时关闭了文字转语音服务。',
       speech_provider_unavailable: '语音提供商尚未正确配置。',
+      speech_provider_not_granted:
+        '火山引擎项目尚未开通“豆包语音合成模型 2.0”，请管理员在开通管理中启用 seed-tts-2.0。',
+      speech_provider_auth_failed:
+        '火山引擎拒绝了当前 API Key，请管理员检查密钥及所属项目。',
       speech_voice_unavailable: '所选音色已经不可用，请在设置中重新选择。',
       speech_session_expired: '本次朗读时间过长，语音会话已结束。',
       speech_text_limit: '这条回答过长，已达到单次朗读上限。',
