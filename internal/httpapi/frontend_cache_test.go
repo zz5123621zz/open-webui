@@ -16,7 +16,7 @@ func TestFrontendCachePolicy(t *testing.T) {
 	}{
 		{name: "index", path: "/", wantControl: "no-store, max-age=0"},
 		{name: "spa fallback", path: "/chat/example", wantControl: "no-store, max-age=0"},
-		{name: "hashed asset placeholder", path: "/placeholder.txt", wantControl: "public, max-age=31536000, immutable"},
+		{name: "public file", path: "/placeholder.txt", wantControl: "public, max-age=3600"},
 	}
 
 	server := &Server{}
@@ -34,5 +34,25 @@ func TestFrontendCachePolicy(t *testing.T) {
 				t.Fatalf("Cache-Control = %q, want %q", got, test.wantControl)
 			}
 		})
+	}
+}
+
+func TestFrontendCacheControl(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "index.html", want: "no-store, max-age=0"},
+		{path: "assets/index-Bx1z9a.js", want: "public, max-age=31536000, immutable"},
+		{path: "assets/index-Bx1z9a.css", want: "public, max-age=31536000, immutable"},
+		{path: "manifest.webmanifest", want: "public, max-age=3600"},
+		{path: "icons/icon-512.png", want: "public, max-age=3600"},
+	}
+	for _, test := range tests {
+		if got := frontendCacheControl(test.path); got != test.want {
+			t.Fatalf("frontendCacheControl(%q) = %q, want %q", test.path, got, test.want)
+		}
 	}
 }

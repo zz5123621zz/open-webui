@@ -3530,3 +3530,310 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Sidebar search */
+
+.sidebar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 0 14px;
+}
+
+.sidebar-search-icon {
+  position: absolute;
+  left: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.sidebar-search input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 38px 0 36px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+  /* Never below 16px, or iOS Safari zooms the page on focus. */
+  font-size: max(0.9375rem, 15px);
+}
+
+@media (pointer: coarse) {
+  .sidebar-search input {
+    font-size: max(1rem, 16px);
+  }
+}
+
+.sidebar-search input::placeholder {
+  color: var(--text-muted);
+}
+
+.sidebar-search input:focus {
+  border-color: var(--focus);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 15%, transparent);
+}
+
+.sidebar-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.sidebar-search-clear {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: var(--text-muted);
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.sidebar-search-clear:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.search-result {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
+  padding: 6px 9px;
+  color: var(--text-soft);
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  background: transparent;
+  text-align: left;
+}
+
+.search-result:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.search-snippet {
+  white-space: normal !important;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  line-height: 1.45;
+}
+
+/* In-place message editing */
+
+.message-edit {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border));
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.message-edit-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--primary);
+  font-size: 0.8125rem;
+  font-weight: 640;
+}
+
+.message-edit-heading small {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.message-edit textarea {
+  min-height: 84px;
+  padding: 10px 12px;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-soft);
+  /* Matches the composer: never below 16px so iOS keeps its zoom level. */
+  font-size: max(1rem, 16px);
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.message-edit textarea:focus {
+  border-color: var(--focus);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 15%, transparent);
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.message-edit-cancel,
+.message-edit-send {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 620;
+}
+
+.message-edit-cancel {
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.message-edit-cancel:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.message-edit-send {
+  color: #fff;
+  border: 0;
+  background: var(--primary);
+}
+
+.message-edit-send:hover {
+  background: var(--primary-hover);
+}
+
+.message-edit-send:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.message-footer.user-footer {
+  justify-content: flex-end;
+  min-height: 30px;
+  margin-top: 2px;
+}
+
+/* Drag-and-drop upload overlay */
+
+.drop-overlay {
+  position: absolute;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  inset: 0;
+  padding: 24px;
+  border: 2px dashed var(--primary);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--primary-soft) 82%, transparent);
+  pointer-events: none;
+}
+
+.drop-overlay-card {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 20px 26px;
+  color: var(--primary);
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md, var(--shadow-sm));
+  font-size: 0.9375rem;
+  text-align: center;
+}
+
+.drop-overlay-card small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* Usage stats dialog */
+
+.usage-empty {
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.usage-months {
+  display: grid;
+  overflow-y: auto;
+  max-height: min(46vh, 420px);
+  gap: 16px;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.usage-month h3 {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+  font-size: 0.8125rem;
+  font-weight: 680;
+  letter-spacing: 0.02em;
+}
+
+.usage-table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.usage-row {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(0, 1.4fr) minmax(56px, 0.6fr) minmax(72px, 0.9fr) minmax(88px, 1fr);
+  gap: 8px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.usage-row:first-child {
+  border-top: 0;
+}
+
+.usage-row span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  overflow-wrap: anywhere;
+}
+
+.usage-row small {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+
+.usage-head {
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  font-size: 0.6875rem;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 700px) {
+  .usage-row {
+    grid-template-columns: minmax(0, 1.3fr) minmax(48px, 0.6fr) minmax(60px, 0.8fr) minmax(72px, 0.9fr);
+    padding: 8px 10px;
+    font-size: 0.75rem;
+  }
+}

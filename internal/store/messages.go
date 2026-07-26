@@ -225,26 +225,13 @@ func (s *Store) BeginRegeneration(
 		return Message{}, nil, ErrNotLatestMessage
 	}
 
-	now := time.Now().UnixMilli()
-	if now <= originalCreatedAt {
-		now = originalCreatedAt + 1
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages(
-			id, conversation_id, user_id, role, model, reasoning_effort_requested,
-			reasoning_effort_sent, status, parent_message_id, client_request_id, created_at
-		)
-		VALUES(?, ?, ?, 'assistant', ?, ?, NULLIF(?, ''), 'streaming', ?, ?, ?)
-	`, assistantID, conversationID, userID, model, requestedEffort, sentEffort,
-		parentMessageID, clientRequestID, now); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return Message{}, nil, ErrDuplicateRequest
-		}
-		return Message{}, nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE conversations SET updated_at = ? WHERE id = ? AND user_id = ?
-	`, now, conversationID, userID); err != nil {
+	now, err := startAssistantTurn(ctx, tx, assistantTurn{
+		UserID: userID, ConversationID: conversationID, AssistantID: assistantID,
+		ParentMessageID: parentMessageID, ClientRequestID: clientRequestID,
+		Model: model, RequestedEffort: requestedEffort, SentEffort: sentEffort,
+		NotBefore: originalCreatedAt,
+	})
+	if err != nil {
 		return Message{}, nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -255,13 +242,7 @@ func (s *Store) BeginRegeneration(
 	if err != nil {
 		return Message{}, nil, err
 	}
-	var history []Message
-	for index, message := range allMessages {
-		if message.ID == parentMessageID {
-			history = append([]Message(nil), allMessages[:index+1]...)
-			break
-		}
-	}
+	history := historyThrough(allMessages, parentMessageID)
 	if history == nil {
 		return Message{}, nil, errors.New("regeneration parent message is unavailable")
 	}
@@ -269,6 +250,216 @@ func (s *Store) BeginRegeneration(
 		ID: assistantID, ConversationID: conversationID, Role: "assistant", Model: model,
 		ReasoningEffortRequested: requestedEffort, ReasoningEffortSent: sentEffort,
 		Status: "streaming", ParentMessageID: parentMessageID, CreatedAt: now, Parts: []MessagePart{},
+	}, history, nil
+}
+
+type assistantTurn struct {
+	UserID          string
+	ConversationID  string
+	AssistantID     string
+	ParentMessageID string
+	ClientRequestID string
+	Model           string
+	RequestedEffort string
+	SentEffort      string
+	NotBefore       int64
+}
+
+// startAssistantTurn inserts a streaming assistant message that sorts after
+// every existing message and touches the conversation timestamp. It maps a
+// duplicate client request id onto ErrDuplicateRequest.
+func startAssistantTurn(ctx context.Context, tx *sql.Tx, turn assistantTurn) (int64, error) {
+	now := time.Now().UnixMilli()
+	if now <= turn.NotBefore {
+		now = turn.NotBefore + 1
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO messages(
+			id, conversation_id, user_id, role, model, reasoning_effort_requested,
+			reasoning_effort_sent, status, parent_message_id, client_request_id, created_at
+		)
+		VALUES(?, ?, ?, 'assistant', ?, ?, NULLIF(?, ''), 'streaming', ?, ?, ?)
+	`, turn.AssistantID, turn.ConversationID, turn.UserID, turn.Model, turn.RequestedEffort,
+		turn.SentEffort, turn.ParentMessageID, turn.ClientRequestID, now); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return 0, ErrDuplicateRequest
+		}
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE conversations SET updated_at = ? WHERE id = ? AND user_id = ?
+	`, now, turn.ConversationID, turn.UserID); err != nil {
+		return 0, err
+	}
+	return now, nil
+}
+
+// historyThrough returns a copy of the prefix of messages up to and including
+// the boundary message, or nil when the boundary is absent.
+func historyThrough(messages []Message, boundaryID string) []Message {
+	for index, message := range messages {
+		if message.ID == boundaryID {
+			return append([]Message(nil), messages[:index+1]...)
+		}
+	}
+	return nil
+}
+
+// BeginEdit rewrites the text of the latest user message and starts a fresh
+// assistant response for it. Earlier assistant answers to the same message
+// stay in the transcript, exactly like a regeneration.
+func (s *Store) BeginEdit(
+	ctx context.Context,
+	userID string,
+	userMessageID string,
+	clientRequestID string,
+	newText string,
+	model string,
+	requestedEffort string,
+	sentEffort string,
+) (Message, []Message, error) {
+	newText = strings.TrimSpace(newText)
+	assistantID, err := ids.New()
+	if err != nil {
+		return Message{}, nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var conversationID, role string
+	err = tx.QueryRowContext(ctx, `
+		SELECT conversation_id, role FROM messages WHERE id = ? AND user_id = ?
+	`, userMessageID, userID).Scan(&conversationID, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, nil, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, nil, err
+	}
+	if role != "user" {
+		return Message{}, nil, errors.New("only a user message can be edited")
+	}
+	var archivedExists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT 1 FROM conversations WHERE id = ? AND user_id = ? AND archived_at IS NULL
+	`, conversationID, userID).Scan(&archivedExists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Message{}, nil, ErrNotFound
+		}
+		return Message{}, nil, err
+	}
+	var latestUserID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id FROM messages
+		WHERE conversation_id = ? AND user_id = ? AND role = 'user'
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, conversationID, userID).Scan(&latestUserID); err != nil {
+		return Message{}, nil, err
+	}
+	if latestUserID != userMessageID {
+		return Message{}, nil, ErrNotLatestMessage
+	}
+	var running int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM messages
+		WHERE conversation_id = ? AND status IN ('pending', 'streaming')
+	`, conversationID).Scan(&running); err != nil {
+		return Message{}, nil, err
+	}
+	if running > 0 {
+		return Message{}, nil, errors.New("response is still running")
+	}
+
+	var textPartID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM message_parts
+		WHERE message_id = ? AND type = 'text'
+		ORDER BY sequence LIMIT 1
+	`, userMessageID).Scan(&textPartID)
+	hasTextPart := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Message{}, nil, err
+	}
+	if newText == "" {
+		var imageParts int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM message_parts WHERE message_id = ? AND type = 'image'
+		`, userMessageID).Scan(&imageParts); err != nil {
+			return Message{}, nil, err
+		}
+		if imageParts == 0 {
+			return Message{}, nil, errors.New("message content is required")
+		}
+	}
+	switch {
+	case hasTextPart && newText != "":
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE message_parts SET text_content = ? WHERE id = ?
+		`, newText, textPartID); err != nil {
+			return Message{}, nil, fmt.Errorf("update edited text: %w", err)
+		}
+	case hasTextPart:
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM message_parts WHERE id = ?
+		`, textPartID); err != nil {
+			return Message{}, nil, fmt.Errorf("remove edited text: %w", err)
+		}
+	case newText != "":
+		partID, idErr := ids.New()
+		if idErr != nil {
+			return Message{}, nil, idErr
+		}
+		// Insert below the smallest existing sequence instead of shifting the
+		// other parts up: a bulk +1 shift trips UNIQUE(message_id, sequence)
+		// as soon as the message has two parts.
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO message_parts(id, message_id, sequence, type, text_content, created_at)
+			VALUES(
+				?, ?,
+				(SELECT COALESCE(MIN(sequence), 1) - 1 FROM message_parts WHERE message_id = ?),
+				'text', ?, ?
+			)
+		`, partID, userMessageID, userMessageID, newText, time.Now().UnixMilli()); err != nil {
+			return Message{}, nil, fmt.Errorf("insert edited text: %w", err)
+		}
+	}
+
+	var latestCreatedAt int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT created_at FROM messages
+		WHERE conversation_id = ? AND user_id = ?
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, conversationID, userID).Scan(&latestCreatedAt); err != nil {
+		return Message{}, nil, err
+	}
+	now, err := startAssistantTurn(ctx, tx, assistantTurn{
+		UserID: userID, ConversationID: conversationID, AssistantID: assistantID,
+		ParentMessageID: userMessageID, ClientRequestID: clientRequestID,
+		Model: model, RequestedEffort: requestedEffort, SentEffort: sentEffort,
+		NotBefore: latestCreatedAt,
+	})
+	if err != nil {
+		return Message{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, nil, err
+	}
+
+	allMessages, err := s.ListMessages(ctx, userID, conversationID)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	history := historyThrough(allMessages, userMessageID)
+	if history == nil {
+		return Message{}, nil, errors.New("edited message is unavailable")
+	}
+	return Message{
+		ID: assistantID, ConversationID: conversationID, Role: "assistant", Model: model,
+		ReasoningEffortRequested: requestedEffort, ReasoningEffortSent: sentEffort,
+		Status: "streaming", ParentMessageID: userMessageID, CreatedAt: now, Parts: []MessagePart{},
 	}, history, nil
 }
 
@@ -499,6 +690,24 @@ func (s *Store) MessageByID(ctx context.Context, userID, messageID string) (Mess
 	}
 	message.ProviderItems = items
 	return message, nil
+}
+
+// LatestAssistantChild returns the most recent assistant response whose
+// parent is the given message.
+func (s *Store) LatestAssistantChild(ctx context.Context, userID, parentMessageID string) (Message, error) {
+	var childID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM messages
+		WHERE parent_message_id = ? AND user_id = ? AND role = 'assistant'
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, parentMessageID, userID).Scan(&childID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, err
+	}
+	return s.MessageByID(ctx, userID, childID)
 }
 
 type scanner interface {

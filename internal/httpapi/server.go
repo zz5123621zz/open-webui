@@ -156,6 +156,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/conversations/{id}/messages", s.auth(http.HandlerFunc(s.listMessages)))
 	s.mux.Handle("POST /api/v1/conversations/{id}/responses", s.auth(s.limitAction("response", 60, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.createResponse))))))
 	s.mux.Handle("POST /api/v1/messages/{id}/regenerate", s.auth(s.limitAction("response", 60, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.regenerateResponse))))))
+	s.mux.Handle("POST /api/v1/messages/{id}/edit", s.auth(s.limitAction("response", 60, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.editResponse))))))
+	s.mux.Handle("GET /api/v1/search", s.auth(http.HandlerFunc(s.searchConversations)))
+	s.mux.Handle("GET /api/v1/usage", s.auth(http.HandlerFunc(s.usageStats)))
 	s.mux.Handle("GET /api/v1/responses/{id}", s.auth(http.HandlerFunc(s.getResponse)))
 	s.mux.Handle("POST /api/v1/responses/{id}/cancel", s.auth(s.limitAction("cancel", 120, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.cancelResponse))))))
 	s.mux.Handle("GET /api/v1/conversations/{id}/context-checkpoints", s.auth(http.HandlerFunc(s.listContextCheckpoints)))
@@ -212,15 +215,24 @@ func (s *Server) serveFrontend(w http.ResponseWriter, r *http.Request) {
 	if info, statErr := fs.Stat(sub, requestPath); statErr != nil || info.IsDir() {
 		requestPath = "index.html"
 	}
-	if requestPath == "index.html" {
-		// The HTML shell points at content-hashed immutable assets. Never retain
-		// the shell itself, otherwise a long-lived browser cache can keep loading
-		// an older asset graph after a deployment.
-		w.Header().Set("Cache-Control", "no-store, max-age=0")
-	} else {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	}
+	w.Header().Set("Cache-Control", frontendCacheControl(requestPath))
 	http.ServeFileFS(w, r, sub, requestPath)
+}
+
+func frontendCacheControl(requestPath string) string {
+	// The HTML shell points at content-hashed immutable assets. Never retain
+	// the shell itself, otherwise a long-lived browser cache can keep loading
+	// an older asset graph after a deployment.
+	if requestPath == "index.html" {
+		return "no-store, max-age=0"
+	}
+	// Only Vite's content-hashed bundle may be cached forever. Files copied
+	// verbatim from web/public (the PWA manifest and icons) keep stable names,
+	// so they need a bounded cache to pick up redeployed versions.
+	if strings.HasPrefix(requestPath, "assets/") {
+		return "public, max-age=31536000, immutable"
+	}
+	return "public, max-age=3600"
 }
 
 func (s *Server) csrfToken(rawSessionToken string) string {

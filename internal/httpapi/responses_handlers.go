@@ -71,6 +71,48 @@ type regenerateResponseRequest struct {
 	RequestID string `json:"requestId"`
 }
 
+// ensureStreamRequestID fills in a generated request id when absent and
+// validates it, writing the error response itself on failure.
+func (s *Server) ensureStreamRequestID(w http.ResponseWriter, requestID string) (string, bool) {
+	if requestID == "" {
+		generated, err := ids.New()
+		if err != nil {
+			s.internalError(w, "generate request id", err)
+			return "", false
+		}
+		return generated, true
+	}
+	if len(requestID) > 128 || !utf8.ValidString(requestID) {
+		writeError(w, http.StatusBadRequest, "invalid_request_id", "Request ID is invalid.")
+		return "", false
+	}
+	return requestID, true
+}
+
+// resolveConversationModel loads the catalog and validates the conversation's
+// model and reasoning effort, writing the error response on failure.
+func (s *Server) resolveConversationModel(
+	w http.ResponseWriter,
+	r *http.Request,
+	conversation store.Conversation,
+) (provider.Model, bool) {
+	catalog, err := s.models.Models(r.Context())
+	if err != nil {
+		s.providerCatalogError(w, err)
+		return provider.Model{}, false
+	}
+	model, ok := s.models.FindSelectable(catalog, conversation.Model)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "provider_model_unavailable", "The conversation model is no longer available.")
+		return provider.Model{}, false
+	}
+	if !provider.SupportsEffort(model, conversation.ReasoningEffort) {
+		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The conversation reasoning effort is no longer supported.")
+		return provider.Model{}, false
+	}
+	return model, true
+}
+
 func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	var request createResponseRequest
 	if !readJSON(w, r, &request) {
@@ -92,18 +134,11 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "duplicate_attachment", "An attachment can only appear once in a message.")
 		return
 	}
-	if request.RequestID == "" {
-		generated, err := ids.New()
-		if err != nil {
-			s.internalError(w, "generate request id", err)
-			return
-		}
-		request.RequestID = generated
-	}
-	if len(request.RequestID) > 128 || !utf8.ValidString(request.RequestID) {
-		writeError(w, http.StatusBadRequest, "invalid_request_id", "Request ID is invalid.")
+	requestID, ok := s.ensureStreamRequestID(w, request.RequestID)
+	if !ok {
 		return
 	}
+	request.RequestID = requestID
 
 	session, _ := sessionFromContext(r.Context())
 	conversationID := r.PathValue("id")
@@ -117,18 +152,8 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	catalog, err := s.models.Models(r.Context())
-	if err != nil {
-		s.providerCatalogError(w, err)
-		return
-	}
-	model, ok := s.models.FindSelectable(catalog, conversation.Model)
+	model, ok := s.resolveConversationModel(w, r, conversation)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "provider_model_unavailable", "The conversation model is no longer available.")
-		return
-	}
-	if !provider.SupportsEffort(model, conversation.ReasoningEffort) {
-		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The conversation reasoning effort is no longer supported.")
 		return
 	}
 	if len(request.AttachmentIDs) > 0 && model.CapabilitiesComplete && !containsString(model.InputModalities, "image") {
@@ -203,7 +228,7 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	s.streamAssistantResponse(
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
-		summaryMode, assistantMessage, &userMessage, nil, queuedStream,
+		summaryMode, "create", assistantMessage, &userMessage, nil, queuedStream,
 		request.GenerateImage, request.Text,
 	)
 }
@@ -213,18 +238,11 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &request) {
 		return
 	}
-	if request.RequestID == "" {
-		generated, err := ids.New()
-		if err != nil {
-			s.internalError(w, "generate regeneration request id", err)
-			return
-		}
-		request.RequestID = generated
-	}
-	if len(request.RequestID) > 128 || !utf8.ValidString(request.RequestID) {
-		writeError(w, http.StatusBadRequest, "invalid_request_id", "Request ID is invalid.")
+	requestID, ok := s.ensureStreamRequestID(w, request.RequestID)
+	if !ok {
 		return
 	}
+	request.RequestID = requestID
 
 	session, _ := sessionFromContext(r.Context())
 	original, err := s.store.MessageByID(r.Context(), session.User.ID, r.PathValue("id"))
@@ -246,18 +264,8 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	catalog, err := s.models.Models(r.Context())
-	if err != nil {
-		s.providerCatalogError(w, err)
-		return
-	}
-	model, ok := s.models.FindSelectable(catalog, conversation.Model)
+	model, ok := s.resolveConversationModel(w, r, conversation)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "provider_model_unavailable", "The conversation model is no longer available.")
-		return
-	}
-	if !provider.SupportsEffort(model, conversation.ReasoningEffort) {
-		writeError(w, http.StatusBadRequest, "reasoning_effort_unsupported", "The conversation reasoning effort is no longer supported.")
 		return
 	}
 	generateImage := messageRequestedImageGeneration(original)
@@ -310,6 +318,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	case err != nil:
+		s.logger.Warn("begin regeneration rejected", "error", err)
 		respondBeforeStreamStart(
 			queuedStream, w, http.StatusBadRequest, "response_not_regenerable",
 			"This response cannot be regenerated.",
@@ -319,7 +328,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	s.streamAssistantResponse(
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
-		summaryMode, assistant, nil, history, queuedStream, generateImage,
+		summaryMode, "regenerate", assistant, nil, history, queuedStream, generateImage,
 		latestUserText(history),
 	)
 }
@@ -335,6 +344,7 @@ func (s *Server) streamAssistantResponse(
 	model provider.Model,
 	sentEffort string,
 	summaryMode string,
+	mode string,
 	assistantMessage store.Message,
 	userMessage *store.Message,
 	history []store.Message,
@@ -349,8 +359,10 @@ func (s *Server) streamAssistantResponse(
 		stream = newResponseSSEWriter(w)
 		stream.start()
 	}
+	// mode names the flow explicitly ("create", "regenerate", "edit") instead
+	// of clients inferring it from which fields happen to be present.
 	started := map[string]any{
-		"requestId": requestID, "assistantMessage": assistantMessage,
+		"requestId": requestID, "assistantMessage": assistantMessage, "mode": mode,
 	}
 	if userMessage != nil {
 		started["userMessage"] = *userMessage

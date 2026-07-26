@@ -170,6 +170,24 @@ export interface ContextCheckpoint {
   createdAt: number;
 }
 
+export interface ConversationSearchResult {
+  conversation: Conversation;
+  snippet?: string;
+  matchedIn: 'title' | 'message';
+}
+
+export interface UsageRow {
+  month: string;
+  model: string;
+  ownerId?: string;
+  ownerUsername?: string;
+  ownerDisplayName?: string;
+  responses: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+}
+
 export interface StreamEvent {
   event: string;
   data: Record<string, any>;

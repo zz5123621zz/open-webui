@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import type { Message, MessagePart } from './types';
   import { attachmentURL } from './api';
+  import { messageText } from './messages';
   import { translate, type Locale } from './i18n';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
@@ -10,11 +11,15 @@
   export let message: Message;
   export let locale: Locale = 'zh-CN';
   export let canRegenerate = false;
+  export let canEdit = false;
   export let streamingStage = '';
   export let streamNow = Date.now();
   export let elapsedSeconds = 0;
   let copied = false;
-  const dispatch = createEventDispatcher<{ regenerate: { message: Message } }>();
+  const dispatch = createEventDispatcher<{
+    regenerate: { message: Message };
+    edit: { message: Message };
+  }>();
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
   $: reasoningCount = message.parts.filter(
@@ -199,10 +204,7 @@
   }
 
   async function copyAnswer() {
-    const value = message.parts
-      .filter((part) => part.type === 'text')
-      .map((part) => part.text || '')
-      .join('\n\n');
+    const value = messageText(message);
     if (!value) return;
     await navigator.clipboard.writeText(value);
     copied = true;
@@ -345,6 +347,19 @@
         {#if responseErrorDescription(message.errorCode)}
           <span>· {responseErrorDescription(message.errorCode)}</span>
         {/if}
+      </div>
+    {/if}
+    {#if message.role === 'user' && canEdit}
+      <div class="message-footer user-footer">
+        <button
+          class="copy-answer"
+          aria-label={t('编辑并重新发送', 'Edit and resend')}
+          title={t('编辑并重新发送', 'Edit and resend')}
+          on:click={() => dispatch('edit', { message })}
+        >
+          <Icon name="edit" size={14} />
+          {t('编辑', 'Edit')}
+        </button>
       </div>
     {/if}
     {#if message.role === 'assistant' &&
