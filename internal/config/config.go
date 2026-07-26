@@ -111,7 +111,7 @@ func (s Speech) Normalized() Speech {
 	}
 	if len(s.Volcengine.Voices) == 0 {
 		s.Volcengine.Voices = []SpeechVoice{{
-			ID: "zh_female_tianmeitaozi_mars_bigtts", Label: "甜美桃子",
+			ID: "zh_female_vv_uranus_bigtts", Label: "Vivi 2.0",
 		}}
 	}
 	return s
@@ -367,7 +367,7 @@ func Load() (Config, error) {
 		"TTS_VOLCENGINE_VOICES",
 		env(
 			"TTS_VOLCENGINE_VOICES",
-			"zh_female_tianmeitaozi_mars_bigtts:甜美桃子",
+			"zh_female_vv_uranus_bigtts:Vivi 2.0",
 		),
 	)
 	if err != nil {

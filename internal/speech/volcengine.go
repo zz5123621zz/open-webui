@@ -462,16 +462,25 @@ func (s *volcengineSession) providerError(scope string, message volcMessage) err
 	if s.logID != "" {
 		logSuffix = "; log ID " + s.logID
 	}
+	var providerErr error
 	if message.ErrorCode != 0 {
-		return fmt.Errorf(
+		providerErr = fmt.Errorf(
 			"Volcengine speech %s failed (%d): %s%s",
 			scope, message.ErrorCode, detail, logSuffix,
 		)
+	} else {
+		providerErr = fmt.Errorf(
+			"Volcengine speech %s failed at event %d: %s%s",
+			scope, message.Event, detail, logSuffix,
+		)
 	}
-	return fmt.Errorf(
-		"Volcengine speech %s failed at event %d: %s%s",
-		scope, message.Event, detail, logSuffix,
-	)
+	if strings.Contains(
+		strings.ToLower(detail),
+		"resource id is mismatched with speaker related resource",
+	) {
+		return fmt.Errorf("%w: %v", ErrProviderVoiceModel, providerErr)
+	}
+	return providerErr
 }
 
 func speedToVolcengineRate(speed float64) int {

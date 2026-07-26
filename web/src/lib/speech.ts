@@ -566,6 +566,8 @@ class SpeechController {
       speech_provider_auth_failed:
         '火山引擎拒绝了当前 API Key，请管理员检查密钥及所属项目。',
       speech_voice_unavailable: '所选音色已经不可用，请在设置中重新选择。',
+      speech_voice_model_mismatch:
+        '当前音色与“豆包语音合成模型 2.0”不兼容，请管理员更换为 TTS 2.0 音色。',
       speech_session_expired: '本次朗读时间过长，语音会话已结束。',
       speech_text_limit: '这条回答过长，已达到单次朗读上限。',
       speech_provider_failed: '火山引擎未能完成本次语音合成，请重试。'

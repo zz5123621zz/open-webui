@@ -138,7 +138,7 @@ The request requires the normal CSRF header:
 {
   "enabled": true,
   "provider": "volcengine",
-  "defaultVoice": "zh_female_tianmeitaozi_mars_bigtts"
+  "defaultVoice": "zh_female_vv_uranus_bigtts"
 }
 ```
 
@@ -162,7 +162,7 @@ With Volcengine selected, a new user receives:
     "autoRead": false,
     "speed": 1,
     "voice": "",
-    "effectiveVoice": "zh_female_tianmeitaozi_mars_bigtts",
+    "effectiveVoice": "zh_female_vv_uranus_bigtts",
     "audioAuthorization": "required_on_each_device"
   }
 }
@@ -178,7 +178,7 @@ An empty `voice` inherits the administrator's current default.
 {
   "mode": "auto",
   "speed": 1.1,
-  "voice": "zh_female_tianmeitaozi_mars_bigtts"
+  "voice": "zh_female_vv_uranus_bigtts"
 }
 ```
 
@@ -210,7 +210,7 @@ then:
 {
   "type": "speech.started",
   "provider": "volcengine",
-  "voice": "zh_female_tianmeitaozi_mars_bigtts",
+  "voice": "zh_female_vv_uranus_bigtts",
   "speed": 1,
   "audio": {
     "format": "pcm",
@@ -280,11 +280,14 @@ project has not enabled Doubao Speech Synthesis 2.0 under **开通管理**.
 
    ```dotenv
    TTS_VOLCENGINE_RESOURCE_ID=seed-tts-2.0
-   TTS_VOLCENGINE_VOICES=zh_female_tianmeitaozi_mars_bigtts:甜美桃子
+   TTS_VOLCENGINE_VOICES=zh_female_vv_uranus_bigtts:Vivi 2.0
    ```
 
    Multiple allowlisted voices use comma-separated `id:label` entries. Every
-   ID must be available to the same Volcengine project.
+   ID must be available to the same Volcengine project and must report
+   `ResourceID=seed-tts-2.0`. Do not infer compatibility from the display name
+   alone: a `mars` voice can be rejected by the V3 bidirectional endpoint with
+   `resource ID is mismatched with speaker related resource`.
 
 5. Recreate only the Go application once to mount the secret:
 
