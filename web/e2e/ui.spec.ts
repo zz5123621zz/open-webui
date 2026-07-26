@@ -934,6 +934,45 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
         ]
       });
     }
+    if (
+      path === '/api/v1/messages/message-assistant-2/regenerate' &&
+      request.method() === 'POST'
+    ) {
+      const now = Date.now();
+      const assistant = {
+        id: 'message-assistant-3',
+        conversationId: conversation.id,
+        role: 'assistant',
+        model: model.id,
+        status: 'streaming',
+        parentMessageId: 'message-user',
+        createdAt: now,
+        parts: []
+      };
+      const final = {
+        ...assistant,
+        status: 'completed',
+        outputTokens: 32,
+        parts: [{ type: 'text', text: '再补充一个替代做法。' }]
+      };
+      conversationMessages = [...conversationMessages, final];
+      const sse = [
+        [
+          'response.started',
+          { requestId: 'regen-1', regenerated: true, assistantMessage: assistant }
+        ],
+        ['response.text.delta', { delta: '再补充一个替代做法。' }],
+        ['response.completed', { message: final }]
+      ]
+        .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        .join('');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: { 'Cache-Control': 'no-cache' },
+        body: sse
+      });
+    }
     if (path === '/api/v1/messages/message-user/edit' && request.method() === 'POST') {
       const body = request.postDataJSON() as { text: string };
       userText = body.text;
@@ -1018,6 +1057,12 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
   await expect(page.getByText('如何烤出高纤维的全麦贝果？')).toBeVisible();
   await expect(page.getByText('换成高筋粉再试一次。')).toBeVisible();
   await expect(page.getByText('先用中种法发酵。')).toBeVisible();
+
+  // Regenerating the newest answer runs through the same shared stream runner.
+  await page.locator('.message.assistant').last().hover();
+  await page.getByRole('button', { name: '重新生成' }).click();
+  await expect(page.getByText('再补充一个替代做法。')).toBeVisible();
+  await expect(page.getByText('换成高筋粉再试一次。')).toBeVisible();
 
   // The usage dialog shows monthly aggregates.
   if (testInfo.project.name === 'mobile') {

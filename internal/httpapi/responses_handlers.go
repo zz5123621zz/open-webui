@@ -310,6 +310,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	case err != nil:
+		s.logger.Warn("begin regeneration rejected", "error", err)
 		respondBeforeStreamStart(
 			queuedStream, w, http.StatusBadRequest, "response_not_regenerable",
 			"This response cannot be regenerated.",

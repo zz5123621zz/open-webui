@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 type ConversationSearchResult struct {
@@ -95,12 +96,17 @@ func (s *Store) searchConversations(
 		seen[conversation.ID] = true
 	}
 
+	// GROUP BY collapses matches to one row per conversation inside SQLite, so
+	// one chatty conversation cannot starve the result window and at most
+	// `limit` message texts cross into Go. The bare text_content column pairs
+	// with MAX(m.created_at): SQLite's min/max aggregate rule makes it come
+	// from that newest matching message.
 	messageQuery := `
 		SELECT ` + conversationColumns
 	if withOwner {
 		messageQuery += `, u.username, u.display_name`
 	}
-	messageQuery += `, p.text_content
+	messageQuery += `, p.text_content, MAX(m.created_at)
 		FROM message_parts p
 		JOIN messages m ON m.id = p.message_id
 		JOIN conversations c ON c.id = m.conversation_id`
@@ -117,8 +123,10 @@ func (s *Store) searchConversations(
 		messageArguments = append(messageArguments, userID)
 	}
 	messageQuery += `
-		ORDER BY c.updated_at DESC, c.id DESC, m.created_at DESC, m.id DESC
-		LIMIT 400`
+		GROUP BY c.id
+		ORDER BY c.updated_at DESC, c.id DESC
+		LIMIT ?`
+	messageArguments = append(messageArguments, limit)
 
 	messageRows, err := s.db.QueryContext(ctx, messageQuery, messageArguments...)
 	if err != nil {
@@ -131,6 +139,7 @@ func (s *Store) searchConversations(
 		}
 		var conversation Conversation
 		var textContent string
+		var newestMatch int64
 		destinations := []any{
 			&conversation.ID, &conversation.UserID, &conversation.Title, &conversation.Model,
 			&conversation.ReasoningEffort, &conversation.CreatedAt, &conversation.UpdatedAt,
@@ -139,7 +148,7 @@ func (s *Store) searchConversations(
 		if withOwner {
 			destinations = append(destinations, &conversation.OwnerUsername, &conversation.OwnerDisplayName)
 		}
-		destinations = append(destinations, &textContent)
+		destinations = append(destinations, &textContent, &newestMatch)
 		if err := messageRows.Scan(destinations...); err != nil {
 			return nil, fmt.Errorf("scan search match: %w", err)
 		}
@@ -166,15 +175,20 @@ func escapeLike(value string) string {
 
 func searchSnippet(text, query string) string {
 	haystack := []rune(text)
-	index := strings.Index(strings.ToLower(text), strings.ToLower(query))
+	loweredText := strings.ToLower(text)
+	loweredQuery := strings.ToLower(query)
+	index := strings.Index(loweredText, loweredQuery)
 	if index < 0 {
 		if len(haystack) <= 2*searchSnippetContextRunes {
 			return strings.Join(strings.Fields(text), " ")
 		}
 		return strings.Join(strings.Fields(string(haystack[:2*searchSnippetContextRunes])), " ") + "…"
 	}
-	matchStart := len([]rune(text[:index]))
-	matchLength := len([]rune(query))
+	// Count runes in the lowered string, where index is guaranteed to sit on a
+	// rune boundary; byte offsets are not transferable to the original text
+	// because lowercasing can change a rune's encoded length.
+	matchStart := utf8.RuneCountInString(loweredText[:index])
+	matchLength := utf8.RuneCountInString(loweredQuery)
 	start := matchStart - searchSnippetContextRunes
 	if start < 0 {
 		start = 0

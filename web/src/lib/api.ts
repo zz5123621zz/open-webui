@@ -259,6 +259,26 @@ export async function deleteAttachment(id: string): Promise<void> {
   await request<void>(`/api/v1/attachments/${id}`, { method: 'DELETE' });
 }
 
+async function postEventStream(
+  path: string,
+  body: Record<string, unknown>,
+  onEvent: (item: StreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'X-CSRF-Token': csrfToken
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+  await consumeEventStream(response, onEvent);
+}
+
 export async function streamResponse(
   conversationId: string,
   text: string,
@@ -268,18 +288,12 @@ export async function streamResponse(
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(`/api/v1/conversations/${conversationId}/responses`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      'X-CSRF-Token': csrfToken
-    },
-    body: JSON.stringify({ text, attachmentIds, requestId, generateImage }),
+  await postEventStream(
+    `/api/v1/conversations/${conversationId}/responses`,
+    { text, attachmentIds, requestId, generateImage },
+    onEvent,
     signal
-  });
-  await consumeEventStream(response, onEvent);
+  );
 }
 
 export async function regenerateResponse(
@@ -288,18 +302,12 @@ export async function regenerateResponse(
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(`/api/v1/messages/${messageId}/regenerate`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      'X-CSRF-Token': csrfToken
-    },
-    body: JSON.stringify({ requestId }),
+  await postEventStream(
+    `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
+    { requestId },
+    onEvent,
     signal
-  });
-  await consumeEventStream(response, onEvent);
+  );
 }
 
 export async function searchConversations(query: string): Promise<ConversationSearchResult[]> {
@@ -321,18 +329,12 @@ export async function editResponse(
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(`/api/v1/messages/${encodeURIComponent(messageId)}/edit`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-      'X-CSRF-Token': csrfToken
-    },
-    body: JSON.stringify({ text, requestId }),
+  await postEventStream(
+    `/api/v1/messages/${encodeURIComponent(messageId)}/edit`,
+    { text, requestId },
+    onEvent,
     signal
-  });
-  await consumeEventStream(response, onEvent);
+  );
 }
 
 export async function cancelResponse(messageId: string): Promise<void> {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,108 @@ func TestBeginEditValidatesAndRewritesLatestUserMessage(t *testing.T) {
 		ctx, user.ID, secondUser.ID, "edit-request-7", "again", "gpt-test", "auto", "",
 	); !errors.Is(err, ErrDuplicateRequest) {
 		t.Fatalf("duplicate edit error = %v, want ErrDuplicateRequest", err)
+	}
+}
+
+func TestBeginEditAddsTextToImageOnlyMessage(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "edit-image-user", "Edit Image User", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := dataStore.CreateConversation(ctx, user.ID, "Image chat", "gpt-test", "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"edit-image-1", "edit-image-2"} {
+		if _, err := dataStore.CreateAttachment(ctx, Attachment{
+			ID: id, UserID: user.ID, ConversationID: conversation.ID,
+			Kind: "upload", MediaType: "image/png", ByteSize: 10,
+			SHA256: "hash-" + id, StoragePath: "uploads/" + id + ".png",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	userMessage, assistant, err := dataStore.BeginResponse(
+		ctx, user.ID, conversation.ID, "edit-image-request-1", "",
+		"gpt-test", "auto", "", []string{"edit-image-1", "edit-image-2"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeTestAssistant(t, dataStore, user.ID, assistant.ID, "image answer", 4, 6)
+
+	// Regression: adding text to a message that has 2+ image parts must not
+	// trip UNIQUE(message_id, sequence).
+	_, history, err := dataStore.BeginEdit(
+		ctx, user.ID, userMessage.ID, "edit-image-request-2",
+		"what is in these images?", "gpt-test", "auto", "",
+	)
+	if err != nil {
+		t.Fatalf("BeginEdit() on image-only message error = %v", err)
+	}
+	edited := history[len(history)-1]
+	if len(edited.Parts) != 3 {
+		t.Fatalf("edited parts = %#v", edited.Parts)
+	}
+	if edited.Parts[0].Type != "text" || edited.Parts[0].TextContent != "what is in these images?" {
+		t.Fatalf("edited first part = %#v", edited.Parts[0])
+	}
+	if edited.Parts[1].Type != "image" || edited.Parts[2].Type != "image" {
+		t.Fatalf("edited image parts = %#v", edited.Parts[1:])
+	}
+}
+
+func TestSearchIsNotStarvedByOneChattyConversation(t *testing.T) {
+	ctx := context.Background()
+	dataStore := openTestStore(t)
+	user, err := dataStore.CreateUser(ctx, "starve-user", "Starve User", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	older, err := dataStore.CreateConversation(ctx, user.ID, "Older chat", "gpt-test", "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, olderAssistant, err := dataStore.BeginResponse(
+		ctx, user.ID, older.ID, "starve-old", "keyword in the old chat", "gpt-test", "auto", "", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completeTestAssistant(t, dataStore, user.ID, olderAssistant.ID, "old answer", 1, 1)
+
+	chatty, err := dataStore.CreateConversation(ctx, user.ID, "Chatty chat", "gpt-test", "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 6; round++ {
+		_, assistant, err := dataStore.BeginResponse(
+			ctx, user.ID, chatty.ID, fmt.Sprintf("starve-%d", round),
+			fmt.Sprintf("keyword repeated %d", round), "gpt-test", "auto", "", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completeTestAssistant(
+			t, dataStore, user.ID, assistant.ID,
+			fmt.Sprintf("keyword answered %d", round), 1, 1,
+		)
+	}
+
+	// A tiny limit forces the dedup to happen inside SQL: the chatty
+	// conversation must collapse to one row instead of consuming the window.
+	results, err := dataStore.SearchConversations(ctx, user.ID, "keyword", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("starvation results = %#v", results)
+	}
+	ids := []string{results[0].Conversation.ID, results[1].Conversation.ID}
+	if ids[0] != chatty.ID || ids[1] != older.ID {
+		t.Fatalf("starvation order = %v (chatty=%s older=%s)", ids, chatty.ID, older.ID)
 	}
 }
 

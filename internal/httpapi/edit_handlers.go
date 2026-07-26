@@ -82,17 +82,12 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 	// An edited turn keeps its original mode: if the previous answer to this
 	// message was an explicit image generation, the resend generates an image.
 	generateImage := false
-	priorMessages, err := s.store.ListMessages(r.Context(), session.User.ID, conversation.ID)
-	if err != nil {
-		s.internalError(w, "load edit history", err)
+	previousAnswer, err := s.store.LatestAssistantChild(r.Context(), session.User.ID, original.ID)
+	if err == nil {
+		generateImage = messageRequestedImageGeneration(previousAnswer)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.internalError(w, "load previous answer for edit", err)
 		return
-	}
-	for index := len(priorMessages) - 1; index >= 0; index-- {
-		message := priorMessages[index]
-		if message.Role == "assistant" && message.ParentMessageID == original.ID {
-			generateImage = messageRequestedImageGeneration(message)
-			break
-		}
 	}
 	if generateImage {
 		if !s.cfg.Tools.ImageGenerationEnabled || model.ImageGenerationMode == "" {
@@ -150,6 +145,9 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	case err != nil:
+		// Covers user-caused rejections and unexpected store failures alike;
+		// the log line keeps infrastructure faults diagnosable.
+		s.logger.Warn("begin edit rejected", "error", err)
 		respondBeforeStreamStart(
 			queuedStream, w, http.StatusBadRequest, "message_not_editable",
 			"This message cannot be edited right now.",

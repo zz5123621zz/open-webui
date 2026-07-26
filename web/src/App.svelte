@@ -53,6 +53,7 @@
     MessagePart,
     Model,
     StorageStatus,
+    StreamEvent,
     UsageRow,
     User
   } from './lib/types';
@@ -950,9 +951,15 @@
     editingMessageId = '';
     localStorage.removeItem('personal-chat-conversation');
     if (text.trim()) {
-      // Keep the typed text in the fresh chat and re-home its draft there.
+      // Move (not copy) the typed text into the fresh chat: the old key must
+      // be dropped, or the text resurrects in the old chat after being sent
+      // here.
+      const previousKey = draftStorageKey;
       draftStorageKey = draftKeyFor('');
       persistDraft();
+      if (previousKey && previousKey !== draftStorageKey) {
+        localStorage.removeItem(previousKey);
+      }
     } else {
       restoreDraft('');
     }
@@ -1144,7 +1151,14 @@
 
   async function addFiles(files: File[]) {
     if (!files.length) return;
-    if (activeConversationReadOnly || generating || uploading) return;
+    if (activeConversationReadOnly) return;
+    if (generating || uploading) {
+      workspaceError = t(
+        '请等待当前操作完成后再添加图片。',
+        'Wait for the current operation to finish before adding images.'
+      );
+      return;
+    }
     if (generateImage) {
       workspaceError = localizedAPIError(
         'image_generation_attachments_unsupported',
@@ -1439,249 +1453,80 @@
     })();
   }
 
-  async function send() {
-    const outgoingText = text.trim();
-    const outgoingUploads = [...uploads];
-    const outgoingGenerateImage = generateImage;
-    if (
-      generating ||
-      uploading ||
-      activeConversationReadOnly ||
-      (!outgoingText && outgoingUploads.length === 0)
-    ) return;
-
-    speechController.stop();
-    let conversation = activeConversation;
-    if (!conversation) conversation = await newConversation();
-    if (!conversation) return;
-
-    const watchVersion = ++responseWatchVersion;
-    const requestId = crypto.randomUUID();
-    generating = true;
-    activeResponseCancelId = requestId;
-    beginGenerationClock('sending');
-    followStream = true;
-    showJumpToLatest = false;
-    workspaceError = '';
-    contextStatus = '';
-    text = '';
-    persistDraft();
-    uploads = [];
-    generateImage = false;
-    await tick();
-    resizeComposer();
+  // Shared SSE consumer for send/regenerate/edit: one dispatcher, one
+  // recovery path, one teardown. Flow-specific behavior is limited to how
+  // response.started mutates the transcript and what happens when the
+  // request fails before any server-side response exists.
+  async function runAssistantStream(options: {
+    conversationId: string;
+    watchVersion: number;
+    start: (
+      onEvent: (item: StreamEvent) => void,
+      signal: AbortSignal
+    ) => Promise<void>;
+    onStarted: (data: StreamEvent['data']) => Message;
+    onRequestFailed?: () => void;
+  }): Promise<void> {
+    const { conversationId, watchVersion } = options;
     abortController = new AbortController();
-
     let assistantId = '';
     try {
-      await streamResponse(
-        conversation.id,
-        outgoingText,
-        outgoingUploads.map((attachment) => attachment.id),
-        requestId,
-        outgoingGenerateImage,
-        (item) => {
-          if (item.event === 'response.queued') {
-            setGenerationStage('queued');
-            contextStatus = t(
-              `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
-              `Request queued (position ${Number(item.data.position || 1)})`
-            );
-          } else if (item.event === 'response.started') {
-            setGenerationStage('preparing_context');
-            contextStatus = '';
-            const userMessage = item.data.userMessage as Message | undefined;
-            const assistantMessage = item.data.assistantMessage as Message;
-            assistantId = assistantMessage.id;
-            activeAssistantId = assistantMessage.id;
-            activeResponseCancelId = assistantMessage.id;
-            messages = userMessage
-              ? [...messages, userMessage, assistantMessage]
-              : [...messages, assistantMessage];
-            if (conversation?.title === 'New chat' && outgoingText) {
-              const title = titleFrom(outgoingText);
-              void updateConversation(conversation.id, { title }).then(replaceConversation);
-            }
-          } else if (item.event === 'response.stage') {
-            setGenerationStage(String(item.data.stage || ''));
-          } else if (item.event === 'response.reasoning.delta') {
-            setGenerationStage('reasoning');
-            updateReasoningPart(assistantId, item.data, false);
-          } else if (item.event === 'response.reasoning.done') {
-            updateReasoningPart(assistantId, item.data, true);
-            setGenerationStage('waiting_for_model');
-          } else if (item.event === 'response.text.delta') {
-            setGenerationStage('answering');
-            finishLiveReasoning(assistantId);
-            appendTextPart(assistantId, String(item.data.delta || ''));
-          } else if (item.event === 'response.tool') {
-            finishLiveReasoning(assistantId);
-            if (item.data.status === 'in_progress') {
-              setGenerationStage(
-                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
-              );
-            } else {
-              setGenerationStage('waiting_for_model');
-            }
-            updateToolPart(assistantId, item.data);
-          } else if (item.event === 'response.image' && item.data.attachmentId) {
-            appendImagePart(assistantId, String(item.data.attachmentId));
-          } else if (item.event === 'response.context') {
+      await options.start((item) => {
+        if (item.event === 'response.queued') {
+          setGenerationStage('queued');
+          contextStatus = t(
+            `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
+            `Request queued (position ${Number(item.data.position || 1)})`
+          );
+        } else if (item.event === 'response.started') {
+          setGenerationStage('preparing_context');
+          contextStatus = '';
+          const assistantMessage = options.onStarted(item.data);
+          assistantId = assistantMessage.id;
+          activeAssistantId = assistantMessage.id;
+          activeResponseCancelId = assistantMessage.id;
+        } else if (item.event === 'response.stage') {
+          setGenerationStage(String(item.data.stage || ''));
+        } else if (item.event === 'response.reasoning.delta') {
+          setGenerationStage('reasoning');
+          updateReasoningPart(assistantId, item.data, false);
+        } else if (item.event === 'response.reasoning.done') {
+          updateReasoningPart(assistantId, item.data, true);
+          setGenerationStage('waiting_for_model');
+        } else if (item.event === 'response.text.delta') {
+          setGenerationStage('answering');
+          finishLiveReasoning(assistantId);
+          appendTextPart(assistantId, String(item.data.delta || ''));
+        } else if (item.event === 'response.tool') {
+          finishLiveReasoning(assistantId);
+          if (item.data.status === 'in_progress') {
             setGenerationStage(
-              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
+              item.data.type === 'image_generation' ? 'generating_image' : 'searching'
             );
-            contextStatus = contextLabel(String(item.data.status || ''));
-            if (item.data.status === 'completed') void refreshCheckpoints(conversation.id);
-          } else if (item.event === 'response.completed') {
-            replaceMessage(item.data.message as Message);
-            contextStatus = '';
-          } else if (item.event === 'response.error') {
-            if (item.data.messageRecord) replaceMessage(item.data.messageRecord as Message);
-            workspaceError = localizedAPIError(
-              String(item.data.code || ''),
-              String(item.data.message || t('回答生成失败。', 'Response generation failed.'))
-            );
+          } else {
+            setGenerationStage('waiting_for_model');
           }
-          queueScroll();
-        },
-        abortController.signal
-      );
-    } catch (error) {
-      const message = errorMessage(error);
-      if (!assistantId) {
-        const recovered = await recoverRunningResponse(conversation.id);
-        if (recovered) {
-          assistantId = recovered.id;
-          activeAssistantId = recovered.id;
-          activeResponseCancelId = recovered.id;
-        }
-      }
-      if (assistantId) {
-        setGenerationStage('background');
-        contextStatus = '';
-        workspaceError = '';
-        const restored = await watchPersistedResponse(
-          conversation.id, assistantId, watchVersion
-        );
-        if (restored?.status === 'completed') {
-          workspaceError = '';
-        } else if (
-          watchVersion === responseWatchVersion &&
-          restored &&
-          !isRunningResponse(restored)
-        ) {
+          updateToolPart(assistantId, item.data);
+        } else if (item.event === 'response.image' && item.data.attachmentId) {
+          appendImagePart(assistantId, String(item.data.attachmentId));
+        } else if (item.event === 'response.context') {
+          setGenerationStage(
+            item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
+          );
+          contextStatus = contextLabel(String(item.data.status || ''));
+          if (item.data.status === 'completed') void refreshCheckpoints(conversationId);
+        } else if (item.event === 'response.completed') {
+          replaceMessage(item.data.message as Message);
+          contextStatus = '';
+        } else if (item.event === 'response.error') {
+          if (item.data.messageRecord) replaceMessage(item.data.messageRecord as Message);
           workspaceError = localizedAPIError(
-            restored.errorCode || '',
-            message || t('回答生成未完成。', 'The response did not complete.')
+            String(item.data.code || ''),
+            String(item.data.message || t('回答生成失败。', 'Response generation failed.'))
           );
         }
-      } else {
-        if (message) workspaceError = message;
-        if (error instanceof APIError && error.status >= 400) {
-          text = outgoingText;
-          persistDraft();
-          uploads = outgoingUploads;
-          generateImage = outgoingGenerateImage;
-        }
-      }
-    } finally {
-      if (watchVersion === responseWatchVersion) {
-        generating = false;
-        stopGenerationClock();
-        abortController = null;
-        activeAssistantId = '';
-        activeResponseCancelId = '';
-        contextStatus = '';
-        await refreshCheckpoints(conversation.id);
-        try {
-          const latest = await getConversations(showArchived);
-          conversations = latest;
-        } catch {
-          // The current conversation remains usable if refreshing the sidebar fails.
-        }
-        await refreshStorage();
         queueScroll();
-      }
-    }
-  }
-
-  async function regenerate(message: Message) {
-    if (generating || !activeConversation || activeConversationReadOnly) return;
-    const conversationId = activeConversation.id;
-    const watchVersion = ++responseWatchVersion;
-    const requestId = crypto.randomUUID();
-    generating = true;
-    activeResponseCancelId = requestId;
-    beginGenerationClock('sending');
-    followStream = true;
-    showJumpToLatest = false;
-    workspaceError = '';
-    contextStatus = '';
-    abortController = new AbortController();
-    let assistantId = '';
-    try {
-      await regenerateResponse(
-        message.id,
-        requestId,
-        (item) => {
-          if (item.event === 'response.queued') {
-            setGenerationStage('queued');
-            contextStatus = t(
-              `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
-              `Request queued (position ${Number(item.data.position || 1)})`
-            );
-          } else if (item.event === 'response.started') {
-            setGenerationStage('preparing_context');
-            contextStatus = '';
-            const assistantMessage = item.data.assistantMessage as Message;
-            assistantId = assistantMessage.id;
-            activeAssistantId = assistantMessage.id;
-            activeResponseCancelId = assistantMessage.id;
-            messages = [...messages, assistantMessage];
-          } else if (item.event === 'response.stage') {
-            setGenerationStage(String(item.data.stage || ''));
-          } else if (item.event === 'response.reasoning.delta') {
-            setGenerationStage('reasoning');
-            updateReasoningPart(assistantId, item.data, false);
-          } else if (item.event === 'response.reasoning.done') {
-            updateReasoningPart(assistantId, item.data, true);
-            setGenerationStage('waiting_for_model');
-          } else if (item.event === 'response.text.delta') {
-            setGenerationStage('answering');
-            finishLiveReasoning(assistantId);
-            appendTextPart(assistantId, String(item.data.delta || ''));
-          } else if (item.event === 'response.tool') {
-            finishLiveReasoning(assistantId);
-            if (item.data.status === 'in_progress') {
-              setGenerationStage(
-                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
-              );
-            } else {
-              setGenerationStage('waiting_for_model');
-            }
-            updateToolPart(assistantId, item.data);
-          } else if (item.event === 'response.image' && item.data.attachmentId) {
-            appendImagePart(assistantId, String(item.data.attachmentId));
-          } else if (item.event === 'response.context') {
-            setGenerationStage(
-              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
-            );
-            contextStatus = contextLabel(String(item.data.status || ''));
-            if (item.data.status === 'completed') void refreshCheckpoints(activeConversation.id);
-          } else if (item.event === 'response.completed') {
-            replaceMessage(item.data.message as Message);
-            contextStatus = '';
-          } else if (item.event === 'response.error') {
-            if (item.data.messageRecord) replaceMessage(item.data.messageRecord as Message);
-            workspaceError = localizedAPIError(
-              String(item.data.code || ''),
-              String(item.data.message || t('回答生成失败。', 'Response generation failed.'))
-            );
-          }
-          queueScroll();
-        },
-        abortController.signal
-      );
+      }, abortController.signal);
     } catch (error) {
       const value = errorMessage(error);
       if (!assistantId) {
@@ -1711,8 +1556,9 @@
             value || t('回答生成未完成。', 'The response did not complete.')
           );
         }
-      } else if (value) {
-        workspaceError = value;
+      } else {
+        if (value) workspaceError = value;
+        options.onRequestFailed?.();
       }
     } finally {
       if (watchVersion === responseWatchVersion) {
@@ -1723,10 +1569,111 @@
         activeResponseCancelId = '';
         contextStatus = '';
         await refreshCheckpoints(conversationId);
+        try {
+          conversations = await getConversations(showArchived);
+        } catch {
+          // The current conversation remains usable if refreshing the sidebar fails.
+        }
         await refreshStorage();
         queueScroll();
       }
     }
+  }
+
+  async function send() {
+    const outgoingText = text.trim();
+    const outgoingUploads = [...uploads];
+    const outgoingGenerateImage = generateImage;
+    if (
+      generating ||
+      uploading ||
+      activeConversationReadOnly ||
+      (!outgoingText && outgoingUploads.length === 0)
+    ) return;
+
+    speechController.stop();
+    let conversation = activeConversation;
+    if (!conversation) conversation = await newConversation();
+    if (!conversation) return;
+
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
+    generating = true;
+    activeResponseCancelId = requestId;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
+    workspaceError = '';
+    contextStatus = '';
+    text = '';
+    // The persisted draft is intentionally kept until the server acknowledges
+    // the message in response.started, so a failed send cannot lose it.
+    uploads = [];
+    generateImage = false;
+    await tick();
+    resizeComposer();
+
+    await runAssistantStream({
+      conversationId: conversation.id,
+      watchVersion,
+      start: (onEvent, signal) =>
+        streamResponse(
+          conversation.id,
+          outgoingText,
+          outgoingUploads.map((attachment) => attachment.id),
+          requestId,
+          outgoingGenerateImage,
+          onEvent,
+          signal
+        ),
+      onStarted: (data) => {
+        // The server now owns the message; only then may the draft go away.
+        persistDraft();
+        const userMessage = data.userMessage as Message | undefined;
+        const assistantMessage = data.assistantMessage as Message;
+        messages = userMessage
+          ? [...messages, userMessage, assistantMessage]
+          : [...messages, assistantMessage];
+        if (conversation.title === 'New chat' && outgoingText) {
+          const title = titleFrom(outgoingText);
+          void updateConversation(conversation.id, { title }).then(replaceConversation);
+        }
+        return assistantMessage;
+      },
+      onRequestFailed: () => {
+        // No server-side response exists; restore the composer no matter how
+        // the request failed so nothing typed is lost.
+        text = outgoingText;
+        persistDraft();
+        uploads = outgoingUploads;
+        generateImage = outgoingGenerateImage;
+      }
+    });
+  }
+
+  async function regenerate(message: Message) {
+    if (generating || !activeConversation || activeConversationReadOnly) return;
+    const conversationId = activeConversation.id;
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
+    generating = true;
+    activeResponseCancelId = requestId;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
+    workspaceError = '';
+    contextStatus = '';
+
+    await runAssistantStream({
+      conversationId,
+      watchVersion,
+      start: (onEvent, signal) => regenerateResponse(message.id, requestId, onEvent, signal),
+      onStarted: (data) => {
+        const assistantMessage = data.assistantMessage as Message;
+        messages = [...messages, assistantMessage];
+        return assistantMessage;
+      }
+    });
   }
 
   function titleFrom(value: string): string {
@@ -1785,119 +1732,25 @@
     showJumpToLatest = false;
     workspaceError = '';
     contextStatus = '';
-    abortController = new AbortController();
-    let assistantId = '';
-    try {
-      await editResponse(
-        message.id,
-        newText,
-        requestId,
-        (item) => {
-          if (item.event === 'response.queued') {
-            setGenerationStage('queued');
-            contextStatus = t(
-              `请求排队中（第 ${Number(item.data.position || 1)} 位）`,
-              `Request queued (position ${Number(item.data.position || 1)})`
-            );
-          } else if (item.event === 'response.started') {
-            setGenerationStage('preparing_context');
-            contextStatus = '';
-            const userMessage = item.data.userMessage as Message | undefined;
-            if (userMessage) replaceMessage(userMessage);
-            const assistantMessage = item.data.assistantMessage as Message;
-            assistantId = assistantMessage.id;
-            activeAssistantId = assistantMessage.id;
-            activeResponseCancelId = assistantMessage.id;
-            messages = [...messages, assistantMessage];
-          } else if (item.event === 'response.stage') {
-            setGenerationStage(String(item.data.stage || ''));
-          } else if (item.event === 'response.reasoning.delta') {
-            setGenerationStage('reasoning');
-            updateReasoningPart(assistantId, item.data, false);
-          } else if (item.event === 'response.reasoning.done') {
-            updateReasoningPart(assistantId, item.data, true);
-            setGenerationStage('waiting_for_model');
-          } else if (item.event === 'response.text.delta') {
-            setGenerationStage('answering');
-            finishLiveReasoning(assistantId);
-            appendTextPart(assistantId, String(item.data.delta || ''));
-          } else if (item.event === 'response.tool') {
-            finishLiveReasoning(assistantId);
-            if (item.data.status === 'in_progress') {
-              setGenerationStage(
-                item.data.type === 'image_generation' ? 'generating_image' : 'searching'
-              );
-            } else {
-              setGenerationStage('waiting_for_model');
-            }
-            updateToolPart(assistantId, item.data);
-          } else if (item.event === 'response.image' && item.data.attachmentId) {
-            appendImagePart(assistantId, String(item.data.attachmentId));
-          } else if (item.event === 'response.context') {
-            setGenerationStage(
-              item.data.status === 'completed' ? 'waiting_for_model' : 'preparing_context'
-            );
-            contextStatus = contextLabel(String(item.data.status || ''));
-            if (item.data.status === 'completed') void refreshCheckpoints(conversationId);
-          } else if (item.event === 'response.completed') {
-            replaceMessage(item.data.message as Message);
-            contextStatus = '';
-          } else if (item.event === 'response.error') {
-            if (item.data.messageRecord) replaceMessage(item.data.messageRecord as Message);
-            workspaceError = localizedAPIError(
-              String(item.data.code || ''),
-              String(item.data.message || t('回答生成失败。', 'Response generation failed.'))
-            );
-          }
-          queueScroll();
-        },
-        abortController.signal
-      );
-    } catch (error) {
-      const value = errorMessage(error);
-      if (!assistantId) {
-        const recovered = await recoverRunningResponse(conversationId);
-        if (recovered) {
-          assistantId = recovered.id;
-          activeAssistantId = recovered.id;
-          activeResponseCancelId = recovered.id;
-        }
+
+    await runAssistantStream({
+      conversationId,
+      watchVersion,
+      start: (onEvent, signal) => editResponse(message.id, newText, requestId, onEvent, signal),
+      onStarted: (data) => {
+        const userMessage = data.userMessage as Message | undefined;
+        if (userMessage) replaceMessage(userMessage);
+        const assistantMessage = data.assistantMessage as Message;
+        messages = [...messages, assistantMessage];
+        return assistantMessage;
+      },
+      onRequestFailed: () => {
+        // The edit never reached a server-side response; reopen the editor so
+        // the rewritten text is not lost.
+        editingMessageId = message.id;
+        editingMessageText = newText;
       }
-      if (assistantId) {
-        setGenerationStage('background');
-        contextStatus = '';
-        workspaceError = '';
-        const restored = await watchPersistedResponse(
-          conversationId, assistantId, watchVersion
-        );
-        if (restored?.status === 'completed') {
-          workspaceError = '';
-        } else if (
-          watchVersion === responseWatchVersion &&
-          restored &&
-          !isRunningResponse(restored)
-        ) {
-          workspaceError = localizedAPIError(
-            restored.errorCode || '',
-            value || t('回答生成未完成。', 'The response did not complete.')
-          );
-        }
-      } else if (value) {
-        workspaceError = value;
-      }
-    } finally {
-      if (watchVersion === responseWatchVersion) {
-        generating = false;
-        stopGenerationClock();
-        abortController = null;
-        activeAssistantId = '';
-        activeResponseCancelId = '';
-        contextStatus = '';
-        await refreshCheckpoints(conversationId);
-        await refreshStorage();
-        queueScroll();
-      }
-    }
+    });
   }
 
   function appendTextPart(messageId: string, delta: string) {
@@ -2284,6 +2137,9 @@
 
   function queueSearch() {
     window.clearTimeout(searchTimer);
+    // Invalidate any in-flight request immediately, otherwise its completion
+    // would clear the searching indicator while this newer query is pending.
+    searchVersion += 1;
     const query = searchQuery.trim();
     if (!query) {
       searchResults = [];
@@ -2292,14 +2148,14 @@
       return;
     }
     searching = true;
-    searchTimer = window.setTimeout(() => void runSearch(query), 250);
+    const version = searchVersion;
+    searchTimer = window.setTimeout(() => void runSearch(query, version), 250);
   }
 
-  async function runSearch(query: string) {
-    const version = ++searchVersion;
+  async function runSearch(query: string, version: number) {
     try {
       const results = await searchConversations(query);
-      if (version !== searchVersion || searchQuery.trim() !== query) return;
+      if (version !== searchVersion) return;
       searchResults = results;
       searchError = '';
     } catch (error) {
@@ -2331,6 +2187,12 @@
       } catch {
         // The chat can still open; the sidebar refreshes on the next load.
       }
+    }
+    if (!conversations.some((conversation) => conversation.id === id)) {
+      // Search hits the server live while the sidebar list is a snapshot; the
+      // conversation must be present for ownership checks (read-only view of
+      // other users' chats) to resolve against it.
+      conversations = [result.conversation, ...conversations];
     }
     await openConversation(id);
   }
@@ -2792,7 +2654,7 @@
       on:dragleave={chatDragLeave}
       on:drop={chatDrop}
     >
-      {#if dragActive && !activeConversationReadOnly}
+      {#if dragActive && !activeConversationReadOnly && !generating && !uploading}
         <div class="drop-overlay" aria-hidden="true">
           <div class="drop-overlay-card">
             <Icon name="image-plus" size={22} />

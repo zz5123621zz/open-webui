@@ -375,19 +375,21 @@ func (s *Store) BeginEdit(
 			return Message{}, nil, fmt.Errorf("remove edited text: %w", err)
 		}
 	case newText != "":
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE message_parts SET sequence = sequence + 1 WHERE message_id = ?
-		`, userMessageID); err != nil {
-			return Message{}, nil, fmt.Errorf("shift edited parts: %w", err)
-		}
 		partID, idErr := ids.New()
 		if idErr != nil {
 			return Message{}, nil, idErr
 		}
+		// Insert below the smallest existing sequence instead of shifting the
+		// other parts up: a bulk +1 shift trips UNIQUE(message_id, sequence)
+		// as soon as the message has two parts.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO message_parts(id, message_id, sequence, type, text_content, created_at)
-			VALUES(?, ?, 0, 'text', ?, ?)
-		`, partID, userMessageID, newText, time.Now().UnixMilli()); err != nil {
+			VALUES(
+				?, ?,
+				(SELECT COALESCE(MIN(sequence), 1) - 1 FROM message_parts WHERE message_id = ?),
+				'text', ?, ?
+			)
+		`, partID, userMessageID, userMessageID, newText, time.Now().UnixMilli()); err != nil {
 			return Message{}, nil, fmt.Errorf("insert edited text: %w", err)
 		}
 	}
@@ -674,6 +676,24 @@ func (s *Store) MessageByID(ctx context.Context, userID, messageID string) (Mess
 	}
 	message.ProviderItems = items
 	return message, nil
+}
+
+// LatestAssistantChild returns the most recent assistant response whose
+// parent is the given message.
+func (s *Store) LatestAssistantChild(ctx context.Context, userID, parentMessageID string) (Message, error) {
+	var childID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM messages
+		WHERE parent_message_id = ? AND user_id = ? AND role = 'assistant'
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, parentMessageID, userID).Scan(&childID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	if err != nil {
+		return Message{}, err
+	}
+	return s.MessageByID(ctx, userID, childID)
 }
 
 type scanner interface {

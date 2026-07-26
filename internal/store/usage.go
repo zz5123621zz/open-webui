@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 type UsageRow struct {
@@ -50,9 +51,12 @@ func (s *Store) usageByMonth(ctx context.Context, userID string, months int) ([]
 		query += `
 		JOIN users u ON u.id = m.user_id`
 	}
+	now := time.Now().UTC()
+	windowStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).
+		AddDate(0, -(months - 1), 0).UnixMilli()
 	query += `
-		WHERE m.role = 'assistant' AND m.completed_at IS NOT NULL`
-	arguments := []any{}
+		WHERE m.role = 'assistant' AND m.completed_at IS NOT NULL AND m.created_at >= ?`
+	arguments := []any{windowStart}
 	if !withOwner {
 		query += ` AND m.user_id = ?`
 		arguments = append(arguments, userID)
@@ -71,7 +75,6 @@ func (s *Store) usageByMonth(ctx context.Context, userID string, months int) ([]
 	defer rows.Close()
 
 	result := make([]UsageRow, 0)
-	monthsSeen := make(map[string]bool)
 	for rows.Next() {
 		var row UsageRow
 		destinations := []any{&row.Month, &row.Model}
@@ -84,10 +87,6 @@ func (s *Store) usageByMonth(ctx context.Context, userID string, months int) ([]
 		if err := rows.Scan(destinations...); err != nil {
 			return nil, fmt.Errorf("scan usage row: %w", err)
 		}
-		if !monthsSeen[row.Month] && len(monthsSeen) >= months {
-			break
-		}
-		monthsSeen[row.Month] = true
 		result = append(result, row)
 	}
 	if err := rows.Err(); err != nil {
