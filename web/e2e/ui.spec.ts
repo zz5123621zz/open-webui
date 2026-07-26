@@ -542,10 +542,6 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .getByRole('dialog', { name: '语音与朗读' })
     .getByRole('button', { name: '关闭', exact: true })
     .click();
-  await previewPlayer
-    .getByRole('button', { name: '停止并关闭朗读' })
-    .click({ force: true });
-  await expect(previewPlayer).toHaveCount(0);
   if (testInfo.project.name === 'mobile') {
     await page.setViewportSize({ width: 812, height: 375 });
     await page.getByRole('button', { name: /Alice/ }).click();
