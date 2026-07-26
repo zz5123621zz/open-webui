@@ -41,6 +41,41 @@ func TestLoadDevelopmentConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultVolcengineVoicesAreUnique(t *testing.T) {
+	voices := (Speech{}).Normalized().Volcengine.Voices
+	parsed, err := parseSpeechVoices(
+		"TTS_VOLCENGINE_VOICES",
+		defaultVolcengineVoiceList,
+	)
+	if err != nil {
+		t.Fatalf("parse default Volcengine voices: %v", err)
+	}
+	if len(voices) != 19 {
+		t.Fatalf("default Volcengine voices = %d, want 19", len(voices))
+	}
+	if len(parsed) != len(voices) {
+		t.Fatalf("parsed default voices = %d, want %d", len(parsed), len(voices))
+	}
+	seen := make(map[string]bool, len(voices))
+	for index, voice := range voices {
+		if voice.ID == "" || voice.Label == "" {
+			t.Fatalf("incomplete default voice = %#v", voice)
+		}
+		if parsed[index] != voice {
+			t.Fatalf("parsed default voice %d = %#v, want %#v", index, parsed[index], voice)
+		}
+		if seen[voice.ID] {
+			t.Fatalf("duplicate default voice ID = %q", voice.ID)
+		}
+		seen[voice.ID] = true
+	}
+	if !seen["zh_female_vv_uranus_bigtts"] ||
+		!seen["saturn_zh_male_tiancaitongzhuo_tob"] ||
+		!seen["en_female_stokie_uranus_bigtts"] {
+		t.Fatalf("default Volcengine voice IDs = %#v", seen)
+	}
+}
+
 func TestLoadParsesProgressiveSummaryHardDisable(t *testing.T) {
 	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
 	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")

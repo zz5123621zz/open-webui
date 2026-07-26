@@ -30,6 +30,7 @@
   }
   $: selectedVoice =
     voice || $speechPreference?.effectiveVoice || $speechPreference?.voices[0]?.id || '';
+  $: selectedVoiceEnglish = selectedVoice.startsWith('en_');
   $: previewActive = $speechPlayerState.messageId === previewMessageId;
   $: previewPlaying =
     previewActive &&
@@ -117,10 +118,9 @@
         parts: [
           {
             type: 'text',
-            text: t(
-              '你好，我是 La4RainGPT。这是当前音色的试听效果。',
-              'Hello, this is La4RainGPT. This is a preview of the selected voice.'
-            )
+            text: selectedVoiceEnglish
+              ? 'Hello, this is La4RainGPT. This is a preview of the selected voice.'
+              : '你好，我是 La4RainGPT。这是当前音色的试听效果。'
           }
         ]
       };
@@ -194,7 +194,11 @@
     <label class="speech-setting-field">
       <span>
         <strong>{t('默认音色', 'Default voice')}</strong>
-        <small>{t('应用于下一次朗读', 'Used for the next read-aloud session')}</small>
+        <small>
+          {selectedVoiceEnglish
+            ? t('英文音色仅建议朗读英文内容', 'English voice; use it for English content')
+            : t('应用于下一次朗读', 'Used for the next read-aloud session')}
+        </small>
       </span>
       <select value={selectedVoice} disabled={pending} on:change={changeVoice}>
         {#each $speechPreference.voices as item}

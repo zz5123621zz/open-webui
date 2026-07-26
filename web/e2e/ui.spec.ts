@@ -57,21 +57,27 @@ async function mockAPI(page: Page) {
   let speechMode: 'manual' | 'auto' = 'manual';
   let speechSpeed = 1;
   let speechVoice = '';
+  const speechTexts: string[] = [];
+  const speechVoices = [
+    { id: 'zh_female_vv_uranus_bigtts', label: 'Vivi 2.0（女声·中英）' },
+    { id: 'en_male_tim_uranus_bigtts', label: 'Tim（男声·英文）' }
+  ];
   await page.routeWebSocket('**/api/v1/speech/sessions', (socket) => {
     setTimeout(() => {
       socket.send(JSON.stringify({ type: 'speech.connecting', provider: 'volcengine' }));
       socket.send(JSON.stringify({
         type: 'speech.started',
         provider: 'volcengine',
-        voice: 'zh_female_tianmeitaozi_mars_bigtts',
+        voice: speechVoice || speechVoices[0].id,
         speed: speechSpeed,
         audio: { format: 'pcm', sampleRate: 24000, channels: 1, bitDepth: 16 }
       }));
     }, 10);
     socket.onMessage((raw) => {
       if (typeof raw !== 'string') return;
-      const message = JSON.parse(raw) as { type: string };
+      const message = JSON.parse(raw) as { type: string; text?: string };
       if (message.type === 'speech.text') {
+        speechTexts.push(message.text || '');
         socket.send(Buffer.alloc(24000 * 2 * 3));
       }
       if (message.type === 'speech.finish') {
@@ -117,17 +123,12 @@ async function mockAPI(page: Page) {
           autoRead: speechMode === 'auto',
           speed: speechSpeed,
           voice: speechVoice,
-          effectiveVoice: speechVoice || 'zh_female_tianmeitaozi_mars_bigtts',
+          effectiveVoice: speechVoice || speechVoices[0].id,
           updatedAt: Date.now(),
           serviceEnabled: true,
           provider: 'volcengine',
           providerConfigured: true,
-          voices: [
-            {
-              id: 'zh_female_tianmeitaozi_mars_bigtts',
-              label: '甜美桃子'
-            }
-          ],
+          voices: speechVoices,
           audioAuthorization: 'required_on_each_device'
         }
       });
@@ -249,6 +250,8 @@ async function mockAPI(page: Page) {
         '| 端侧模型 | 官方技术博客 | 2026-07-25 | 推理效率继续提升 | 移动开发者 | 留意设备兼容性 | 核对正式文档 |\n' +
         '| AI 基础设施 | 行业协会报告 | 2026-07-24 | 算力调度成为重点 | 平台团队 | 样本口径不同 | 对照原始数据 |\n\n' +
         '> 重要结论需要回到原始来源核对，尤其要区分官方信息与用户评价。\n\n' +
+        '另有政府公开材料把“老当湖”对应到“平湖市老厚润餐饮管理有限公司”。（pinghu.gov.cn）\n\n' +
+        '详细规则参见[火山引擎音色文档](https://www.volcengine.com/docs/6561/1257544)。\n\n' +
         '长链接测试：https://example.com/research/2026/a-very-long-path-that-must-not-break-the-mobile-message-layout?source=official&language=zh-CN\n\n' +
         '```ts\nconst answer = 42;\n```\n\n<span onmouseover="window.__owuiXSS = true">安全渲染</span><script>window.__owuiXSS = true</script>\n\n' +
         Array.from(
@@ -438,10 +441,11 @@ async function mockAPI(page: Page) {
     }
     return json(404, { error: { code: 'not_found', message: 'Not found.' } });
   });
+  return { speechTexts };
 }
 
 test('login and streaming chat are visually usable', async ({ page }, testInfo) => {
-  await mockAPI(page);
+  const { speechTexts } = await mockAPI(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();
   if (testInfo.project.name === 'desktop') {
@@ -500,7 +504,8 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     'aria-checked',
     'false'
   );
-  await expect(page.getByRole('option', { name: '甜美桃子' })).toBeAttached();
+  await expect(page.getByRole('option', { name: 'Vivi 2.0（女声·中英）' })).toBeAttached();
+  await expect(page.getByRole('option', { name: 'Tim（男声·英文）' })).toBeAttached();
   await expect(page.getByRole('button', { name: '试听当前音色' })).toBeVisible();
   await page
     .getByRole('dialog', { name: '语音与朗读' })
@@ -610,6 +615,11 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(speechPlayer.getByRole('slider', { name: '朗读进度' })).toBeEnabled();
   await expect(speechPlayer.getByRole('combobox', { name: '朗读倍速' })).toHaveValue('1');
   await expect(speechPlayer.getByRole('button', { name: '停止并关闭朗读' })).toBeVisible();
+  await expect.poll(() => speechTexts.join('')).not.toBe('');
+  expect(speechTexts.join('')).toContain('平湖市老厚润餐饮管理有限公司');
+  expect(speechTexts.join('')).toContain('火山引擎音色文档');
+  expect(speechTexts.join('')).not.toContain('pinghu.gov.cn');
+  expect(speechTexts.join('')).not.toContain('https://');
   await page.screenshot({ path: testInfo.outputPath('speech-player.png'), fullPage: true });
   await speechPlayer.getByRole('button', { name: '停止并关闭朗读' }).click();
   await expect(speechPlayer).toHaveCount(0);

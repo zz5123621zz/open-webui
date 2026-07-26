@@ -81,6 +81,51 @@ type SpeechVoice struct {
 	Label string `json:"label"`
 }
 
+const defaultVolcengineVoiceList = "" +
+	"zh_female_vv_uranus_bigtts:Vivi 2.0（女声·中英）," +
+	"zh_female_xiaohe_uranus_bigtts:小何（女声·中文）," +
+	"zh_male_m191_uranus_bigtts:云舟（男声·中文）," +
+	"zh_male_taocheng_uranus_bigtts:小天（男声·中文）," +
+	"zh_male_dayi_saturn_bigtts:大壹（男声·视频配音）," +
+	"zh_female_mizai_saturn_bigtts:黑猫侦探社咪仔（女声·视频配音）," +
+	"zh_female_jitangnv_saturn_bigtts:鸡汤女（女声·视频配音）," +
+	"zh_female_meilinvyou_saturn_bigtts:魅力女友（女声·视频配音）," +
+	"zh_female_santongyongns_saturn_bigtts:流畅女声（女声·视频配音）," +
+	"zh_male_ruyayichen_saturn_bigtts:儒雅逸辰（男声·视频配音）," +
+	"zh_female_xueayi_saturn_bigtts:儿童绘本（女声·有声阅读）," +
+	"saturn_zh_female_cancan_tob:知性灿灿（女声·角色）," +
+	"saturn_zh_female_keainvsheng_tob:可爱女生（女声·角色）," +
+	"saturn_zh_female_tiaopigongzhu_tob:调皮公主（女声·角色）," +
+	"saturn_zh_male_shuanglangshaonian_tob:爽朗少年（男声·角色）," +
+	"saturn_zh_male_tiancaitongzhuo_tob:天才同桌（男声·角色）," +
+	"en_male_tim_uranus_bigtts:Tim（男声·英文）," +
+	"en_female_dacey_uranus_bigtts:Dacey（女声·英文）," +
+	"en_female_stokie_uranus_bigtts:Stokie（女声·英文）"
+
+func defaultVolcengineVoices() []SpeechVoice {
+	return []SpeechVoice{
+		{ID: "zh_female_vv_uranus_bigtts", Label: "Vivi 2.0（女声·中英）"},
+		{ID: "zh_female_xiaohe_uranus_bigtts", Label: "小何（女声·中文）"},
+		{ID: "zh_male_m191_uranus_bigtts", Label: "云舟（男声·中文）"},
+		{ID: "zh_male_taocheng_uranus_bigtts", Label: "小天（男声·中文）"},
+		{ID: "zh_male_dayi_saturn_bigtts", Label: "大壹（男声·视频配音）"},
+		{ID: "zh_female_mizai_saturn_bigtts", Label: "黑猫侦探社咪仔（女声·视频配音）"},
+		{ID: "zh_female_jitangnv_saturn_bigtts", Label: "鸡汤女（女声·视频配音）"},
+		{ID: "zh_female_meilinvyou_saturn_bigtts", Label: "魅力女友（女声·视频配音）"},
+		{ID: "zh_female_santongyongns_saturn_bigtts", Label: "流畅女声（女声·视频配音）"},
+		{ID: "zh_male_ruyayichen_saturn_bigtts", Label: "儒雅逸辰（男声·视频配音）"},
+		{ID: "zh_female_xueayi_saturn_bigtts", Label: "儿童绘本（女声·有声阅读）"},
+		{ID: "saturn_zh_female_cancan_tob", Label: "知性灿灿（女声·角色）"},
+		{ID: "saturn_zh_female_keainvsheng_tob", Label: "可爱女生（女声·角色）"},
+		{ID: "saturn_zh_female_tiaopigongzhu_tob", Label: "调皮公主（女声·角色）"},
+		{ID: "saturn_zh_male_shuanglangshaonian_tob", Label: "爽朗少年（男声·角色）"},
+		{ID: "saturn_zh_male_tiancaitongzhuo_tob", Label: "天才同桌（男声·角色）"},
+		{ID: "en_male_tim_uranus_bigtts", Label: "Tim（男声·英文）"},
+		{ID: "en_female_dacey_uranus_bigtts", Label: "Dacey（女声·英文）"},
+		{ID: "en_female_stokie_uranus_bigtts", Label: "Stokie（女声·英文）"},
+	}
+}
+
 func (s Speech) Normalized() Speech {
 	if s.MaxConcurrentGlobal <= 0 {
 		s.MaxConcurrentGlobal = 2
@@ -110,9 +155,7 @@ func (s Speech) Normalized() Speech {
 		s.Volcengine.ResourceID = "seed-tts-2.0"
 	}
 	if len(s.Volcengine.Voices) == 0 {
-		s.Volcengine.Voices = []SpeechVoice{{
-			ID: "zh_female_vv_uranus_bigtts", Label: "Vivi 2.0",
-		}}
+		s.Volcengine.Voices = defaultVolcengineVoices()
 	}
 	return s
 }
@@ -367,7 +410,7 @@ func Load() (Config, error) {
 		"TTS_VOLCENGINE_VOICES",
 		env(
 			"TTS_VOLCENGINE_VOICES",
-			"zh_female_vv_uranus_bigtts:Vivi 2.0",
+			defaultVolcengineVoiceList,
 		),
 	)
 	if err != nil {

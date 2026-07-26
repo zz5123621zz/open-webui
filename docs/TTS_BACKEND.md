@@ -240,6 +240,11 @@ The client can send `speech.cancel` or `speech.ping`. A text frame is limited to
 instead of sending every model token; this matches provider cadence and avoids
 speaking half-formed Markdown.
 
+The displayed assistant message is never rewritten for speech. The frontend
+creates a separate spoken-text copy where Markdown links retain their readable
+label, while raw URLs, email addresses, and domain-only source markers such as
+`（pinghu.gov.cn）` are removed before any text is sent to the provider.
+
 ## Docker configuration
 
 The normal `compose.yaml` does not require TTS credentials and continues to
@@ -280,14 +285,50 @@ project has not enabled Doubao Speech Synthesis 2.0 under **开通管理**.
 
    ```dotenv
    TTS_VOLCENGINE_RESOURCE_ID=seed-tts-2.0
-   TTS_VOLCENGINE_VOICES=zh_female_vv_uranus_bigtts:Vivi 2.0
+   # Empty uses all runtime-verified built-in voices below.
+   TTS_VOLCENGINE_VOICES=
    ```
 
-   Multiple allowlisted voices use comma-separated `id:label` entries. Every
-   ID must be available to the same Volcengine project and must report
-   `ResourceID=seed-tts-2.0`. Do not infer compatibility from the display name
-   alone: a `mars` voice can be rejected by the V3 bidirectional endpoint with
-   `resource ID is mismatched with speaker related resource`.
+   An installation can restrict the selector with comma-separated `id:label`
+   entries. Every ID must be available to the same Volcengine project and must
+   report `ResourceID=seed-tts-2.0`.
+
+### Runtime-verified TTS 2.0 built-in voices
+
+The following 19 voices were each tested on 2026-07-26 against the configured
+new-console API Key, V3 bidirectional endpoint, and `seed-tts-2.0`. A voice only
+passed when the session started, returned non-empty PCM audio, and completed
+normally.
+
+| Language / scene | Display name | Voice ID |
+| --- | --- | --- |
+| Chinese + English, general | Vivi 2.0 | `zh_female_vv_uranus_bigtts` |
+| Chinese, general | 小何 | `zh_female_xiaohe_uranus_bigtts` |
+| Chinese, general | 云舟 | `zh_male_m191_uranus_bigtts` |
+| Chinese, general | 小天 | `zh_male_taocheng_uranus_bigtts` |
+| Chinese, video | 大壹 | `zh_male_dayi_saturn_bigtts` |
+| Chinese, video | 黑猫侦探社咪仔 | `zh_female_mizai_saturn_bigtts` |
+| Chinese, video | 鸡汤女 | `zh_female_jitangnv_saturn_bigtts` |
+| Chinese, video | 魅力女友 | `zh_female_meilinvyou_saturn_bigtts` |
+| Chinese, video | 流畅女声 | `zh_female_santongyongns_saturn_bigtts` |
+| Chinese, video | 儒雅逸辰 | `zh_male_ruyayichen_saturn_bigtts` |
+| Chinese, audiobook | 儿童绘本 | `zh_female_xueayi_saturn_bigtts` |
+| Chinese, role-play | 知性灿灿 | `saturn_zh_female_cancan_tob` |
+| Chinese, role-play | 可爱女生 | `saturn_zh_female_keainvsheng_tob` |
+| Chinese, role-play | 调皮公主 | `saturn_zh_female_tiaopigongzhu_tob` |
+| Chinese, role-play | 爽朗少年 | `saturn_zh_male_shuanglangshaonian_tob` |
+| Chinese, role-play | 天才同桌 | `saturn_zh_male_tiancaitongzhuo_tob` |
+| English, general | Tim | `en_male_tim_uranus_bigtts` |
+| English, general | Dacey | `en_female_dacey_uranus_bigtts` |
+| English, general | Stokie | `en_female_stokie_uranus_bigtts` |
+
+English voices were tested with English input; Chinese input can legitimately
+produce no audio. The selector identifies them as English-only. The older
+release-note IDs beginning with `ICL_` were also probed and rejected by the V3
+endpoint with error `55000000`; the working TTS 2.0 IDs use the `saturn_`
+prefix shown above. Do not infer compatibility from a display name alone: a
+`mars` voice can likewise be rejected with
+`resource ID is mismatched with speaker related resource`.
 
 5. Recreate only the Go application once to mount the secret:
 
