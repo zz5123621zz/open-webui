@@ -54,6 +54,31 @@ async function mockAPI(page: Page) {
   let conversationCreated = false;
   let conversationReasoningEffort = 'high';
   let checkpointReady = false;
+  let speechMode: 'manual' | 'auto' = 'manual';
+  let speechSpeed = 1;
+  let speechVoice = '';
+  await page.routeWebSocket('**/api/v1/speech/sessions', (socket) => {
+    setTimeout(() => {
+      socket.send(JSON.stringify({ type: 'speech.connecting', provider: 'volcengine' }));
+      socket.send(JSON.stringify({
+        type: 'speech.started',
+        provider: 'volcengine',
+        voice: 'zh_female_tianmeitaozi_mars_bigtts',
+        speed: speechSpeed,
+        audio: { format: 'pcm', sampleRate: 24000, channels: 1, bitDepth: 16 }
+      }));
+    }, 10);
+    socket.onMessage((raw) => {
+      if (typeof raw !== 'string') return;
+      const message = JSON.parse(raw) as { type: string };
+      if (message.type === 'speech.text') {
+        socket.send(Buffer.alloc(24000 * 2 * 3));
+      }
+      if (message.type === 'speech.finish') {
+        socket.send(JSON.stringify({ type: 'speech.completed', textBytes: 128 }));
+      }
+    });
+  });
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -75,6 +100,38 @@ async function mockAPI(page: Page) {
       return json(200, { user, csrfToken: 'csrf-test' });
     }
     if (path === '/api/v1/models') return json(200, { models });
+    if (path === '/api/v1/me/speech') {
+      if (request.method() === 'PUT') {
+        const body = request.postDataJSON() as {
+          mode: 'manual' | 'auto';
+          speed: number;
+          voice: string;
+        };
+        speechMode = body.mode;
+        speechSpeed = body.speed;
+        speechVoice = body.voice;
+      }
+      return json(200, {
+        speech: {
+          mode: speechMode,
+          autoRead: speechMode === 'auto',
+          speed: speechSpeed,
+          voice: speechVoice,
+          effectiveVoice: speechVoice || 'zh_female_tianmeitaozi_mars_bigtts',
+          updatedAt: Date.now(),
+          serviceEnabled: true,
+          provider: 'volcengine',
+          providerConfigured: true,
+          voices: [
+            {
+              id: 'zh_female_tianmeitaozi_mars_bigtts',
+              label: '甜美桃子'
+            }
+          ],
+          audioAuthorization: 'required_on_each_device'
+        }
+      });
+    }
     if (path === '/api/v1/me/storage') {
       return json(200, {
         storage: {
@@ -436,6 +493,19 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     .getByRole('dialog', { name: '显示与字体' })
     .getByRole('button', { name: '关闭', exact: true })
     .click();
+  await page.getByRole('button', { name: /Alice/ }).click();
+  await page.getByRole('button', { name: '语音与朗读' }).click();
+  await expect(page.getByRole('heading', { name: '语音与朗读' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: /自动朗读/ })).toHaveAttribute(
+    'aria-checked',
+    'false'
+  );
+  await expect(page.getByRole('option', { name: '甜美桃子' })).toBeAttached();
+  await expect(page.getByRole('button', { name: '试听当前音色' })).toBeVisible();
+  await page
+    .getByRole('dialog', { name: '语音与朗读' })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click();
   if (testInfo.project.name === 'mobile') {
     await page.setViewportSize({ width: 812, height: 375 });
     await page.getByRole('button', { name: /Alice/ }).click();
@@ -533,6 +603,16 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(page.getByText('today technology news')).toBeVisible();
   await expect(page.getByText('图像生成')).toBeVisible();
   await expect(page.locator('img.message-image')).toBeVisible();
+  await expect(page.getByRole('button', { name: '朗读' })).toBeVisible();
+  await page.getByRole('button', { name: '朗读' }).click();
+  const speechPlayer = page.getByLabel('朗读播放器');
+  await expect(speechPlayer).toBeVisible();
+  await expect(speechPlayer.getByRole('slider', { name: '朗读进度' })).toBeEnabled();
+  await expect(speechPlayer.getByRole('combobox', { name: '朗读倍速' })).toHaveValue('1');
+  await expect(speechPlayer.getByRole('button', { name: '停止并关闭朗读' })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('speech-player.png'), fullPage: true });
+  await speechPlayer.getByRole('button', { name: '停止并关闭朗读' }).click();
+  await expect(speechPlayer).toHaveCount(0);
   await expect
     .poll(() =>
       page.locator('img.message-image').evaluate((image: HTMLImageElement) => image.naturalWidth)
@@ -724,6 +804,7 @@ test('administrator can inspect another user chat and manage summary compatibili
     updatedAt: Date.now()
   };
   let summaryMode: 'auto' | 'off' = 'auto';
+  let speechEnabled = true;
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
   });
@@ -738,6 +819,25 @@ test('administrator can inspect another user chat and manage summary compatibili
       });
     if (path === '/api/v1/me') return respond({ user: admin, csrfToken: 'admin-csrf' });
     if (path === '/api/v1/models') return respond({ models });
+    if (path === '/api/v1/me/speech') {
+      return respond({
+        speech: {
+          mode: 'manual',
+          autoRead: false,
+          speed: 1,
+          voice: '',
+          effectiveVoice: 'zh_female_tianmeitaozi_mars_bigtts',
+          updatedAt: Date.now(),
+          serviceEnabled: speechEnabled,
+          provider: 'volcengine',
+          providerConfigured: true,
+          voices: [
+            { id: 'zh_female_tianmeitaozi_mars_bigtts', label: '甜美桃子' }
+          ],
+          audioAuthorization: 'required_on_each_device'
+        }
+      });
+    }
     if (path === '/api/v1/me/storage') {
       return respond({
         storage: {
@@ -786,6 +886,36 @@ test('administrator can inspect another user chat and manage summary compatibili
         }
       });
     }
+    if (path === '/api/v1/admin/speech') {
+      if (method === 'PUT') {
+        speechEnabled = Boolean(
+          (route.request().postDataJSON() as { enabled: boolean }).enabled
+        );
+      }
+      return respond({
+        speech: {
+          enabled: speechEnabled,
+          provider: 'volcengine',
+          defaultVoice: 'zh_female_tianmeitaozi_mars_bigtts',
+          updatedAt: Date.now(),
+          providers: [
+            {
+              id: 'aliyun',
+              configured: false,
+              voices: [{ id: 'longxiaochun', label: '龙小淳' }]
+            },
+            {
+              id: 'volcengine',
+              configured: true,
+              voices: [
+                { id: 'zh_female_tianmeitaozi_mars_bigtts', label: '甜美桃子' }
+              ]
+            }
+          ],
+          concurrency: { perUser: 1, global: 2 }
+        }
+      });
+    }
     return route.fulfill({
       status: 404,
       contentType: 'application/json',
@@ -823,6 +953,21 @@ test('administrator can inspect another user chat and manage summary compatibili
   await page.screenshot({ path: testInfo.outputPath('admin-summary-settings.png'), fullPage: true });
   await page
     .getByRole('dialog', { name: '渐进式推理摘要' })
+    .getByRole('button', { name: '关闭', exact: true })
+    .click();
+  await page.getByRole('button', { name: /Administrator/ }).click();
+  await page.getByRole('button', { name: '语音服务设置' }).click();
+  await expect(page.getByRole('heading', { name: '语音服务设置' })).toBeVisible();
+  await expect(page.getByRole('switch', { name: '全局语音服务' })).toHaveAttribute(
+    'aria-checked',
+    'true'
+  );
+  await expect(page.getByText('API 凭据已通过安全文件配置')).toBeVisible();
+  await expect(page.getByText(/每用户 1.*全应用 2/)).toBeVisible();
+  await page.getByRole('button', { name: '保存语音服务设置' }).click();
+  await expect(page.getByText('设置已即时生效。')).toBeVisible();
+  await page
+    .getByRole('dialog', { name: '语音服务设置' })
     .getByRole('button', { name: '关闭', exact: true })
     .click();
   if (testInfo.project.name === 'mobile') {

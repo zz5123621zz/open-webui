@@ -73,6 +73,45 @@ export interface ProgressiveSummarySettings {
   updatedAt: number;
 }
 
+export type SpeechMode = 'manual' | 'auto';
+
+export interface SpeechVoice {
+  id: string;
+  label: string;
+}
+
+export interface SpeechPreference {
+  mode: SpeechMode;
+  autoRead: boolean;
+  speed: number;
+  voice: string;
+  effectiveVoice: string;
+  updatedAt: number;
+  serviceEnabled: boolean;
+  provider: string;
+  providerConfigured: boolean;
+  voices: SpeechVoice[];
+  audioAuthorization: 'required_on_each_device';
+}
+
+export interface SpeechProviderDescriptor {
+  id: string;
+  configured: boolean;
+  voices: SpeechVoice[];
+}
+
+export interface SpeechServiceSettings {
+  enabled: boolean;
+  provider: string;
+  defaultVoice: string;
+  updatedAt: number;
+  providers: SpeechProviderDescriptor[];
+  concurrency: {
+    perUser: number;
+    global: number;
+  };
+}
+
 export interface MessagePart {
   id?: string;
   sequence?: number;
