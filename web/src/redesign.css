@@ -579,9 +579,8 @@ button:disabled {
   background: linear-gradient(90deg, transparent, var(--primary-soft) 20%);
 }
 
-.conversation-item:hover .conversation-actions,
-.conversation-item:focus-within .conversation-actions,
-.conversation-item.active:hover .conversation-actions {
+.conversation-item.active:hover .conversation-actions,
+.conversation-item.active:focus-within .conversation-actions {
   display: flex;
 }
 
