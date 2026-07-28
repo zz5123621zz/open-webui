@@ -78,7 +78,7 @@ func TestUnassignedUserCannotActivateRestaurantWorkbench(t *testing.T) {
 	}
 }
 
-func TestGuidanceRuntimeEnforcesTwoRoundsFiveQuestionsAndExplicitFinal(t *testing.T) {
+func TestGuidanceRuntimeEnforcesThreeRoundsAndExplicitFinal(t *testing.T) {
 	ctx := context.Background()
 	dataStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "app.db"))
 	if err != nil {
@@ -110,23 +110,51 @@ func TestGuidanceRuntimeEnforcesTwoRoundsFiveQuestionsAndExplicitFinal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.AllowClarification || runtime.MaxQuestions != 2 ||
-		runtime.QuestionCount != 3 || runtime.RoundCount != 1 {
+	if !runtime.AllowClarification ||
+		runtime.AllowTaskBrief ||
+		!runtime.RequireClarification ||
+		runtime.RequireTaskBrief ||
+		runtime.MaxQuestions != guidance.MaximumQuestionsPerRound ||
+		runtime.MaxRounds != guidance.MaximumClarificationRounds ||
+		runtime.QuestionCount != 3 ||
+		runtime.RoundCount != 1 {
 		t.Fatalf("runtime after first round = %#v", runtime)
 	}
 
 	messages = append(
 		messages,
-		clarificationRuntimeMessage(t, "assistant_round_2", 2),
+		clarificationRuntimeMessage(t, "assistant_round_2", 3),
 		submissionRuntimeMessage(t, "user_round_2", guidance.IntentContinueRefining),
 	)
 	runtime, err = server.guidanceRuntime(ctx, user.ID, messages, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.AllowClarification || !runtime.AllowTaskBrief ||
-		runtime.QuestionCount != 5 || runtime.RoundCount != 2 {
+	if !runtime.AllowClarification ||
+		runtime.AllowTaskBrief ||
+		!runtime.RequireClarification ||
+		runtime.MaxQuestions != guidance.MaximumQuestionsPerRound ||
+		runtime.QuestionCount != 6 ||
+		runtime.RoundCount != 2 {
 		t.Fatalf("runtime after second round = %#v", runtime)
+	}
+
+	messages = append(
+		messages,
+		clarificationRuntimeMessage(t, "assistant_round_3", 2),
+		submissionRuntimeMessage(t, "user_round_3", guidance.IntentContinueRefining),
+	)
+	runtime, err = server.guidanceRuntime(ctx, user.ID, messages, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.AllowClarification ||
+		!runtime.AllowTaskBrief ||
+		runtime.RequireClarification ||
+		!runtime.RequireTaskBrief ||
+		runtime.QuestionCount != 8 ||
+		runtime.RoundCount != 3 {
+		t.Fatalf("runtime after third round = %#v", runtime)
 	}
 
 	messages = append(
@@ -138,7 +166,9 @@ func TestGuidanceRuntimeEnforcesTwoRoundsFiveQuestionsAndExplicitFinal(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.AllowClarification || runtime.MaxQuestions != 3 ||
+	if runtime.AllowClarification ||
+		!runtime.AllowTaskBrief ||
+		!runtime.RequireTaskBrief ||
 		!runtime.UserRequestedExtra {
 		t.Fatalf("runtime after explicit additional context = %#v", runtime)
 	}
@@ -157,7 +187,7 @@ func TestGuidanceRuntimeEnforcesTwoRoundsFiveQuestionsAndExplicitFinal(t *testin
 	}
 }
 
-func TestGuidanceRuntimeKeepsQuestionBudgetForManualCardReplies(t *testing.T) {
+func TestGuidanceRuntimeKeepsRoundBudgetForManualCardReplies(t *testing.T) {
 	ctx := context.Background()
 	dataStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "app.db"))
 	if err != nil {
@@ -197,7 +227,9 @@ func TestGuidanceRuntimeKeepsQuestionBudgetForManualCardReplies(t *testing.T) {
 	if runtime.RoundCount != 1 ||
 		runtime.QuestionCount != 3 ||
 		!runtime.AllowClarification ||
-		runtime.MaxQuestions != 2 {
+		runtime.AllowTaskBrief ||
+		!runtime.RequireClarification ||
+		runtime.MaxQuestions != guidance.MaximumQuestionsPerRound {
 		t.Fatalf("manual clarification reply reset the task budget: %#v", runtime)
 	}
 
@@ -263,6 +295,7 @@ func TestGuidanceRuntimeStopsOrdinaryQuestionsAfterDelegatedDefault(t *testing.T
 	}
 	if runtime.AllowClarification ||
 		!runtime.AllowTaskBrief ||
+		!runtime.RequireTaskBrief ||
 		runtime.FinalAnswer {
 		t.Fatalf("delegated default did not stop ordinary clarification: %#v", runtime)
 	}
@@ -321,8 +354,34 @@ func TestBuildResponsesRequestReplaysNormalizedGuidanceAndExposesOnlyAllowedTool
 		t.Fatalf("guidance tool names = %v", names)
 	}
 
+	server.cfg.Tools.WebSearchEnabled = true
+	runtime = guidance.Runtime{
+		Enabled:              true,
+		AllowClarification:   true,
+		RequireClarification: true,
+		MaxQuestions:         guidance.MaximumQuestionsPerRound,
+		MaxRounds:            guidance.MaximumClarificationRounds,
+		RoundCount:           1,
+	}
+	request, err = server.buildResponsesRequest(
+		context.Background(), "user_1",
+		store.Conversation{Model: "gpt-test"},
+		provider.Model{ID: "gpt-test", SupportsWebSearch: true},
+		"high", nil, nil, runtime,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.ToolChoice != "required" ||
+		len(request.Tools) != 1 ||
+		request.Tools[0]["name"] != guidance.ToolShowClarificationCards ||
+		!strings.Contains(request.Instructions, "round 2 of 3") {
+		t.Fatalf("required next-round request = %#v", request)
+	}
+
 	runtime.FinalAnswer = true
 	runtime.AllowClarification = false
+	runtime.RequireClarification = false
 	runtime.AllowTaskBrief = false
 	request, err = server.buildResponsesRequest(
 		context.Background(), "user_1",

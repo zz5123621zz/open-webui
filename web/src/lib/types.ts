@@ -151,6 +151,8 @@ export interface ClarificationQuestion {
 export interface ClarificationCardsData {
   schemaVersion: 1;
   instanceId: string;
+  round?: number;
+  maxRounds?: number;
   intro?: string | null;
   currentUnderstanding: string[];
   questions: ClarificationQuestion[];
