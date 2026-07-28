@@ -134,6 +134,12 @@ async function mockAPI(page: Page) {
         }
       });
     }
+    if (path === '/api/v1/me/workbench') {
+      return json(200, {
+        workbench: { effective: 'general', initial: 'general' },
+        guidanceEnabled: false
+      });
+    }
     if (path === '/api/v1/me/storage') {
       return json(200, {
         storage: {
@@ -766,6 +772,12 @@ test('a persisted background response resumes after reopening its chat', async (
       return respond({ user, csrfToken: 'csrf-background' });
     }
     if (path === '/api/v1/models') return respond({ models });
+    if (path === '/api/v1/me/workbench') {
+      return respond({
+        workbench: { effective: 'general', initial: 'general' },
+        guidanceEnabled: false
+      });
+    }
     if (path === '/api/v1/me/storage') {
       return respond({
         storage: {
@@ -883,6 +895,12 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
       });
     if (path === '/api/v1/me') return json(200, { user, csrfToken: 'csrf-search' });
     if (path === '/api/v1/models') return json(200, { models });
+    if (path === '/api/v1/me/workbench') {
+      return json(200, {
+        workbench: { effective: 'general', initial: 'general' },
+        guidanceEnabled: false
+      });
+    }
     if (path === '/api/v1/me/storage') {
       return json(200, {
         storage: {
@@ -1133,6 +1151,12 @@ test('administrator can inspect another user chat and manage summary compatibili
           ],
           audioAuthorization: 'required_on_each_device'
         }
+      });
+    }
+    if (path === '/api/v1/me/workbench') {
+      return respond({
+        workbench: { effective: 'general', initial: 'general' },
+        guidanceEnabled: false
       });
     }
     if (path === '/api/v1/me/storage') {
