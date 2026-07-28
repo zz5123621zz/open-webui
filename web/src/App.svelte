@@ -2230,7 +2230,12 @@
   }
 
   function updateAnnouncementStorageKey(): string {
-    return user ? `personal-chat-update-ux-v1:${user.id}` : '';
+    if (!user) return '';
+    const release =
+      restaurantGuidanceEnabled && workbenchSetting?.initial === 'restaurant'
+        ? 'restaurant-v1'
+        : 'ux-v1';
+    return `personal-chat-update-${release}:${user.id}`;
   }
 
   function openUpdateAnnouncementIfNeeded() {
@@ -3428,7 +3433,12 @@
   {/if}
 
   {#if updateAnnouncementOpen}
-    <UpdateAnnouncement locale={$locale} on:dismiss={dismissUpdateAnnouncement} />
+    <UpdateAnnouncement
+      locale={$locale}
+      restaurantExperience={restaurantGuidanceEnabled &&
+        workbenchSetting?.initial === 'restaurant'}
+      on:dismiss={dismissUpdateAnnouncement}
+    />
   {/if}
 
   {#if dialog}

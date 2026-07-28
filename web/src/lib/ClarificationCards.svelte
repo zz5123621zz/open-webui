@@ -36,6 +36,7 @@
   let previewRows: Array<{ prompt: string; answer: string }> = [];
   let previewUnresolved: string[] = [];
   let interactionDisabled = true;
+  let complete = false;
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
   $: draftKey =
@@ -43,7 +44,10 @@
   $: if (draftKey !== initializedKey) initializeDraft(draftKey);
   $: if (!current && initializedKey === draftKey) clearDraft();
   $: interactionDisabled = disabled || !current;
-  $: complete = data.questions.every((question) => answerValid(question));
+  $: {
+    answers;
+    complete = data.questions.every((question) => answerValid(question));
+  }
   $: {
     answers;
     locale;
@@ -127,19 +131,26 @@
     return question.maximumSelections ?? question.options.length;
   }
 
-  function selectionCount(question: ClarificationQuestion): number {
-    const answer = answerFor(question);
+  function selectionCount(
+    question: ClarificationQuestion,
+    answer = answerFor(question)
+  ): number {
     if (answer.delegatedDefault) return 1;
     return answer.selectedOptionKeys.length + (answer.otherText.trim() ? 1 : 0);
   }
 
-  function answerValid(question: ClarificationQuestion): boolean {
-    const count = selectionCount(question);
+  function answerValid(
+    question: ClarificationQuestion,
+    answer = answerFor(question)
+  ): boolean {
+    const count = selectionCount(question, answer);
     return count >= minimum(question) && count <= maximum(question);
   }
 
-  function answerSummary(question: ClarificationQuestion): string {
-    const answer = answerFor(question);
+  function answerSummary(
+    question: ClarificationQuestion,
+    answer = answerFor(question)
+  ): string {
     if (answer.delegatedDefault) {
       return t(
         '你帮我决定（采用合理、保守的默认值）',
@@ -185,7 +196,12 @@
     if (selected.has(optionKey)) {
       selected.delete(optionKey);
     } else {
-      if (selectionCount(question) >= maximum(question)) return;
+      // A delegated default is replaced by a concrete choice, so it must not
+      // consume the multi-select limit while the user is switching answers.
+      if (
+        !answer.delegatedDefault &&
+        selectionCount(question, answer) >= maximum(question)
+      ) return;
       selected.add(optionKey);
     }
     replaceAnswer(question, {
@@ -214,7 +230,8 @@
     }
     if (
       question.selection === 'multi_select' &&
-      selectionCount(question) >= maximum(question)
+      !answer.delegatedDefault &&
+      selectionCount(question, answer) >= maximum(question)
     ) return;
     replaceAnswer(
       question,
@@ -238,6 +255,7 @@
   }
 
   function updateOther(question: ClarificationQuestion, event: Event) {
+    if (interactionDisabled) return;
     const value = (event.currentTarget as HTMLInputElement).value;
     const answer = answerFor(question);
     replaceAnswer(
@@ -258,10 +276,13 @@
     );
   }
 
-  function otherDisabled(question: ClarificationQuestion): boolean {
-    const answer = answerFor(question);
+  function otherDisabled(
+    question: ClarificationQuestion,
+    answer = answerFor(question),
+    unavailable = interactionDisabled
+  ): boolean {
     return (
-      interactionDisabled ||
+      unavailable ||
       (!answer.otherText && answer.selectedOptionKeys.length >= maximum(question))
     );
   }
@@ -318,8 +339,8 @@
 
   <div class="question-list">
     {#each data.questions as question, questionIndex (question.key)}
-      {@const answer = answerFor(question)}
-      {@const count = selectionCount(question)}
+      {@const answer = answers[question.key] || emptyAnswer()}
+      {@const count = selectionCount(question, answer)}
       {@const max = maximum(question)}
       <fieldset>
         <legend>
@@ -339,7 +360,10 @@
           {#each question.options as option (option.key)}
             {@const selected = answer.selectedOptionKeys.includes(option.key)}
             {@const atLimit =
-              question.selection === 'multi_select' && !selected && count >= max}
+              question.selection === 'multi_select' &&
+              !answer.delegatedDefault &&
+              !selected &&
+              count >= max}
             <button
               type="button"
               class:selected
@@ -368,6 +392,7 @@
               aria-controls={`guidance-other-${data.instanceId}-${question.key}`}
               disabled={interactionDisabled ||
                 (question.selection === 'multi_select' &&
+                  !answer.delegatedDefault &&
                   !answer.otherOpen &&
                   !answer.otherText &&
                   count >= max)}
@@ -409,14 +434,22 @@
               type="text"
               value={answer.otherText}
               maxlength="600"
-              disabled={otherDisabled(question)}
-              aria-describedby={otherDisabled(question) && !interactionDisabled
+              disabled={otherDisabled(question, answer, interactionDisabled)}
+              aria-describedby={otherDisabled(
+                question,
+                answer,
+                interactionDisabled
+              ) && !interactionDisabled
                 ? `guidance-help-${data.instanceId}-${question.key}`
                 : undefined}
               on:input={(event) => updateOther(question, event)}
             />
           </label>
-          {#if otherDisabled(question) && !interactionDisabled}
+          {#if otherDisabled(
+            question,
+            answer,
+            interactionDisabled
+          ) && !interactionDisabled}
             <small id={`guidance-help-${data.instanceId}-${question.key}`} class="limit-help">
               {t('已达到本题上限，先取消一个选项再填写。', 'The limit is reached; deselect an option first.')}
             </small>

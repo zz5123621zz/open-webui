@@ -4,11 +4,152 @@
   import { translate, type Locale } from './i18n';
 
   export let locale: Locale = 'zh-CN';
+  export let restaurantExperience = false;
+
+  type Copy = [string, string];
+  type FeatureIcon = 'chat' | 'check' | 'edit' | 'image-plus' | 'info' | 'plan' | 'search';
+  type ReleaseFeature = {
+    icon: FeatureIcon;
+    title: Copy;
+    description: Copy;
+    location: Copy[];
+  };
+  type Release = {
+    tag: Copy;
+    title: Copy;
+    description: Copy;
+    features: ReleaseFeature[];
+    note: Copy;
+  };
+
+  const generalRelease: Release = {
+    tag: ['功能更新', 'Feature update'],
+    title: ['搜索、编辑与更顺手的输入', 'Search, editing, and a smoother composer'],
+    description: [
+      '这次更新带来对话搜索、消息编辑重发、粘贴或拖拽上传、草稿自动保存与用量统计，手机还能把应用添加到主屏幕。',
+      'This update adds chat search, message editing, paste-or-drop uploads, automatic drafts, usage stats, and add-to-home-screen on mobile.'
+    ],
+    features: [
+      {
+        icon: 'search',
+        title: ['搜索所有对话', 'Search every chat'],
+        description: [
+          '侧边栏新增搜索框，可按标题和消息内容查找对话，结果附带匹配片段，点击直接打开。',
+          'A search box in the sidebar finds chats by title or message text, shows a matching snippet, and opens the chat with one tap.'
+        ],
+        location: [
+          ['侧边栏', 'Sidebar'],
+          ['搜索对话', 'Search chats']
+        ]
+      },
+      {
+        icon: 'edit',
+        title: ['编辑并重新发送', 'Edit and resend'],
+        description: [
+          '最新一条你的消息下方有“编辑”按钮，改完点“重新发送”即可得到新回答；之前的回答仍会保留，方便对照。',
+          'Your latest message now has an “Edit” button. Resend it to get a fresh answer while earlier answers stay in the chat for comparison.'
+        ],
+        location: [
+          ['最新一条你的消息', 'Your latest message'],
+          ['编辑', 'Edit']
+        ]
+      },
+      {
+        icon: 'image-plus',
+        title: ['粘贴上传与自动草稿', 'Paste, drop, and drafts'],
+        description: [
+          '截图可以直接粘贴进输入框，图片也可以拖进聊天窗口上传；没发送的文字会按对话自动保存，刷新页面后自动恢复。',
+          'Paste screenshots straight into the composer or drop images onto the chat. Unsent text is saved per chat and restored after a reload.'
+        ],
+        location: [['输入框', 'Composer']]
+      },
+      {
+        icon: 'plan',
+        title: ['用量统计与主屏幕', 'Usage stats and home screen'],
+        description: [
+          '头像菜单新增“用量统计”，按月查看回答次数与 token 消耗；手机浏览器现在可以把 La4RainGPT 添加到主屏幕全屏使用。',
+          'The profile menu gains “Usage stats” with monthly response and token totals, and mobile browsers can add La4RainGPT to the home screen.'
+        ],
+        location: [
+          ['头像菜单', 'Profile'],
+          ['用量统计', 'Usage stats']
+        ]
+      }
+    ],
+    note: [
+      '搜索覆盖你自己的全部活跃对话，临时留档中的对话暂不参与；草稿只保存在当前浏览器。',
+      'Search covers all of your active chats; retained chats are not searched yet, and drafts stay in this browser only.'
+    ]
+  };
+
+  const restaurantRelease: Release = {
+    tag: ['餐饮定制', 'Restaurant edition'],
+    title: ['餐饮问题，可以先说个大概', 'Start restaurant tasks with a rough idea'],
+    description: [
+      'La4RainGPT 已为餐饮经营任务增加引导式聊天。问题较宽泛时，Agent 会用少量可点击选项逐步补齐目标、背景和限制，再生成更贴合实际的回答。',
+      'La4RainGPT now guides restaurant-management tasks. When a request is broad, the Agent uses a few tappable choices to clarify the goal, context, and constraints before producing a more relevant answer.'
+    ],
+    features: [
+      {
+        icon: 'chat',
+        title: ['模糊问题先问关键点', 'Clarify only what matters'],
+        description: [
+          '例如设计会员体系或特色菜品时，每轮最多询问三个会明显影响方案方向的问题，不要求你先学会写复杂提示词。',
+          'For tasks such as membership plans or signature dishes, each round asks at most three questions that materially affect the answer. You do not need to learn complex prompting.'
+        ],
+        location: [
+          ['餐饮任务', 'Restaurant tasks'],
+          ['直接说个大概', 'Start with a rough idea']
+        ]
+      },
+      {
+        icon: 'check',
+        title: ['答案都可以直接点击', 'Tap to answer'],
+        description: [
+          '可点击预设答案，也可选择“其他 / 我来说明”或“你帮我决定”；选中状态和当前需求会立即显示。',
+          'Choose a suggested answer, add your own note, or select “Decide for me.” Selections and the current brief update immediately.'
+        ],
+        location: [
+          ['澄清卡片', 'Clarification card'],
+          ['点击选项', 'Tap a choice']
+        ]
+      },
+      {
+        icon: 'plan',
+        title: ['先看任务简报，再决定生成', 'Review the brief before generating'],
+        description: [
+          '信息足够后会整理成任务简报，你可以按当前需求直接生成，也可以继续补充，不会被迫完成冗长问卷。',
+          'When enough is known, the Agent shows a task brief. Generate from it or add more context without being forced through a long questionnaire.'
+        ],
+        location: [
+          ['任务简报', 'Task brief'],
+          ['按当前需求生成', 'Generate']
+        ]
+      },
+      {
+        icon: 'info',
+        title: ['餐厅档案无需专门维护', 'No profile setup to maintain'],
+        description: [
+          '只有任务中出现适合长期复用的稳定信息时，系统才会提议保存；必须由你确认，默认只用于当前任务。',
+          'The system only proposes saving stable, reusable facts during a task. Nothing is stored without your confirmation, and the default is task-only.'
+        ],
+        location: [
+          ['任务内提议', 'In-task proposal'],
+          ['确认后才保存', 'Save only after confirmation']
+        ]
+      }
+    ],
+    note: [
+      '餐饮引导仅在“餐饮任务”工作台生效，你可以随时切回“通用聊天”。卡片选项只补充当前需求，不会自动修改长期档案。',
+      'Restaurant guidance applies only in the Restaurant workbench, and you can switch back to General chat at any time. Card selections refine the current task and never silently change the saved profile.'
+    ]
+  };
 
   const dispatch = createEventDispatcher<{ dismiss: void }>();
   let dialogElement: HTMLDivElement;
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
+  $: release = restaurantExperience ? restaurantRelease : generalRelease;
 
   onMount(async () => {
     await tick();
@@ -69,7 +210,7 @@
         <span><Icon name="sparkles" size={19} /></span>
         <div>
           <strong>{t('更新公告', 'What’s new')}</strong>
-          <small>La4RainGPT · 2026.07</small>
+          <small>La4RainGPT · 2026.07.28</small>
         </div>
       </div>
       <button
@@ -82,96 +223,32 @@
 
     <section class="update-content">
       <div class="release-copy">
-        <span class="release-tag">{t('功能更新', 'Feature update')}</span>
-        <h2 id="update-title">{t('搜索、编辑与更顺手的输入', 'Search, editing, and a smoother composer')}</h2>
-        <p id="update-description">
-          {t(
-            '这次更新带来对话搜索、消息编辑重发、粘贴或拖拽上传、草稿自动保存与用量统计，手机还能把应用添加到主屏幕。',
-            'This update adds chat search, message editing, paste-or-drop uploads, automatic drafts, usage stats, and add-to-home-screen on mobile.'
-          )}
-        </p>
+        <span class="release-tag">{t(...release.tag)}</span>
+        <h2 id="update-title">{t(...release.title)}</h2>
+        <p id="update-description">{t(...release.description)}</p>
       </div>
 
       <div class="feature-list">
-        <article>
-          <span class="feature-icon"><Icon name="search" size={18} /></span>
-          <div>
-            <strong>{t('搜索所有对话', 'Search every chat')}</strong>
-            <p>
-              {t(
-                '侧边栏新增搜索框，可按标题和消息内容查找对话，结果附带匹配片段，点击直接打开。',
-                'A search box in the sidebar finds chats by title or message text, shows a matching snippet, and opens the chat with one tap.'
-              )}
-            </p>
-            <span class="location">
-              {t('侧边栏', 'Sidebar')}
-              <i aria-hidden="true">›</i>
-              {t('搜索对话', 'Search chats')}
-            </span>
-          </div>
-        </article>
-
-        <article>
-          <span class="feature-icon"><Icon name="edit" size={18} /></span>
-          <div>
-            <strong>{t('编辑并重新发送', 'Edit and resend')}</strong>
-            <p>
-              {t(
-                '最新一条你的消息下方有“编辑”按钮，改完点“重新发送”即可得到新回答；之前的回答仍会保留，方便对照。',
-                'Your latest message now has an “Edit” button. Resend it to get a fresh answer while earlier answers stay in the chat for comparison.'
-              )}
-            </p>
-            <span class="location">
-              {t('最新一条你的消息', 'Your latest message')}
-              <i aria-hidden="true">›</i>
-              {t('编辑', 'Edit')}
-            </span>
-          </div>
-        </article>
-
-        <article>
-          <span class="feature-icon"><Icon name="image-plus" size={18} /></span>
-          <div>
-            <strong>{t('粘贴上传与自动草稿', 'Paste, drop, and drafts')}</strong>
-            <p>
-              {t(
-                '截图可以直接粘贴进输入框，图片也可以拖进聊天窗口上传；没发送的文字会按对话自动保存，刷新页面后自动恢复。',
-                'Paste screenshots straight into the composer or drop images onto the chat. Unsent text is saved per chat and restored after a reload.'
-              )}
-            </p>
-            <span class="location">
-              {t('输入框', 'Composer')}
-            </span>
-          </div>
-        </article>
-
-        <article>
-          <span class="feature-icon"><Icon name="plan" size={18} /></span>
-          <div>
-            <strong>{t('用量统计与主屏幕', 'Usage stats and home screen')}</strong>
-            <p>
-              {t(
-                '头像菜单新增“用量统计”，按月查看回答次数与 token 消耗；手机浏览器现在可以把 La4RainGPT 添加到主屏幕全屏使用。',
-                'The profile menu gains “Usage stats” with monthly response and token totals, and mobile browsers can add La4RainGPT to the home screen.'
-              )}
-            </p>
-            <span class="location">
-              {t('头像菜单', 'Profile')}
-              <i aria-hidden="true">›</i>
-              {t('用量统计', 'Usage stats')}
-            </span>
-          </div>
-        </article>
+        {#each release.features as feature}
+          <article>
+            <span class="feature-icon"><Icon name={feature.icon} size={18} /></span>
+            <div>
+              <strong>{t(...feature.title)}</strong>
+              <p>{t(...feature.description)}</p>
+              <span class="location">
+                {#each feature.location as location, index}
+                  {#if index > 0}<i aria-hidden="true">›</i>{/if}
+                  <span>{t(...location)}</span>
+                {/each}
+              </span>
+            </div>
+          </article>
+        {/each}
       </div>
 
       <aside>
         <Icon name="info" size={17} />
-        <span>
-          {t(
-            '搜索覆盖你自己的全部活跃对话，临时留档中的对话暂不参与；草稿只保存在当前浏览器。',
-            'Search covers all of your active chats; retained chats are not searched yet, and drafts stay in this browser only.'
-          )}
-        </span>
+        <span>{t(...release.note)}</span>
       </aside>
     </section>
 

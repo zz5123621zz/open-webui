@@ -723,6 +723,371 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
 });
 
+test('restaurant guidance choices update immediately and submit together', async ({ page }, testInfo) => {
+  const restaurantUser = {
+    ...user,
+    id: 'restaurant-user',
+    username: 'laochen',
+    displayName: '老陈'
+  };
+  const conversation = {
+    id: 'restaurant-conversation',
+    ownerId: restaurantUser.id,
+    title: '餐厅会员体系',
+    model: model.id,
+    reasoningEffort: 'high',
+    createdAt: Date.now() - 5000,
+    updatedAt: Date.now()
+  };
+  const clarificationMessage = {
+    id: 'restaurant-card-message',
+    conversationId: conversation.id,
+    role: 'assistant',
+    model: model.id,
+    status: 'completed',
+    parentMessageId: 'restaurant-user-message',
+    createdAt: Date.now() - 3000,
+    completedAt: Date.now() - 2000,
+    parts: [
+      {
+        id: 'restaurant-card-part',
+        sequence: 0,
+        type: 'clarification',
+        text: '需要补充会员体系的目标、客群和模块。',
+        createdAt: Date.now() - 2000,
+        data: {
+          schemaVersion: 1,
+          instanceId: 'restaurant-card-instance',
+          intro: '先确认三个会明显影响方案方向的问题。',
+          currentUnderstanding: ['需要设计餐厅会员与储值体系'],
+          questions: [
+            {
+              key: 'goal',
+              prompt: '首要目标是什么？',
+              selection: 'single_select',
+              options: [
+                { key: 'repeat', label: '增加复购', description: '让顾客更愿意再次到店' },
+                { key: 'cash', label: '回笼资金', description: '优先提升储值现金流' }
+              ],
+              allowOther: true,
+              allowDelegatedDefault: true,
+              minimumSelections: 1,
+              maximumSelections: 1
+            },
+            {
+              key: 'audience',
+              prompt: '主要客群是谁？',
+              selection: 'multi_select',
+              options: [
+                { key: 'family', label: '家庭聚餐', description: '以家庭和亲友聚餐为主' },
+                { key: 'business', label: '商务宴请', description: '以商务接待为主' }
+              ],
+              allowOther: true,
+              allowDelegatedDefault: true,
+              minimumSelections: 1,
+              maximumSelections: 1
+            },
+            {
+              key: 'modules',
+              prompt: '优先包含哪些模块？',
+              selection: 'multi_select',
+              options: [
+                { key: 'stored_value', label: '储值规则', description: '充值档位与赠送额度' },
+                { key: 'member_tier', label: '会员等级', description: '不同等级的权益设计' },
+                { key: 'birthday', label: '生日权益', description: '生日月关怀与优惠' }
+              ],
+              allowOther: true,
+              allowDelegatedDefault: true,
+              minimumSelections: 1,
+              maximumSelections: 2
+            }
+          ]
+        }
+      }
+    ]
+  };
+  let submittedGuidance: Record<string, unknown> | undefined;
+
+  await page.addInitScript((userId) => {
+    localStorage.setItem(`personal-chat-onboarding-v1:${userId}`, 'complete');
+  }, restaurantUser.id);
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (status: number, body: unknown) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        body: JSON.stringify(body)
+      });
+
+    if (path === '/api/v1/me') {
+      return json(200, { user: restaurantUser, csrfToken: 'csrf-restaurant' });
+    }
+    if (path === '/api/v1/models') return json(200, { models });
+    if (path === '/api/v1/me/workbench') {
+      return json(200, {
+        workbench: {
+          effective: 'restaurant',
+          initial: 'restaurant',
+          preference: 'restaurant'
+        },
+        guidanceEnabled: true
+      });
+    }
+    if (path === '/api/v1/me/speech') {
+      return json(200, {
+        speech: {
+          mode: 'manual',
+          autoRead: false,
+          speed: 1,
+          voice: '',
+          effectiveVoice: '',
+          updatedAt: Date.now(),
+          serviceEnabled: false,
+          provider: '',
+          providerConfigured: false,
+          voices: [],
+          audioAuthorization: 'not_required'
+        }
+      });
+    }
+    if (path === '/api/v1/me/storage') {
+      return json(200, {
+        storage: {
+          usedBytes: 0,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 0,
+          activeConversations: 1,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/conversations' && request.method() === 'GET') {
+      return json(200, { conversations: [conversation] });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/messages`) {
+      return json(200, {
+        messages: [
+          {
+            id: 'restaurant-user-message',
+            conversationId: conversation.id,
+            role: 'user',
+            status: 'completed',
+            createdAt: Date.now() - 4000,
+            parts: [
+              {
+                id: 'restaurant-user-part',
+                sequence: 0,
+                type: 'text',
+                text: '帮我设计饭店的充卡和会员体系',
+                createdAt: Date.now() - 4000
+              }
+            ]
+          },
+          clarificationMessage
+        ]
+      });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/context-checkpoints`) {
+      return json(200, { checkpoints: [] });
+    }
+    if (
+      path === `/api/v1/conversations/${conversation.id}/responses` &&
+      request.method() === 'POST'
+    ) {
+      const body = request.postDataJSON() as {
+        guidanceSubmission?: Record<string, unknown>;
+      };
+      submittedGuidance = body.guidanceSubmission;
+      const now = Date.now();
+      const userMessage = {
+        id: 'restaurant-submission-message',
+        conversationId: conversation.id,
+        role: 'user',
+        status: 'completed',
+        createdAt: now,
+        parts: [
+          {
+            id: 'restaurant-submission-part',
+            sequence: 0,
+            type: 'clarification_submission',
+            text: '本轮需求补充已提交。',
+            createdAt: now
+          }
+        ]
+      };
+      const assistantMessage = {
+        id: 'restaurant-final-message',
+        conversationId: conversation.id,
+        role: 'assistant',
+        model: model.id,
+        status: 'streaming',
+        parentMessageId: userMessage.id,
+        createdAt: now + 1,
+        parts: []
+      };
+      const finalMessage = {
+        ...assistantMessage,
+        status: 'completed',
+        completedAt: now + 2,
+        parts: [
+          {
+            id: 'restaurant-final-part',
+            sequence: 0,
+            type: 'text',
+            text: '已根据选择生成餐厅会员体系方案。',
+            createdAt: now + 2
+          }
+        ]
+      };
+      const sse = [
+        [
+          'response.started',
+          {
+            requestId: 'restaurant-guidance-request',
+            userMessage,
+            assistantMessage
+          }
+        ],
+        ['response.text.delta', { delta: '已根据选择生成餐厅会员体系方案。' }],
+        ['response.completed', { message: finalMessage }]
+      ]
+        .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        .join('');
+      return route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        headers: { 'Cache-Control': 'no-cache' },
+        body: sse
+      });
+    }
+    return json(404, { error: { code: 'not_found', message: 'Not found.' } });
+  });
+
+  await page.goto('/');
+  const announcement = page.getByRole('dialog', {
+    name: '餐饮问题，可以先说个大概'
+  });
+  await expect(announcement).toBeVisible();
+  await expect(announcement).toContainText('答案都可以直接点击');
+  await expect(announcement).toContainText('餐厅档案无需专门维护');
+  if (testInfo.project.name === 'mobile') {
+    const bounds = await announcement.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(376);
+  }
+  await announcement.getByRole('button', { name: '知道了' }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (userId) => localStorage.getItem(`personal-chat-update-restaurant-v1:${userId}`),
+        restaurantUser.id
+      )
+    )
+    .toBe('complete');
+
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page.getByRole('button', { name: /餐厅会员体系/ }).click();
+
+  const card = page.getByRole('region', { name: '需求澄清' });
+  const generateButton = card.getByRole('button', { name: '按当前选择直接生成' });
+  await expect(card).toBeVisible();
+  await expect(generateButton).toBeDisabled();
+
+  const goalGroup = card.getByRole('radiogroup', { name: '首要目标是什么？' });
+  const repeatChoice = goalGroup.getByRole('radio', { name: /增加复购/ });
+  await repeatChoice.click();
+  await expect(repeatChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(card.getByText('本轮选择')).toBeVisible();
+  await expect(generateButton).toBeDisabled();
+
+  const otherGoal = goalGroup.getByRole('radio', { name: /其他 \/ 我来说明/ });
+  await otherGoal.click();
+  const otherGoalInput = card.getByLabel('其他 / 我来说明').first();
+  await otherGoalInput.fill('以社区家庭顾客为主');
+  await expect(otherGoal).toHaveAttribute('aria-checked', 'true');
+  await expect(repeatChoice).toHaveAttribute('aria-checked', 'false');
+  await repeatChoice.click();
+  await expect(repeatChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(otherGoal).toHaveAttribute('aria-checked', 'false');
+
+  const audienceGroup = card.getByRole('group', { name: '主要客群是谁？' });
+  const delegatedChoice = audienceGroup.getByRole('checkbox', { name: /你帮我决定/ });
+  await delegatedChoice.click();
+  await expect(delegatedChoice).toHaveAttribute('aria-checked', 'true');
+  const familyChoice = audienceGroup.getByRole('checkbox', { name: /家庭聚餐/ });
+  const otherAudience = audienceGroup.getByRole('checkbox', { name: /其他 \/ 我来说明/ });
+  await expect(familyChoice).toBeEnabled();
+  await expect(otherAudience).toBeEnabled();
+  await otherAudience.click();
+  await card.getByLabel('其他 / 我来说明').fill('以家庭聚餐顾客为主');
+  await expect(otherAudience).toHaveAttribute('aria-checked', 'true');
+  await expect(delegatedChoice).toHaveAttribute('aria-checked', 'false');
+  await delegatedChoice.click();
+  await expect(otherAudience).toHaveAttribute('aria-checked', 'false');
+  await familyChoice.click();
+  await expect(familyChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(delegatedChoice).toHaveAttribute('aria-checked', 'false');
+  await familyChoice.click();
+  await delegatedChoice.click();
+  await expect(delegatedChoice).toHaveAttribute('aria-checked', 'true');
+
+  const modulesGroup = card.getByRole('group', { name: '优先包含哪些模块？' });
+  const storedValueChoice = modulesGroup.getByRole('checkbox', { name: /储值规则/ });
+  const tierChoice = modulesGroup.getByRole('checkbox', { name: /会员等级/ });
+  const birthdayChoice = modulesGroup.getByRole('checkbox', { name: /生日权益/ });
+  await storedValueChoice.click();
+  await tierChoice.click();
+  await expect(storedValueChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(tierChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(birthdayChoice).toBeDisabled();
+  await expect(generateButton).toBeEnabled();
+  await expect(card.getByRole('button', { name: '继续完善' })).toBeEnabled();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = localStorage.getItem(
+          'restaurant-guidance-draft-v1:restaurant-user:restaurant-conversation:restaurant-card-message'
+        );
+        return raw ? JSON.parse(raw) : null;
+      })
+    )
+    .toMatchObject({
+      goal: { selectedOptionKeys: ['repeat'] },
+      audience: { delegatedDefault: true },
+      modules: { selectedOptionKeys: ['stored_value', 'member_tier'] }
+    });
+
+  await generateButton.click();
+  await expect(page.getByText('已根据选择生成餐厅会员体系方案。')).toBeVisible();
+  expect(submittedGuidance).toMatchObject({
+    sourceAssistantMessageId: clarificationMessage.id,
+    sourcePartId: 'restaurant-card-part',
+    intent: 'generate_from_current',
+    answers: [
+      { questionKey: 'goal', selectedOptionKeys: ['repeat'] },
+      {
+        questionKey: 'audience',
+        selectedOptionKeys: [],
+        delegatedDefault: true
+      },
+      {
+        questionKey: 'modules',
+        selectedOptionKeys: ['stored_value', 'member_tier']
+      }
+    ]
+  });
+  await expect(card).toContainText('本轮已提交或已被后续消息替代');
+});
+
 test('a persisted background response resumes after reopening its chat', async ({ page }) => {
   const startedAt = Date.now() - 6000;
   const conversation = {
