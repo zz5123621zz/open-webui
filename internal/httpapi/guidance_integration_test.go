@@ -124,8 +124,19 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 	if source.Status != "completed" ||
 		len(source.Parts) != 1 ||
 		source.Parts[0].Type != guidance.PartClarification ||
+		source.Parts[0].ID == "" ||
 		len(source.ProviderItems) != 0 {
 		t.Fatalf("persisted clarification source = %#v", source)
+	}
+	if !strings.Contains(
+		string(firstBody),
+		`"id":"`+source.Parts[0].ID+`"`,
+	) {
+		t.Fatalf(
+			"completed clarification stream omitted persisted part id %q: %s",
+			source.Parts[0].ID,
+			firstBody,
+		)
 	}
 
 	submissionBody, err := json.Marshal(map[string]any{
