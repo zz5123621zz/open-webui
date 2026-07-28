@@ -33,6 +33,7 @@ func (s *Server) guidanceRuntime(
 	runtime := guidance.Runtime{
 		Enabled:        true,
 		AllowTaskBrief: true,
+		MaxRounds:      guidance.MaximumClarificationRounds,
 	}
 	for _, fact := range profile {
 		runtime.ProfileFacts = append(runtime.ProfileFacts, guidance.ProfileFact{
@@ -53,7 +54,7 @@ func (s *Server) guidanceRuntime(
 	}
 	if taskStart < 0 {
 		runtime.AllowClarification = true
-		runtime.MaxQuestions = 3
+		runtime.MaxQuestions = guidance.MaximumQuestionsPerRound
 		runtime.FinalAnswer = forceFinal
 		if forceFinal {
 			runtime.AllowClarification = false
@@ -116,19 +117,41 @@ func (s *Server) guidanceRuntime(
 		return runtime, nil
 	}
 
-	if latestIntent == guidance.IntentAddContext && addContextCount == 1 {
-		runtime.AllowClarification = true
-		runtime.MaxQuestions = 3
+	requireTaskBrief := func() (guidance.Runtime, error) {
+		runtime.AllowClarification = false
+		runtime.AllowTaskBrief = true
+		runtime.RequireClarification = false
+		runtime.RequireTaskBrief = true
+		runtime.MaxQuestions = 0
 		return runtime, nil
 	}
 	if latestDelegatedDefault {
+		return requireTaskBrief()
+	}
+
+	if latestIntent == guidance.IntentContinueRefining {
+		if runtime.RoundCount >= runtime.MaxRounds {
+			return requireTaskBrief()
+		}
+		runtime.AllowClarification = true
+		runtime.AllowTaskBrief = false
+		runtime.RequireClarification = true
+		runtime.MaxQuestions = guidance.MaximumQuestionsPerRound
 		return runtime, nil
 	}
-	remaining := 5 - runtime.QuestionCount
-	if runtime.RoundCount < 2 && remaining >= 2 {
+	if latestIntent == guidance.IntentAddContext && addContextCount == 1 {
+		if runtime.RoundCount >= runtime.MaxRounds {
+			return requireTaskBrief()
+		}
 		runtime.AllowClarification = true
-		runtime.MaxQuestions = min(3, remaining)
+		runtime.MaxQuestions = guidance.MaximumQuestionsPerRound
+		return runtime, nil
 	}
+	if runtime.RoundCount >= runtime.MaxRounds {
+		return requireTaskBrief()
+	}
+	runtime.AllowClarification = true
+	runtime.MaxQuestions = guidance.MaximumQuestionsPerRound
 	return runtime, nil
 }
 

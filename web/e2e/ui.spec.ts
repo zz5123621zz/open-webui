@@ -758,6 +758,8 @@ test('restaurant guidance choices update immediately and submit together', async
         data: {
           schemaVersion: 1,
           instanceId: 'restaurant-card-instance',
+          round: 1,
+          maxRounds: 3,
           intro: '先确认三个会明显影响方案方向的问题。',
           currentUnderstanding: ['需要设计餐厅会员与储值体系'],
           questions: [
@@ -806,7 +808,87 @@ test('restaurant guidance choices update immediately and submit together', async
       }
     ]
   };
-  let submittedGuidance: Record<string, unknown> | undefined;
+  const roundTwoData = {
+    schemaVersion: 1 as const,
+    instanceId: 'restaurant-card-instance-round-2',
+    round: 2,
+    maxRounds: 3,
+    intro: '再确认两个会影响会员规则落地方式的问题。',
+    currentUnderstanding: [
+      '首要目标是增加复购',
+      '主要客群是家庭聚餐',
+      '优先设计储值规则和会员等级'
+    ],
+    questions: [
+      {
+        key: 'visit_frequency',
+        prompt: '顾客通常多久来一次？',
+        selection: 'single_select' as const,
+        options: [
+          { key: 'weekly', label: '每周或每两周', description: '适合较高频的日常复购' },
+          { key: 'monthly', label: '每月一两次', description: '适合家庭聚餐型顾客' }
+        ],
+        allowOther: true,
+        allowDelegatedDefault: true,
+        minimumSelections: 1,
+        maximumSelections: 1
+      },
+      {
+        key: 'benefit_boundary',
+        prompt: '优惠力度希望偏向哪种？',
+        selection: 'single_select' as const,
+        options: [
+          { key: 'conservative', label: '保守可持续', description: '避免长期依赖大折扣' },
+          { key: 'balanced', label: '适中有吸引力', description: '兼顾吸引力和毛利空间' }
+        ],
+        allowOther: true,
+        allowDelegatedDefault: true,
+        minimumSelections: 1,
+        maximumSelections: 1
+      }
+    ]
+  };
+  const roundThreeData = {
+    schemaVersion: 1 as const,
+    instanceId: 'restaurant-card-instance-round-3',
+    round: 3,
+    maxRounds: 3,
+    intro: '最后确认两个会影响执行细节的问题。',
+    currentUnderstanding: [
+      '首要目标是增加复购',
+      '主要客群是家庭聚餐',
+      '优惠力度以保守可持续为主'
+    ],
+    questions: [
+      {
+        key: 'launch_scope',
+        prompt: '首批准备覆盖哪些顾客？',
+        selection: 'single_select' as const,
+        options: [
+          { key: 'regulars', label: '先邀请老顾客', description: '先小范围验证规则' },
+          { key: 'everyone', label: '面向全部顾客', description: '直接全面上线' }
+        ],
+        allowOther: true,
+        allowDelegatedDefault: true,
+        minimumSelections: 1,
+        maximumSelections: 1
+      },
+      {
+        key: 'staff_script',
+        prompt: '是否需要员工介绍话术？',
+        selection: 'single_select' as const,
+        options: [
+          { key: 'include', label: '需要简短话术', description: '方便员工统一介绍' },
+          { key: 'skip', label: '暂时不需要', description: '先聚焦会员规则' }
+        ],
+        allowOther: true,
+        allowDelegatedDefault: true,
+        minimumSelections: 1,
+        maximumSelections: 1
+      }
+    ]
+  };
+  const submittedGuidance: Array<Record<string, unknown>> = [];
 
   await page.addInitScript((userId) => {
     localStorage.setItem(`personal-chat-onboarding-v1:${userId}`, 'complete');
@@ -902,17 +984,22 @@ test('restaurant guidance choices update immediately and submit together', async
       const body = request.postDataJSON() as {
         guidanceSubmission?: Record<string, unknown>;
       };
-      submittedGuidance = body.guidanceSubmission;
+      if (body.guidanceSubmission) submittedGuidance.push(body.guidanceSubmission);
+      const intent = String(body.guidanceSubmission?.intent || '');
+      const responseNumber = submittedGuidance.length;
+      const nextRound = responseNumber + 1;
+      const continuing = intent === 'continue_refining';
+      const nextRoundData = nextRound === 2 ? roundTwoData : roundThreeData;
       const now = Date.now();
       const userMessage = {
-        id: 'restaurant-submission-message',
+        id: `restaurant-submission-message-${responseNumber}`,
         conversationId: conversation.id,
         role: 'user',
         status: 'completed',
         createdAt: now,
         parts: [
           {
-            id: 'restaurant-submission-part',
+            id: `restaurant-submission-part-${responseNumber}`,
             sequence: 0,
             type: 'clarification_submission',
             text: '本轮需求补充已提交。',
@@ -921,7 +1008,9 @@ test('restaurant guidance choices update immediately and submit together', async
         ]
       };
       const assistantMessage = {
-        id: 'restaurant-final-message',
+        id: continuing
+          ? `restaurant-card-message-round-${nextRound}`
+          : 'restaurant-final-message',
         conversationId: conversation.id,
         role: 'assistant',
         model: model.id,
@@ -930,32 +1019,57 @@ test('restaurant guidance choices update immediately and submit together', async
         createdAt: now + 1,
         parts: []
       };
-      const finalMessage = {
-        ...assistantMessage,
-        status: 'completed',
-        completedAt: now + 2,
-        parts: [
-          {
-            id: 'restaurant-final-part',
-            sequence: 0,
-            type: 'text',
-            text: '已根据选择生成餐厅会员体系方案。',
-            createdAt: now + 2
+      const finalMessage = continuing
+        ? {
+            ...assistantMessage,
+            status: 'completed',
+            completedAt: now + 2,
+            parts: [
+              {
+                id: `restaurant-card-part-round-${nextRound}`,
+                sequence: 0,
+                type: 'clarification',
+                text:
+                  nextRound === 2
+                    ? '再确认顾客频率和优惠边界。'
+                    : '最后确认上线范围和员工话术。',
+                data: nextRoundData,
+                createdAt: now + 2
+              }
+            ]
           }
-        ]
-      };
-      const sse = [
+        : {
+            ...assistantMessage,
+            status: 'completed',
+            completedAt: now + 2,
+            parts: [
+              {
+                id: 'restaurant-final-part',
+                sequence: 0,
+                type: 'text',
+                text: '已根据三轮选择生成餐厅会员体系方案。',
+                createdAt: now + 2
+              }
+            ]
+          };
+      const events: Array<[string, unknown]> = [
         [
           'response.started',
           {
-            requestId: 'restaurant-guidance-request',
+            requestId: `restaurant-guidance-request-${responseNumber}`,
             userMessage,
             assistantMessage
           }
-        ],
-        ['response.text.delta', { delta: '已根据选择生成餐厅会员体系方案。' }],
-        ['response.completed', { message: finalMessage }]
-      ]
+        ]
+      ];
+      if (!continuing) {
+        events.push([
+          'response.text.delta',
+          { delta: '已根据三轮选择生成餐厅会员体系方案。' }
+        ]);
+      }
+      events.push(['response.completed', { message: finalMessage }]);
+      const sse = events
         .map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
         .join('');
       return route.fulfill({
@@ -996,9 +1110,11 @@ test('restaurant guidance choices update immediately and submit together', async
   }
   await page.getByRole('button', { name: /餐厅会员体系/ }).click();
 
-  const card = page.getByRole('region', { name: '需求澄清' });
+  const cards = page.getByRole('region', { name: '需求澄清' });
+  const card = cards.first();
   const generateButton = card.getByRole('button', { name: '按当前选择直接生成' });
   await expect(card).toBeVisible();
+  await expect(card).toContainText('第 1/3 轮');
   await expect(generateButton).toBeDisabled();
 
   const goalGroup = card.getByRole('radiogroup', { name: '首要目标是什么？' });
@@ -1066,18 +1182,21 @@ test('restaurant guidance choices update immediately and submit together', async
       modules: { selectedOptionKeys: ['stored_value', 'member_tier'] }
     });
 
-  await generateButton.click();
-  await expect(page.getByText('已根据选择生成餐厅会员体系方案。')).toBeVisible();
-  expect(submittedGuidance).toMatchObject({
+  await familyChoice.click();
+  await expect(familyChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(delegatedChoice).toHaveAttribute('aria-checked', 'false');
+  await card.getByRole('button', { name: '继续完善' }).click();
+
+  await expect(cards).toHaveCount(2);
+  expect(submittedGuidance[0]).toMatchObject({
     sourceAssistantMessageId: clarificationMessage.id,
     sourcePartId: 'restaurant-card-part',
-    intent: 'generate_from_current',
+    intent: 'continue_refining',
     answers: [
       { questionKey: 'goal', selectedOptionKeys: ['repeat'] },
       {
         questionKey: 'audience',
-        selectedOptionKeys: [],
-        delegatedDefault: true
+        selectedOptionKeys: ['family']
       },
       {
         questionKey: 'modules',
@@ -1086,6 +1205,61 @@ test('restaurant guidance choices update immediately and submit together', async
     ]
   });
   await expect(card).toContainText('本轮已提交或已被后续消息替代');
+
+  const roundTwoCard = cards.nth(1);
+  await expect(roundTwoCard).toContainText('第 2/3 轮');
+  await expect(roundTwoCard).toContainText('顾客通常多久来一次？');
+  await roundTwoCard
+    .getByRole('radiogroup', { name: '顾客通常多久来一次？' })
+    .getByRole('radio', { name: /每月一两次/ })
+    .click();
+  await roundTwoCard
+    .getByRole('radiogroup', { name: '优惠力度希望偏向哪种？' })
+    .getByRole('radio', { name: /保守可持续/ })
+    .click();
+  await roundTwoCard.getByRole('button', { name: '继续完善' }).click();
+
+  await expect(cards).toHaveCount(3);
+  expect(submittedGuidance[1]).toMatchObject({
+    sourceAssistantMessageId: 'restaurant-card-message-round-2',
+    sourcePartId: 'restaurant-card-part-round-2',
+    intent: 'continue_refining',
+    answers: [
+      { questionKey: 'visit_frequency', selectedOptionKeys: ['monthly'] },
+      { questionKey: 'benefit_boundary', selectedOptionKeys: ['conservative'] }
+    ]
+  });
+  await expect(roundTwoCard).toContainText('本轮已提交或已被后续消息替代');
+
+  const roundThreeCard = cards.nth(2);
+  await expect(roundThreeCard).toContainText('第 3/3 轮');
+  await expect(
+    roundThreeCard.getByRole('button', { name: '形成任务简报' })
+  ).toBeDisabled();
+  await roundThreeCard
+    .getByRole('radiogroup', { name: '首批准备覆盖哪些顾客？' })
+    .getByRole('radio', { name: /先邀请老顾客/ })
+    .click();
+  await roundThreeCard
+    .getByRole('radiogroup', { name: '是否需要员工介绍话术？' })
+    .getByRole('radio', { name: /需要简短话术/ })
+    .click();
+  await expect(
+    roundThreeCard.getByRole('button', { name: '形成任务简报' })
+  ).toBeEnabled();
+  await roundThreeCard.getByRole('button', { name: '按当前选择直接生成' }).click();
+
+  await expect(page.getByText('已根据三轮选择生成餐厅会员体系方案。')).toBeVisible();
+  expect(submittedGuidance[2]).toMatchObject({
+    sourceAssistantMessageId: 'restaurant-card-message-round-3',
+    sourcePartId: 'restaurant-card-part-round-3',
+    intent: 'generate_from_current',
+    answers: [
+      { questionKey: 'launch_scope', selectedOptionKeys: ['regulars'] },
+      { questionKey: 'staff_script', selectedOptionKeys: ['include'] }
+    ]
+  });
+  await expect(roundThreeCard).toContainText('本轮已提交或已被后续消息替代');
 });
 
 test('a persisted background response resumes after reopening its chat', async ({ page }) => {

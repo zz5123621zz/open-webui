@@ -40,12 +40,17 @@ func TestParseClarificationControlCallValidatesAndNormalizes(t *testing.T) {
 			}]
 		}`),
 		"guidance_test_1",
-		3,
+		Runtime{
+			AllowClarification: true,
+			MaxQuestions:       MaximumQuestionsPerRound,
+			MaxRounds:          MaximumClarificationRounds,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if part.Type != PartClarification ||
+		!strings.Contains(part.Text, "第 1/3 轮") ||
 		!strings.Contains(part.Text, "增加复购") ||
 		!strings.Contains(part.Text, "你帮我决定") {
 		t.Fatalf("normalized clarification part = %#v", part)
@@ -54,7 +59,10 @@ func TestParseClarificationControlCallValidatesAndNormalizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cards.InstanceID != "guidance_test_1" || len(cards.Questions) != 2 {
+	if cards.InstanceID != "guidance_test_1" ||
+		cards.Round != 1 ||
+		cards.MaxRounds != MaximumClarificationRounds ||
+		len(cards.Questions) != 2 {
 		t.Fatalf("stored clarification cards = %#v", cards)
 	}
 }
@@ -67,6 +75,10 @@ func TestClarificationControlRejectsUnsafeOrExpandedOutput(t *testing.T) {
 		}`,
 		"model instance id": `{
 			"schemaVersion":1,"instanceId":"model_value","intro":null,
+			"currentUnderstanding":[],"questions":[]
+		}`,
+		"model round": `{
+			"schemaVersion":1,"round":2,"maxRounds":3,"intro":null,
 			"currentUnderstanding":[],"questions":[]
 		}`,
 		"unsafe label": `{
@@ -115,7 +127,10 @@ func TestClarificationControlRejectsUnsafeOrExpandedOutput(t *testing.T) {
 				ToolShowClarificationCards,
 				json.RawMessage(raw),
 				"guidance_test_2",
-				3,
+				Runtime{
+					AllowClarification: true,
+					MaxQuestions:       MaximumQuestionsPerRound,
+				},
 			); err == nil {
 				t.Fatal("unsafe clarification output was accepted")
 			}
@@ -169,7 +184,7 @@ func TestParseClarificationControlHonorsRuntimeQuestionLimit(t *testing.T) {
 			}]
 		}`),
 		"guidance_test_limit",
-		2,
+		Runtime{AllowClarification: true, MaxQuestions: 2},
 	)
 	if err == nil {
 		t.Fatal("clarification exceeding the runtime question limit was accepted")
@@ -282,7 +297,11 @@ func TestTaskBriefProfileProposalRequiresExplicitDecision(t *testing.T) {
 }
 
 func TestToolDefinitionsStayStrictAndRuntimeCanForceFinalAnswer(t *testing.T) {
-	tools := ToolDefinitions(true, 2)
+	tools := ToolDefinitions(Runtime{
+		AllowClarification: true,
+		AllowTaskBrief:     true,
+		MaxQuestions:       2,
+	})
 	raw, err := json.Marshal(tools)
 	if err != nil {
 		t.Fatal(err)

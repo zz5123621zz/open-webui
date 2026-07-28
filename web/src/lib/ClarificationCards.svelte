@@ -37,8 +37,25 @@
   let previewUnresolved: string[] = [];
   let interactionDisabled = true;
   let complete = false;
+  let currentRoundNumber: number | null = null;
+  let roundLimit: number | null = null;
+  let finalRound = false;
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
+  $: currentRoundNumber =
+    typeof data.round === 'number' && Number.isInteger(data.round) && data.round > 0
+      ? data.round
+      : null;
+  $: roundLimit =
+    typeof data.maxRounds === 'number' &&
+    Number.isInteger(data.maxRounds) &&
+    data.maxRounds > 0
+      ? data.maxRounds
+      : null;
+  $: finalRound =
+    currentRoundNumber !== null &&
+    roundLimit !== null &&
+    currentRoundNumber >= roundLimit;
   $: draftKey =
     `restaurant-guidance-draft-v1:${userId}:${conversationId}:${sourceMessageId}`;
   $: if (draftKey !== initializedKey) initializeDraft(draftKey);
@@ -324,6 +341,14 @@
     <span aria-hidden="true"><Icon name="sparkles" size={16} /></span>
     <div>
       <strong>{t('把需求再说清一点', 'Refine the request')}</strong>
+      {#if currentRoundNumber !== null && roundLimit !== null}
+        <small class="round-progress">
+          {t(
+            `第 ${currentRoundNumber}/${roundLimit} 轮`,
+            `Round ${currentRoundNumber} of ${roundLimit}`
+          )}
+        </small>
+      {/if}
       {#if data.intro}<p>{data.intro}</p>{/if}
     </div>
   </header>
@@ -511,7 +536,9 @@
         disabled={interactionDisabled || !complete}
         on:click={() => submit('continue_refining')}
       >
-        {t('继续完善', 'Keep refining')}
+        {finalRound
+          ? t('形成任务简报', 'Create task brief')
+          : t('继续完善', 'Keep refining')}
       </button>
       <button
         type="button"
@@ -565,6 +592,17 @@
   header strong {
     display: block;
     font-size: 1rem;
+  }
+
+  .round-progress {
+    display: inline-flex;
+    margin-top: 5px;
+    padding: 2px 8px;
+    color: var(--primary);
+    border-radius: 999px;
+    background: var(--primary-soft);
+    font-size: 0.75rem;
+    font-weight: 700;
   }
 
   header p {

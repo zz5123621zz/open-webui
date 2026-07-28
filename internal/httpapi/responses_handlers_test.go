@@ -518,11 +518,40 @@ func TestGuidanceFunctionCallBecomesValidatedStructuredPart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cards.InstanceID != "assistant_guidance_1" || len(cards.Questions) != 2 {
+	if cards.InstanceID != "assistant_guidance_1" ||
+		cards.Round != 1 ||
+		cards.MaxRounds != guidance.MaximumClarificationRounds ||
+		len(cards.Questions) != 2 {
 		t.Fatalf("stored guidance cards = %#v", cards)
 	}
 	if len(accumulator.providerItems) != 0 {
 		t.Fatalf("function call was persisted as provider replay: %#v", accumulator.providerItems)
+	}
+}
+
+func TestRequiredGuidanceRejectsPlainTextWithoutControlCall(t *testing.T) {
+	accumulator := responseAccumulator{
+		guidanceRuntime: guidance.Runtime{
+			Enabled:              true,
+			AllowClarification:   true,
+			RequireClarification: true,
+			MaxQuestions:         guidance.MaximumQuestionsPerRound,
+			MaxRounds:            guidance.MaximumClarificationRounds,
+			RoundCount:           1,
+		},
+	}
+	accumulator.text.WriteString("模型错误地直接回答了任务。")
+	accumulator.finalizeGuidance()
+	parts := accumulator.parts()
+	if accumulator.failureCode != "invalid_guidance_output" ||
+		len(parts) != 1 ||
+		parts[0].Type != guidance.PartGuidanceError ||
+		strings.Contains(parts[0].TextContent, "模型错误") {
+		t.Fatalf(
+			"required guidance without control = failure %q parts %#v",
+			accumulator.failureCode,
+			parts,
+		)
 	}
 }
 

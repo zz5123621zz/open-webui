@@ -1234,16 +1234,20 @@ func (s *Server) buildResponsesRequest(
 	if s.cfg.Tools.ImageGenerationEnabled && model.ImageGenerationMode == "responses_tool" {
 		tools = append(tools, map[string]any{"type": "image_generation"})
 	}
+	toolChoice := "auto"
 	if guidanceState.Enabled &&
 		!guidanceState.FinalAnswer &&
 		(guidanceState.AllowClarification || guidanceState.AllowTaskBrief) {
-		tools = append(
-			tools,
-			guidance.ToolDefinitions(
-				guidanceState.AllowClarification,
-				guidanceState.MaxQuestions,
-			)...,
-		)
+		guidanceTools := guidance.ToolDefinitions(guidanceState)
+		if guidanceState.RequireClarification || guidanceState.RequireTaskBrief {
+			// A user-selected guidance transition must be deterministic. Keep
+			// only the one allowed control tool so tool_choice=required cannot
+			// select web search, image generation, or the wrong control.
+			tools = guidanceTools
+			toolChoice = "required"
+		} else {
+			tools = append(tools, guidanceTools...)
+		}
 	}
 	return provider.ResponsesRequest{
 		Model:            conversation.Model,
@@ -1251,7 +1255,7 @@ func (s *Server) buildResponsesRequest(
 		SafetyIdentifier: s.providerSafetyIdentifier(userID),
 		Input:            input, Stream: true, Store: false,
 		Reasoning: provider.ReasoningOptions{Effort: effort, Summary: "auto"},
-		Tools:     tools, ToolChoice: "auto",
+		Tools:     tools, ToolChoice: toolChoice,
 	}, nil
 }
 
@@ -1836,7 +1840,12 @@ func functionCallArguments(raw json.RawMessage) (json.RawMessage, bool) {
 }
 
 func (a *responseAccumulator) finalizeGuidance() {
-	if !a.guidanceRuntime.Enabled || len(a.guidanceCalls) == 0 {
+	if !a.guidanceRuntime.Enabled {
+		return
+	}
+	controlRequired := a.guidanceRuntime.RequireClarification ||
+		a.guidanceRuntime.RequireTaskBrief
+	if len(a.guidanceCalls) == 0 && !controlRequired {
 		return
 	}
 	invalid := len(a.guidanceCalls) != 1 || strings.TrimSpace(a.text.String()) != ""
@@ -1860,7 +1869,7 @@ func (a *responseAccumulator) finalizeGuidance() {
 				call.Name,
 				call.Arguments,
 				a.guidanceInstanceID,
-				a.guidanceRuntime.MaxQuestions,
+				a.guidanceRuntime,
 			)
 			invalid = err != nil
 		}

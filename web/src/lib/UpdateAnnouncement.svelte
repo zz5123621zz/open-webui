@@ -94,8 +94,8 @@
         icon: 'chat',
         title: ['模糊问题先问关键点', 'Clarify only what matters'],
         description: [
-          '例如设计会员体系或特色菜品时，每轮最多询问三个会明显影响方案方向的问题，不要求你先学会写复杂提示词。',
-          'For tasks such as membership plans or signature dishes, each round asks at most three questions that materially affect the answer. You do not need to learn complex prompting.'
+          '例如设计会员体系或特色菜品时，最多进行三轮澄清，每轮询问不超过三个会明显影响方案方向的问题，不要求你先学会写复杂提示词。',
+          'For tasks such as membership plans or signature dishes, clarification can continue for up to three rounds, with no more than three high-impact questions per round. You do not need to learn complex prompting.'
         ],
         location: [
           ['餐饮任务', 'Restaurant tasks'],

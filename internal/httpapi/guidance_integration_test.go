@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -128,6 +129,14 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 		len(source.ProviderItems) != 0 {
 		t.Fatalf("persisted clarification source = %#v", source)
 	}
+	sourceCards, err := guidance.DecodeClarificationCards(source.Parts[0].JSONContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceCards.Round != 1 ||
+		sourceCards.MaxRounds != guidance.MaximumClarificationRounds {
+		t.Fatalf("initial clarification round metadata = %#v", sourceCards)
+	}
 	if !strings.Contains(
 		string(firstBody),
 		`"id":"`+source.Parts[0].ID+`"`,
@@ -208,6 +217,217 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 			"Produce the complete answer now",
 		) {
 		t.Fatalf("confirmed provider request lost normalized guidance history: %s", secondRequestRaw)
+	}
+}
+
+func TestRestaurantGuidanceContinueRefiningRequiresThreeBoundedRounds(t *testing.T) {
+	var providerMu sync.Mutex
+	providerRequests := make([]map[string]any, 0, 5)
+	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeGuidanceTestModel(w)
+		case "/v1/responses":
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			providerMu.Lock()
+			providerRequests = append(providerRequests, request)
+			attempt := len(providerRequests)
+			providerMu.Unlock()
+			switch attempt {
+			case 1, 2, 3:
+				writeGuidanceFunctionStream(
+					w,
+					fmt.Sprintf("resp_guidance_round_%d", attempt),
+					guidance.ToolShowClarificationCards,
+					guidanceRoundArguments(attempt),
+				)
+			case 4:
+				writeGuidanceFunctionStream(
+					w,
+					"resp_guidance_brief",
+					guidance.ToolShowTaskBrief,
+					validTaskBriefArguments(),
+				)
+			default:
+				writeCompletedTextStream(
+					w,
+					"resp_guidance_three_round_final",
+					"这是经过三轮需求澄清后生成的会员方案。",
+				)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(mockProvider.Close)
+
+	server, dataStore, user, cookie, csrf := startGuidanceIntegrationApp(
+		t,
+		mockProvider.URL,
+	)
+	conversation := createTestConversation(
+		t,
+		server.URL,
+		cookie,
+		csrf,
+		"gpt-guidance",
+		"high",
+	)
+	first := authenticatedRequest(
+		t,
+		http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		cookie,
+		csrf,
+		`{
+			"text":"帮我设计饭店的充卡和会员体系",
+			"attachmentIds":[],
+			"requestId":"guidance-three-round-1"
+		}`,
+	)
+	firstBody, _ := io.ReadAll(first.Body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK ||
+		!strings.Contains(string(firstBody), "event: response.completed") {
+		t.Fatalf("initial three-round response status=%d body=%s", first.StatusCode, firstBody)
+	}
+
+	messages, err := dataStore.ListMessages(context.Background(), user.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := messages[len(messages)-1]
+	for round := 1; round <= guidance.MaximumClarificationRounds; round++ {
+		if len(source.Parts) != 1 ||
+			source.Parts[0].Type != guidance.PartClarification {
+			t.Fatalf("round %d source = %#v", round, source)
+		}
+		cards, err := guidance.DecodeClarificationCards(source.Parts[0].JSONContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cards.Round != round ||
+			cards.MaxRounds != guidance.MaximumClarificationRounds {
+			t.Fatalf("round %d metadata = %#v", round, cards)
+		}
+		answers := make([]map[string]any, 0, len(cards.Questions))
+		for _, question := range cards.Questions {
+			answers = append(answers, map[string]any{
+				"questionKey":        question.Key,
+				"selectedOptionKeys": []string{question.Options[0].Key},
+			})
+		}
+		submissionBody, err := json.Marshal(map[string]any{
+			"requestId": fmt.Sprintf("guidance-three-round-%d", round+1),
+			"guidanceSubmission": map[string]any{
+				"sourceAssistantMessageId": source.ID,
+				"sourcePartId":             source.Parts[0].ID,
+				"intent":                   guidance.IntentContinueRefining,
+				"answers":                  answers,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := authenticatedRequest(
+			t,
+			http.MethodPost,
+			server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+			cookie,
+			csrf,
+			string(submissionBody),
+		)
+		responseBody, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK ||
+			!strings.Contains(string(responseBody), "event: response.completed") {
+			t.Fatalf(
+				"round %d continuation status=%d body=%s",
+				round,
+				response.StatusCode,
+				responseBody,
+			)
+		}
+		messages, err = dataStore.ListMessages(
+			context.Background(),
+			user.ID,
+			conversation.ID,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source = messages[len(messages)-1]
+	}
+
+	if len(source.Parts) != 1 ||
+		source.Parts[0].Type != guidance.PartTaskBrief {
+		t.Fatalf("three-round flow did not end in a task brief: %#v", source)
+	}
+	confirmBody, err := json.Marshal(map[string]any{
+		"requestId": "guidance-three-round-final",
+		"guidanceSubmission": map[string]any{
+			"sourceAssistantMessageId": source.ID,
+			"sourcePartId":             source.Parts[0].ID,
+			"intent":                   guidance.IntentConfirmBrief,
+			"answers":                  []any{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := authenticatedRequest(
+		t,
+		http.MethodPost,
+		server.URL+"/api/v1/conversations/"+conversation.ID+"/responses",
+		cookie,
+		csrf,
+		string(confirmBody),
+	)
+	finalBody, _ := io.ReadAll(final.Body)
+	final.Body.Close()
+	if final.StatusCode != http.StatusOK ||
+		!strings.Contains(
+			string(finalBody),
+			"这是经过三轮需求澄清后生成的会员方案。",
+		) {
+		t.Fatalf("three-round final status=%d body=%s", final.StatusCode, finalBody)
+	}
+
+	providerMu.Lock()
+	requests := append([]map[string]any(nil), providerRequests...)
+	providerMu.Unlock()
+	if len(requests) != 5 {
+		t.Fatalf("three-round provider requests = %d, want 5", len(requests))
+	}
+	for index, expectedRound := range []int{2, 3} {
+		request := requests[index+1]
+		if stringValue(request["tool_choice"]) != "required" ||
+			!providerRequestHasOnlyTool(
+				request,
+				guidance.ToolShowClarificationCards,
+			) ||
+			!strings.Contains(
+				stringValue(request["instructions"]),
+				fmt.Sprintf("round %d of 3", expectedRound),
+			) {
+			t.Fatalf("required round %d request = %#v", expectedRound, request)
+		}
+	}
+	if stringValue(requests[3]["tool_choice"]) != "required" ||
+		!providerRequestHasOnlyTool(requests[3], guidance.ToolShowTaskBrief) ||
+		!strings.Contains(
+			stringValue(requests[3]["instructions"]),
+			"limit of 3 rounds",
+		) {
+		t.Fatalf("post-round-limit task brief request = %#v", requests[3])
+	}
+	if providerRequestHasTool(requests[4], guidance.ToolShowClarificationCards) ||
+		providerRequestHasTool(requests[4], guidance.ToolShowTaskBrief) {
+		t.Fatalf("confirmed brief still exposed guidance tools: %#v", requests[4])
 	}
 }
 
@@ -460,6 +680,39 @@ func writeGuidanceFunctionStream(
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 }
 
+func guidanceRoundArguments(round int) string {
+	return fmt.Sprintf(`{
+		"schemaVersion":1,
+		"intro":"继续确认本轮最关键的两个问题。",
+		"currentUnderstanding":["正在逐轮完善餐厅会员体系"],
+		"questions":[{
+			"key":"round_%d_goal",
+			"prompt":"第%d轮的首要选择是什么？",
+			"selection":"single_select",
+			"options":[
+				{"key":"practical","label":"优先落地","description":null},
+				{"key":"distinctive","label":"优先特色","description":null}
+			],
+			"allowOther":true,
+			"allowDelegatedDefault":true,
+			"minimumSelections":1,
+			"maximumSelections":1
+		},{
+			"key":"round_%d_scope",
+			"prompt":"第%d轮希望覆盖哪种范围？",
+			"selection":"single_select",
+			"options":[
+				{"key":"focused","label":"先做核心部分","description":null},
+				{"key":"complete","label":"给出完整方案","description":null}
+			],
+			"allowOther":true,
+			"allowDelegatedDefault":true,
+			"minimumSelections":1,
+			"maximumSelections":1
+		}]
+	}`, round, round, round, round)
+}
+
 func providerRequestHasTool(request map[string]any, name string) bool {
 	tools, _ := request["tools"].([]any)
 	for _, raw := range tools {
@@ -469,6 +722,11 @@ func providerRequestHasTool(request map[string]any, name string) bool {
 		}
 	}
 	return false
+}
+
+func providerRequestHasOnlyTool(request map[string]any, name string) bool {
+	tools, _ := request["tools"].([]any)
+	return len(tools) == 1 && providerRequestHasTool(request, name)
 }
 
 func stringValue(value any) string {

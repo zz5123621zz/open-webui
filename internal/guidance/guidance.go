@@ -16,6 +16,9 @@ import (
 const (
 	SchemaVersion = 1
 
+	MaximumClarificationRounds = 3
+	MaximumQuestionsPerRound    = 3
+
 	ToolShowClarificationCards = "show_clarification_cards"
 	ToolShowTaskBrief          = "show_task_brief"
 
@@ -70,6 +73,8 @@ var restaurantProfileFieldLabels = map[string]string{
 type ClarificationCards struct {
 	SchemaVersion        int                     `json:"schemaVersion"`
 	InstanceID           string                  `json:"instanceId"`
+	Round                int                     `json:"round,omitempty"`
+	MaxRounds            int                     `json:"maxRounds,omitempty"`
 	Intro                string                  `json:"intro,omitempty"`
 	CurrentUnderstanding []string                `json:"currentUnderstanding"`
 	Questions            []ClarificationQuestion `json:"questions"`
@@ -155,22 +160,25 @@ type ProfileFact struct {
 }
 
 type Runtime struct {
-	Enabled            bool
-	FinalAnswer        bool
-	AllowClarification bool
-	AllowTaskBrief     bool
-	MaxQuestions       int
-	RoundCount         int
-	QuestionCount      int
-	UserRequestedExtra bool
-	ProfileFacts       []ProfileFact
+	Enabled              bool
+	FinalAnswer          bool
+	AllowClarification   bool
+	AllowTaskBrief       bool
+	RequireClarification bool
+	RequireTaskBrief     bool
+	MaxQuestions         int
+	MaxRounds            int
+	RoundCount           int
+	QuestionCount        int
+	UserRequestedExtra   bool
+	ProfileFacts         []ProfileFact
 }
 
 func ParseControlCall(
 	name string,
 	arguments json.RawMessage,
 	instanceID string,
-	maximumQuestions int,
+	runtime Runtime,
 ) (ControlPart, error) {
 	if len(arguments) == 0 || len(arguments) > maxControlBytes {
 		return ControlPart{}, errors.New("guidance arguments have an invalid size")
@@ -182,8 +190,10 @@ func ParseControlCall(
 	if err := json.Unmarshal(arguments, &suppliedFields); err != nil {
 		return ControlPart{}, errors.New("guidance arguments are not an object")
 	}
-	if _, supplied := suppliedFields["instanceId"]; supplied {
-		return ControlPart{}, errors.New("guidance instance id is server-controlled")
+	for _, field := range []string{"instanceId", "round", "maxRounds"} {
+		if _, supplied := suppliedFields[field]; supplied {
+			return ControlPart{}, fmt.Errorf("guidance field %s is server-controlled", field)
+		}
 	}
 	if err := validateControlFieldPresence(name, suppliedFields); err != nil {
 		return ControlPart{}, err
@@ -195,7 +205,12 @@ func ParseControlCall(
 			return ControlPart{}, fmt.Errorf("decode clarification cards: %w", err)
 		}
 		cards.InstanceID = instanceID
-		if err := ValidateClarificationCards(cards, maximumQuestions); err != nil {
+		cards.MaxRounds = effectiveMaximumRounds(runtime.MaxRounds)
+		cards.Round = runtime.RoundCount + 1
+		if cards.Round < 1 || cards.Round > cards.MaxRounds {
+			return ControlPart{}, errors.New("clarification round is outside the task limit")
+		}
+		if err := ValidateClarificationCards(cards, runtime.MaxQuestions); err != nil {
 			return ControlPart{}, err
 		}
 		raw, err := json.Marshal(cards)
@@ -359,7 +374,7 @@ func DecodeClarificationCards(raw json.RawMessage) (ClarificationCards, error) {
 	if err := decodeStrict(raw, &cards); err != nil {
 		return ClarificationCards{}, err
 	}
-	if err := ValidateClarificationCards(cards, 3); err != nil {
+	if err := ValidateClarificationCards(cards, MaximumQuestionsPerRound); err != nil {
 		return ClarificationCards{}, err
 	}
 	return cards, nil
@@ -401,8 +416,18 @@ func ValidateClarificationCards(cards ClarificationCards, maximumQuestions int) 
 	if !safeIdentifier(cards.InstanceID, 128) {
 		return errors.New("clarification instance id is invalid")
 	}
-	if maximumQuestions < 2 || maximumQuestions > 3 {
-		maximumQuestions = 3
+	if (cards.Round == 0) != (cards.MaxRounds == 0) {
+		return errors.New("clarification round metadata is incomplete")
+	}
+	if cards.Round != 0 &&
+		(cards.MaxRounds < 1 ||
+			cards.MaxRounds > MaximumClarificationRounds ||
+			cards.Round < 1 ||
+			cards.Round > cards.MaxRounds) {
+		return errors.New("clarification round metadata is invalid")
+	}
+	if maximumQuestions < 2 || maximumQuestions > MaximumQuestionsPerRound {
+		maximumQuestions = MaximumQuestionsPerRound
 	}
 	if len(cards.Questions) < 2 || len(cards.Questions) > maximumQuestions {
 		return fmt.Errorf("clarification must contain 2 to %d questions", maximumQuestions)
@@ -631,6 +656,13 @@ func ValidateSubmission(
 
 func NormalizeClarificationCards(cards ClarificationCards) string {
 	var output strings.Builder
+	if cards.Round > 0 && cards.MaxRounds > 0 {
+		output.WriteString(fmt.Sprintf(
+			"需求澄清进度：第 %d/%d 轮\n\n",
+			cards.Round,
+			cards.MaxRounds,
+		))
+	}
 	if strings.TrimSpace(cards.Intro) != "" {
 		output.WriteString(strings.TrimSpace(cards.Intro))
 		output.WriteString("\n\n")
@@ -708,15 +740,18 @@ func ProfileFieldLabel(field string) string {
 	return field
 }
 
-func ToolDefinitions(allowClarification bool, maximumQuestions int) []map[string]any {
+func ToolDefinitions(runtime Runtime) []map[string]any {
 	tools := make([]map[string]any, 0, 2)
-	if allowClarification && maximumQuestions >= 2 {
-		if maximumQuestions > 3 {
-			maximumQuestions = 3
+	if runtime.AllowClarification && runtime.MaxQuestions >= 2 {
+		maximumQuestions := runtime.MaxQuestions
+		if maximumQuestions > MaximumQuestionsPerRound {
+			maximumQuestions = MaximumQuestionsPerRound
 		}
 		tools = append(tools, clarificationTool(maximumQuestions))
 	}
-	tools = append(tools, taskBriefTool())
+	if runtime.AllowTaskBrief {
+		tools = append(tools, taskBriefTool())
+	}
 	return tools
 }
 
@@ -754,11 +789,25 @@ The user has explicitly confirmed generation. Do not ask another ordinary clarif
 `)
 		return output.String()
 	}
+	maximumRounds := effectiveMaximumRounds(runtime.MaxRounds)
+	if runtime.RequireClarification {
+		nextRound := runtime.RoundCount + 1
+		output.WriteString(fmt.Sprintf(`
+The user explicitly chose to keep refining after clarification round %d of %d. You MUST call %s exactly once and return no substantive answer text. This next card is clarification round %d of %d. Do not call %s, do not answer the task yet, and do not repeat questions already answered in earlier rounds. Ask only the %d or fewer highest-impact unanswered questions allowed by the schema, using plain language and practical tap-friendly options.
+`, runtime.RoundCount, maximumRounds, ToolShowClarificationCards, nextRound, maximumRounds, ToolShowTaskBrief, runtime.MaxQuestions))
+		return output.String()
+	}
+	if runtime.RequireTaskBrief {
+		output.WriteString(fmt.Sprintf(`
+The clarification limit of %d rounds has been reached, or ordinary clarification has otherwise ended. You MUST call %s exactly once and return no substantive answer text. Do not ask another ordinary question. Summarize only confirmed information, relevant profile facts, explicit current-task overrides, and clearly labelled delegated assumptions. Put remaining non-blocking uncertainty under unresolved rather than inventing facts. At most one stable restaurant fact may be proposed for profile maintenance; never update it silently and never propose daily metrics, financial guesses, or task-specific temporary choices as profile facts.
+`, maximumRounds, ToolShowTaskBrief))
+		return output.String()
+	}
 	if runtime.AllowClarification {
 		output.WriteString(fmt.Sprintf(`
-If material ambiguity remains, call %s exactly once and return no substantive answer text with it. Ask only the %d or fewer highest-impact questions allowed by its schema. Use plain language suitable for a restaurant operator, give practical tap-friendly options, and keep every option neutral enough that the user can choose without reading an analysis. If enough information is already available, call %s instead.
+If material ambiguity remains, call %s exactly once and return no substantive answer text with it. This would be clarification round %d of at most %d. Ask only the %d or fewer highest-impact unanswered questions allowed by its schema, and do not repeat questions already answered in earlier rounds. Use plain language suitable for a restaurant operator, give practical tap-friendly options, and keep every option neutral enough that the user can choose without reading an analysis. If enough information is already available, call %s instead.
 In currentUnderstanding, include a concise restatement of the original task and only confirmed context or profile facts actually used. Label the source when a profile fact is used, and never place an inferred assumption there.
-`, ToolShowClarificationCards, runtime.MaxQuestions, ToolShowTaskBrief))
+`, ToolShowClarificationCards, runtime.RoundCount+1, maximumRounds, runtime.MaxQuestions, ToolShowTaskBrief))
 	} else if runtime.AllowTaskBrief {
 		output.WriteString(fmt.Sprintf(`
 The normal clarification limit has been reached. Do not ask more ordinary questions. If the task is ready, call %s exactly once and return no substantive answer text with it. Put remaining non-blocking uncertainty under unresolved or delegated assumptions rather than inventing facts.
@@ -768,6 +817,13 @@ The normal clarification limit has been reached. Do not ask more ordinary questi
 When calling show_task_brief, summarize only confirmed information, relevant profile facts, explicit current-task overrides, and clearly labelled delegated assumptions. At most one stable restaurant fact may be proposed for profile maintenance; never update it silently and never propose daily metrics, financial guesses, or task-specific temporary choices as profile facts.
 `)
 	return output.String()
+}
+
+func effectiveMaximumRounds(value int) int {
+	if value < 1 || value > MaximumClarificationRounds {
+		return MaximumClarificationRounds
+	}
+	return value
 }
 
 func GuidanceErrorPart(code string) ControlPart {
