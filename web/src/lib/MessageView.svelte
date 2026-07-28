@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import type {
+    ClarificationAnswer,
     ClarificationCardsData,
     GuidanceSubmission,
     Message,
@@ -28,6 +29,7 @@
   export let guidanceCurrent = false;
   export let guidanceDisabled = false;
   export let guidanceDraftEnabled = true;
+  export let submittedGuidanceAnswers: Record<string, ClarificationAnswer[]> = {};
   let copied = false;
   const dispatch = createEventDispatcher<{
     regenerate: { message: Message };
@@ -49,6 +51,11 @@
 
   function clarificationData(part: MessagePart): ClarificationCardsData {
     return part.data as unknown as ClarificationCardsData;
+  }
+
+  function submittedAnswers(part: MessagePart): ClarificationAnswer[] {
+    if (!part.id) return [];
+    return submittedGuidanceAnswers[`${message.id}:${part.id}`] || [];
   }
 
   function taskBriefData(part: MessagePart): TaskBriefData {
@@ -140,6 +147,10 @@
       response_timeout: ['运行超过 30 分钟，已自动停止', 'Stopped after exceeding 30 minutes'],
       response_interrupted: ['生成过程意外中断', 'Generation was interrupted unexpectedly'],
       provider_stream_incomplete: ['模型未发送完整的结束事件', 'The model did not send a complete ending event'],
+      provider_response_incomplete: ['上游模型没有完成回答，已保留现有内容', 'The upstream model did not complete the response; existing content was saved'],
+      server_error: ['上游模型服务暂时中断，已保留现有内容', 'The upstream model service was interrupted; existing content was saved'],
+      internal_server_error: ['上游模型服务暂时中断，已保留现有内容', 'The upstream model service was interrupted; existing content was saved'],
+      bad_gateway: ['上游模型服务暂时中断，已保留现有内容', 'The upstream model service was interrupted; existing content was saved'],
       persistence_failed: ['回答进度无法安全保存', 'Response progress could not be saved safely'],
       invalid_guidance_output: [
         '交互卡片格式不符合安全限制',
@@ -283,6 +294,7 @@
           current={guidanceCurrent && Boolean(part.id)}
           disabled={guidanceDisabled}
           draftEnabled={guidanceDraftEnabled}
+          submittedAnswers={submittedAnswers(part)}
           on:submit={(event) => dispatch('guidanceSubmit', event.detail)}
         />
       {:else if part.type === 'task_brief' && part.data}

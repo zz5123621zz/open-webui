@@ -17,7 +17,7 @@ const (
 	SchemaVersion = 1
 
 	MaximumClarificationRounds = 3
-	MaximumQuestionsPerRound    = 3
+	MaximumQuestionsPerRound   = 3
 
 	ToolShowClarificationCards = "show_clarification_cards"
 	ToolShowTaskBrief          = "show_task_brief"
@@ -785,7 +785,7 @@ Restaurant workbench requirement-elicitation policy:
 	}
 	if runtime.FinalAnswer {
 		output.WriteString(`
-The user has explicitly confirmed generation. Do not ask another ordinary clarification question and do not call a guidance control function. Produce the complete answer now, following the confirmed task brief, submitted choices, current-task overrides, and visibly delegated assumptions. Clearly distinguish confirmed facts from assumptions.
+The user has explicitly confirmed generation. Do not ask another ordinary clarification question and do not call a guidance control function. Produce the complete answer now, following the confirmed task brief, submitted choices, current-task overrides, and visibly delegated assumptions. Clearly distinguish confirmed facts from assumptions. Complete the deliverable within one response: for large lists or multi-part documents, prioritize full coverage in concise tables or compact entries before optional elaboration. Do not repeatedly restate the plan or keep researching once enough reliable information is available. If exhaustive detail would make the response excessively long, provide a compact complete version and offer to expand a selected section next.
 `)
 		return output.String()
 	}

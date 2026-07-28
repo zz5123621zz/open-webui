@@ -347,6 +347,177 @@ func TestReasoningSectionsPreserveProviderIdentityAndDeduplicateCompletedItem(t 
 	}
 }
 
+func TestProviderStreamFailurePreservesTopLevelCodeAndFailureUsage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := &responseAccumulator{}
+	if err := accumulator.handle(stream, providerStreamEvent{
+		Type: "response.failed",
+		Code: "internal_server_error",
+		Response: json.RawMessage(`{
+			"id":"resp_failed",
+			"error":{"type":"server_error"},
+			"usage":{
+				"input_tokens":120,
+				"output_tokens":45,
+				"output_tokens_details":{"reasoning_tokens":20}
+			}
+		}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if accumulator.failureCode != "server_error" ||
+		accumulator.responseID != "resp_failed" ||
+		accumulator.inputTokens != 120 ||
+		accumulator.outputTokens != 45 ||
+		accumulator.reasoningTokens != 20 {
+		t.Fatalf("failed response metadata = %#v", accumulator)
+	}
+
+	topLevelOnly := &responseAccumulator{}
+	if err := topLevelOnly.handle(stream, providerStreamEvent{
+		Type: "error",
+		Code: "internal_server_error",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if topLevelOnly.failureCode != "internal_server_error" {
+		t.Fatalf("top-level stream failure = %q", topLevelOnly.failureCode)
+	}
+
+	incomplete := &responseAccumulator{}
+	if err := incomplete.handle(stream, providerStreamEvent{
+		Type: "response.incomplete",
+		Response: json.RawMessage(`{
+			"id":"resp_incomplete",
+			"incomplete_details":{"reason":"max_output_tokens"},
+			"usage":{"input_tokens":80,"output_tokens":50}
+		}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if incomplete.failureCode != "max_output_tokens" ||
+		incomplete.responseID != "resp_incomplete" ||
+		incomplete.inputTokens != 80 ||
+		incomplete.outputTokens != 50 {
+		t.Fatalf("incomplete response metadata = %#v", incomplete)
+	}
+}
+
+func TestProviderContinuationIsLimitedToSafeRestaurantFinalAnswers(t *testing.T) {
+	accumulator := &responseAccumulator{
+		failureCode: "internal_server_error",
+		tools: []toolSnapshot{{
+			Type: "web_search", Status: "completed",
+		}},
+	}
+	accumulator.text.WriteString("已经生成的前半部分")
+	finalGuidance := guidance.Runtime{Enabled: true, FinalAnswer: true}
+	if !canSafelyContinueProviderResponse(
+		accumulator,
+		finalGuidance,
+		false,
+	) {
+		t.Fatal("safe transient restaurant final answer was not eligible for continuation")
+	}
+
+	accumulator.completed = true
+	if canSafelyContinueProviderResponse(accumulator, finalGuidance, false) {
+		t.Fatal("completed response was eligible for automatic continuation")
+	}
+	accumulator.completed = false
+	accumulator.tools = append(accumulator.tools, toolSnapshot{
+		Type: "image_generation", Status: "completed",
+	})
+	if canSafelyContinueProviderResponse(accumulator, finalGuidance, false) {
+		t.Fatal("image-producing response was eligible for automatic continuation")
+	}
+	accumulator.tools = accumulator.tools[:1]
+	if canSafelyContinueProviderResponse(
+		accumulator,
+		guidance.Runtime{Enabled: true},
+		false,
+	) {
+		t.Fatal("unconfirmed response was eligible for automatic continuation")
+	}
+	accumulator.failureCode = "rate_limit_exceeded"
+	if canSafelyContinueProviderResponse(accumulator, finalGuidance, false) {
+		t.Fatal("non-transient provider failure was eligible for automatic continuation")
+	}
+}
+
+func TestProviderContinuationRequestUsesPartialTextWithoutTools(t *testing.T) {
+	original := provider.ResponsesRequest{
+		Instructions: "Original instructions.",
+		Input: []provider.ResponseInput{{
+			Role: "user", Content: "请完成方案",
+		}},
+		Tools: []map[string]any{
+			{"type": "web_search"},
+			{"type": "image_generation"},
+		},
+		ToolChoice: "auto",
+	}
+	continuation := providerContinuationRequest(original, "已完成的前半部分")
+	if len(original.Input) != 1 ||
+		len(original.Tools) != 2 ||
+		original.ToolChoice != "auto" {
+		t.Fatalf("original request was mutated: %#v", original)
+	}
+	if len(continuation.Input) != 3 ||
+		len(continuation.Tools) != 0 ||
+		continuation.ToolChoice != "" ||
+		!strings.Contains(
+			continuation.Instructions,
+			"Continue only the missing remainder",
+		) {
+		t.Fatalf("continuation request = %#v", continuation)
+	}
+	partial, ok := continuation.Input[1].Content.([]provider.ResponseContent)
+	if !ok ||
+		len(partial) != 1 ||
+		partial[0].Type != "output_text" ||
+		partial[0].Text != "已完成的前半部分" ||
+		continuation.Input[1].Role != "assistant" ||
+		continuation.Input[2].Role != "developer" {
+		t.Fatalf("continuation input = %#v", continuation.Input)
+	}
+}
+
+func TestProviderContinuationAccumulatorKeepsCombinedTextWithoutReplayItems(
+	t *testing.T,
+) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := &responseAccumulator{
+		suppressProviderItems: true,
+	}
+	accumulator.text.WriteString("已完成的前半部分；")
+	accumulator.responseTextStart = accumulator.text.Len()
+	item := json.RawMessage(`{
+		"id":"continuation_message",
+		"type":"message",
+		"status":"completed",
+		"content":[{"type":"output_text","text":"从断点继续的后半部分。"}]
+	}`)
+	if err := accumulator.handle(stream, providerStreamEvent{
+		Type: "response.output_item.done",
+		Item: item,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if accumulator.text.String() !=
+		"已完成的前半部分；从断点继续的后半部分。" {
+		t.Fatalf("combined continuation text = %q", accumulator.text.String())
+	}
+	if len(accumulator.providerItems) != 0 {
+		t.Fatalf(
+			"continuation provider replay items = %#v",
+			accumulator.providerItems,
+		)
+	}
+}
+
 func TestProgressiveSummaryUnsupportedMatcherIsExact(t *testing.T) {
 	for _, test := range []struct {
 		name string

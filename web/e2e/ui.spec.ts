@@ -1003,6 +1003,7 @@ test('restaurant guidance choices update immediately and submit together', async
             sequence: 0,
             type: 'clarification_submission',
             text: '本轮需求补充已提交。',
+            data: body.guidanceSubmission,
             createdAt: now
           }
         ]
@@ -1205,18 +1206,22 @@ test('restaurant guidance choices update immediately and submit together', async
     ]
   });
   await expect(card).toContainText('本轮已提交或已被后续消息替代');
+  await expect(repeatChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(familyChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(storedValueChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(tierChoice).toHaveAttribute('aria-checked', 'true');
 
   const roundTwoCard = cards.nth(1);
   await expect(roundTwoCard).toContainText('第 2/3 轮');
   await expect(roundTwoCard).toContainText('顾客通常多久来一次？');
-  await roundTwoCard
+  const monthlyChoice = roundTwoCard
     .getByRole('radiogroup', { name: '顾客通常多久来一次？' })
-    .getByRole('radio', { name: /每月一两次/ })
-    .click();
-  await roundTwoCard
+    .getByRole('radio', { name: /每月一两次/ });
+  const conservativeChoice = roundTwoCard
     .getByRole('radiogroup', { name: '优惠力度希望偏向哪种？' })
-    .getByRole('radio', { name: /保守可持续/ })
-    .click();
+    .getByRole('radio', { name: /保守可持续/ });
+  await monthlyChoice.click();
+  await conservativeChoice.click();
   await roundTwoCard.getByRole('button', { name: '继续完善' }).click();
 
   await expect(cards).toHaveCount(3);
@@ -1230,20 +1235,22 @@ test('restaurant guidance choices update immediately and submit together', async
     ]
   });
   await expect(roundTwoCard).toContainText('本轮已提交或已被后续消息替代');
+  await expect(monthlyChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(conservativeChoice).toHaveAttribute('aria-checked', 'true');
 
   const roundThreeCard = cards.nth(2);
   await expect(roundThreeCard).toContainText('第 3/3 轮');
   await expect(
     roundThreeCard.getByRole('button', { name: '形成任务简报' })
   ).toBeDisabled();
-  await roundThreeCard
+  const regularsChoice = roundThreeCard
     .getByRole('radiogroup', { name: '首批准备覆盖哪些顾客？' })
-    .getByRole('radio', { name: /先邀请老顾客/ })
-    .click();
-  await roundThreeCard
+    .getByRole('radio', { name: /先邀请老顾客/ });
+  const includeScriptChoice = roundThreeCard
     .getByRole('radiogroup', { name: '是否需要员工介绍话术？' })
-    .getByRole('radio', { name: /需要简短话术/ })
-    .click();
+    .getByRole('radio', { name: /需要简短话术/ });
+  await regularsChoice.click();
+  await includeScriptChoice.click();
   await expect(
     roundThreeCard.getByRole('button', { name: '形成任务简报' })
   ).toBeEnabled();
@@ -1260,6 +1267,8 @@ test('restaurant guidance choices update immediately and submit together', async
     ]
   });
   await expect(roundThreeCard).toContainText('本轮已提交或已被后续消息替代');
+  await expect(regularsChoice).toHaveAttribute('aria-checked', 'true');
+  await expect(includeScriptChoice).toHaveAttribute('aria-checked', 'true');
 });
 
 test('a persisted background response resumes after reopening its chat', async ({ page }) => {

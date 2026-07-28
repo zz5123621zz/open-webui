@@ -24,7 +24,7 @@ import (
 
 func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 	var providerMu sync.Mutex
-	providerRequests := make([]map[string]any, 0, 2)
+	providerRequests := make([]map[string]any, 0, 3)
 	mockProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
@@ -77,7 +77,18 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 				)
 				return
 			}
-			writeCompletedTextStream(w, "resp_guidance_final", "这是按已确认需求生成的会员方案。")
+			if attempt == 2 {
+				writeTransientServerErrorStream(
+					w,
+					"这是按已确认需求生成的会员方案前半部分；",
+				)
+				return
+			}
+			writeCompletedTextStream(
+				w,
+				"resp_guidance_final_continuation",
+				"这是从断点续写的剩余部分。",
+			)
 		default:
 			http.NotFound(w, r)
 		}
@@ -180,7 +191,11 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 	secondBody, _ := io.ReadAll(second.Body)
 	second.Body.Close()
 	if second.StatusCode != http.StatusOK ||
-		!strings.Contains(string(secondBody), "event: response.completed") {
+		!strings.Contains(string(secondBody), "event: response.completed") ||
+		!strings.Contains(
+			string(secondBody),
+			`"stage":"continuing_answer"`,
+		) {
 		t.Fatalf("structured guidance response status=%d body=%s", second.StatusCode, secondBody)
 	}
 	messages, err = dataStore.ListMessages(context.Background(), user.ID, conversation.ID)
@@ -192,15 +207,17 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 		!strings.Contains(messages[2].Parts[0].TextContent, "增加复购") ||
 		messages[3].Status != "completed" ||
 		len(messages[3].Parts) != 1 ||
-		messages[3].Parts[0].TextContent != "这是按已确认需求生成的会员方案。" {
+		messages[3].Parts[0].TextContent !=
+			"这是按已确认需求生成的会员方案前半部分；这是从断点续写的剩余部分。" ||
+		len(messages[3].ProviderItems) != 0 {
 		t.Fatalf("completed structured guidance transcript = %#v", messages)
 	}
 
 	providerMu.Lock()
 	requests := append([]map[string]any(nil), providerRequests...)
 	providerMu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("provider guidance requests = %d, want 2", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("provider guidance requests = %d, want 3", len(requests))
 	}
 	if !providerRequestHasTool(requests[0], guidance.ToolShowClarificationCards) {
 		t.Fatalf("initial provider request did not expose clarification tool: %#v", requests[0])
@@ -217,6 +234,24 @@ func TestRestaurantGuidanceStructuredSubmissionHTTPFlow(t *testing.T) {
 			"Produce the complete answer now",
 		) {
 		t.Fatalf("confirmed provider request lost normalized guidance history: %s", secondRequestRaw)
+	}
+	continuationTools, _ := requests[2]["tools"].([]any)
+	if providerRequestHasTool(requests[2], guidance.ToolShowClarificationCards) ||
+		providerRequestHasTool(requests[2], guidance.ToolShowTaskBrief) ||
+		len(continuationTools) != 0 ||
+		stringValue(requests[2]["tool_choice"]) != "" {
+		t.Fatalf("safe continuation exposed tools: %#v", requests[2])
+	}
+	continuationRequestRaw, _ := json.Marshal(requests[2])
+	if !strings.Contains(
+		string(continuationRequestRaw),
+		"这是按已确认需求生成的会员方案前半部分",
+	) ||
+		!strings.Contains(
+			string(continuationRequestRaw),
+			"Continue only the missing remainder",
+		) {
+		t.Fatalf("safe continuation lost the partial draft: %s", continuationRequestRaw)
 	}
 }
 
@@ -678,6 +713,26 @@ func writeGuidanceFunctionStream(
 	_, _ = io.WriteString(w, "data: "+string(done)+"\n\n")
 	_, _ = io.WriteString(w, "data: "+string(completed)+"\n\n")
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+}
+
+func writeTransientServerErrorStream(w http.ResponseWriter, partialText string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	encodedText, _ := json.Marshal(partialText)
+	_, _ = io.WriteString(
+		w,
+		"data: "+
+			`{"type":"response.output_text.delta","delta":`+
+			string(encodedText)+
+			`}`+
+			"\n\n",
+	)
+	_, _ = io.WriteString(
+		w,
+		`event: error
+data: {"type":"error","code":"internal_server_error","message":"transient upstream failure"}
+
+`,
+	)
 }
 
 func guidanceRoundArguments(round int) string {
