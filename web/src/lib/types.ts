@@ -112,10 +112,104 @@ export interface SpeechServiceSettings {
   };
 }
 
+export type Workbench = 'general' | 'restaurant';
+
+export interface WorkbenchSetting {
+  effective: Workbench;
+  initial: Workbench;
+  preference?: Workbench;
+}
+
+export interface WorkbenchResponse {
+  workbench: WorkbenchSetting;
+  guidanceEnabled: boolean;
+}
+
+export interface RestaurantProfileFact {
+  field: string;
+  value: string;
+  updatedAt: number;
+}
+
+export interface ClarificationOption {
+  key: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface ClarificationQuestion {
+  key: string;
+  prompt: string;
+  selection: 'single_select' | 'multi_select';
+  options: ClarificationOption[];
+  allowOther: boolean;
+  allowDelegatedDefault: boolean;
+  minimumSelections?: number | null;
+  maximumSelections?: number | null;
+}
+
+export interface ClarificationCardsData {
+  schemaVersion: 1;
+  instanceId: string;
+  intro?: string | null;
+  currentUnderstanding: string[];
+  questions: ClarificationQuestion[];
+}
+
+export interface ProfileUpdateProposal {
+  field: string;
+  operation: 'set' | 'replace' | 'delete';
+  proposedValue?: string | null;
+  reason: string;
+}
+
+export interface TaskBriefData {
+  schemaVersion: 1;
+  instanceId: string;
+  goal: string;
+  context: string[];
+  constraints: string[];
+  desiredOutput: string[];
+  delegatedAssumptions: string[];
+  unresolved: string[];
+  profileUpdateProposal?: ProfileUpdateProposal | null;
+}
+
+export interface ClarificationAnswer {
+  questionKey: string;
+  selectedOptionKeys: string[];
+  otherText?: string;
+  delegatedDefault?: boolean;
+}
+
+export type GuidanceIntent =
+  | 'continue_refining'
+  | 'generate_from_current'
+  | 'confirm_brief'
+  | 'add_context';
+
+export interface GuidanceSubmission {
+  sourceAssistantMessageId: string;
+  sourcePartId: string;
+  intent: GuidanceIntent;
+  answers: ClarificationAnswer[];
+  profileDecision?: 'save' | 'current_task_only' | 'ignore';
+  additionalText?: string;
+}
+
 export interface MessagePart {
   id?: string;
   sequence?: number;
-  type: 'text' | 'reasoning' | 'tool' | 'citations' | 'image';
+  type:
+    | 'text'
+    | 'reasoning'
+    | 'tool'
+    | 'citations'
+    | 'image'
+    | 'clarification'
+    | 'clarification_submission'
+    | 'task_brief'
+    | 'guidance_error';
   text?: string;
   data?: Record<string, unknown>;
   attachmentId?: string;

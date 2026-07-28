@@ -168,8 +168,9 @@ type Jobs struct {
 }
 
 type Tools struct {
-	WebSearchEnabled       bool
-	ImageGenerationEnabled bool
+	WebSearchEnabled          bool
+	ImageGenerationEnabled    bool
+	RestaurantGuidanceEnabled bool
 }
 
 type Lifecycle struct {
@@ -469,6 +470,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Tools.ImageGenerationEnabled, err = boolEnv("TOOL_IMAGE_GENERATION_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Tools.RestaurantGuidanceEnabled, err = boolEnv(
+		"RESTAURANT_GUIDANCE_ENABLED", false,
+	)
 	if err != nil {
 		return Config{}, err
 	}

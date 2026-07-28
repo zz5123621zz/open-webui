@@ -4,6 +4,7 @@ import type {
   Conversation,
   ConversationSearchResult,
   ContextCheckpoint,
+  GuidanceSubmission,
   Message,
   Model,
   ProgressiveSummaryMode,
@@ -14,7 +15,10 @@ import type {
   StorageStatus,
   StreamEvent,
   UsageRow,
-  User
+  User,
+  Workbench,
+  WorkbenchResponse,
+  RestaurantProfileFact
 } from './types';
 
 let csrfToken = '';
@@ -113,6 +117,24 @@ export async function getModels(): Promise<Model[]> {
 export async function getStorageStatus(): Promise<StorageStatus> {
   const body = await request<{ storage: StorageStatus }>('/api/v1/me/storage');
   return body.storage;
+}
+
+export async function getWorkbench(): Promise<WorkbenchResponse> {
+  return request<WorkbenchResponse>('/api/v1/me/workbench');
+}
+
+export async function updateWorkbench(workbench: Workbench): Promise<WorkbenchResponse> {
+  return request<WorkbenchResponse>('/api/v1/me/workbench', {
+    method: 'PUT',
+    body: JSON.stringify({ workbench })
+  });
+}
+
+export async function getRestaurantProfile(): Promise<RestaurantProfileFact[]> {
+  const body = await request<{ facts: RestaurantProfileFact[] }>(
+    '/api/v1/me/restaurant-profile'
+  );
+  return body.facts;
 }
 
 export async function getProgressiveSummarySettings(): Promise<ProgressiveSummarySettings> {
@@ -296,15 +318,31 @@ export async function streamResponse(
   );
 }
 
-export async function regenerateResponse(
-  messageId: string,
+export async function streamGuidanceResponse(
+  conversationId: string,
+  guidanceSubmission: GuidanceSubmission,
   requestId: string,
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal
 ): Promise<void> {
   await postEventStream(
+    `/api/v1/conversations/${conversationId}/responses`,
+    { requestId, guidanceSubmission },
+    onEvent,
+    signal
+  );
+}
+
+export async function regenerateResponse(
+  messageId: string,
+  requestId: string,
+  onEvent: (item: StreamEvent) => void,
+  signal?: AbortSignal,
+  bypassGuidance = false
+): Promise<void> {
+  await postEventStream(
     `/api/v1/messages/${encodeURIComponent(messageId)}/regenerate`,
-    { requestId },
+    { requestId, bypassGuidance },
     onEvent,
     signal
   );

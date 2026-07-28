@@ -13,8 +13,8 @@ _Avoid_: Tenant, member
 
 **Administrator**:
 A user who can read every user's conversations for diagnosis, manage an
-explicitly bounded set of audited service settings, and mutate only their own
-chat workspace.
+explicitly bounded set of audited service settings, assign an overridable
+initial workbench, and otherwise mutate only their own chat workspace.
 _Avoid_: Superuser, owner
 
 **Active conversation**:
@@ -26,6 +26,79 @@ _Avoid_: Live chat
 An active conversation protected from automatic retention. A user may pin at
 most ten conversations.
 _Avoid_: Favorite, starred chat
+
+**Restaurant guidance**:
+A restaurant-workbench conversation policy that applies requirement
+elicitation to vague restaurant tasks in an ordinary conversation.
+_Avoid_: Business diagnosis, fixed workflow classifier
+
+**Requirement elicitation**:
+A bounded dialogue that collects the missing goal, context, constraints, and
+desired output needed to answer the user's current task precisely.
+_Avoid_: Prompt tutoring, business diagnosis, interrogation
+
+**Material ambiguity**:
+Missing task information for which plausible alternatives would produce
+meaningfully different valid answers.
+_Avoid_: Short prompt, missing optional detail
+
+**Delegated default**:
+A visible task-specific assumption selected by the Agent after the user
+explicitly delegates an unresolved choice.
+_Avoid_: Inferred preference, restaurant profile fact
+
+**Clarification round**:
+One Agent response containing at most three high-impact questions before the
+user may answer, generate immediately, or continue refining the request.
+_Avoid_: Questionnaire page, one question per response
+
+**Clarification card**:
+A user-visible structured question whose predefined answers are all
+application-controlled selectable choices, with a free-text fallback, produced
+within a clarification round.
+_Avoid_: Plain numbered list, arbitrary model-generated UI
+
+**Clarification submission**:
+A single user turn that submits all reviewed selections and free-text answers
+from one clarification round, optionally ending further elicitation.
+_Avoid_: Option click, automatic submission, multiple provider requests
+
+**Task brief**:
+A user-visible summary of the confirmed goal, relevant context, constraints,
+and desired output that the Agent will use for the current answer.
+_Avoid_: Hidden prompt, restaurant profile, conversation summary
+
+**Restaurant profile**:
+A user-owned, explicitly maintained set of stable restaurant facts that may
+prefill future task briefs and is maintained only through confirmed in-task
+updates, never through mandatory setup or silent learning.
+_Avoid_: Automatic memory, daily operating data, administrator profile
+
+**Profile update proposal**:
+A user-visible in-task suggestion to save, replace, or delete one stable
+restaurant fact, which has no long-term effect until the user explicitly
+accepts it.
+_Avoid_: Automatic profile update, task-specific override
+
+**Brief confirmation**:
+An explicit user action approving the current task brief for full answer
+generation, while retaining the choices to add context or answer immediately.
+_Avoid_: Implicit model readiness, mandatory questionnaire completion
+
+**Brief readiness**:
+The point at which the high-impact unknowns for the current task have been
+resolved well enough for the Agent to produce the requested answer.
+_Avoid_: Perfect information, mandatory form completion
+
+**Initial workbench**:
+An administrator-assigned account default that determines the user's starting
+experience until the user chooses their own workbench.
+_Avoid_: Locked workbench, username-based behavior
+
+**Workbench preference**:
+A user's persistent workbench choice, which overrides the initial workbench
+without allowing an administrator to lock or replace that choice.
+_Avoid_: Administrator preference, service setting
 
 **Temporary retention**:
 The seven-day recoverable state for a conversation removed from the active

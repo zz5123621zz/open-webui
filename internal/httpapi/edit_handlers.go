@@ -139,6 +139,6 @@ func (s *Server) editResponse(w http.ResponseWriter, r *http.Request) {
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, "edit", assistant, &updatedUser, history, queuedStream, generateImage,
-		latestUserText(history),
+		latestUserText(history), false,
 	)
 }

@@ -151,7 +151,11 @@ export function resetSpeech(): void {
 export function messageSpeechText(message: Message): string {
   return normalizeSpeechText(
     message.parts
-      .filter((part) => part.type === 'text' && part.text)
+      .filter(
+        (part) =>
+          ['text', 'clarification', 'task_brief', 'guidance_error'].includes(part.type) &&
+          part.text
+      )
       .map((part) => part.text || '')
       .join('\n\n')
   );

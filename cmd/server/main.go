@@ -212,7 +212,7 @@ func runBackupCommand(dataStore *store.Store, dataDir string, args []string) err
 
 func runUserCommand(dataStore *store.Store, dataDir string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: server user <add|list|password|enable|disable|purge-all>")
+		return errors.New("usage: server user <add|list|password|enable|disable|workbench|purge-all>")
 	}
 	switch args[0] {
 	case "add":
@@ -223,10 +223,12 @@ func runUserCommand(dataStore *store.Store, dataDir string, args []string) error
 		return runUserPasswordCommand(dataStore, args[1:])
 	case "enable", "disable":
 		return runUserStatusCommand(dataStore, args[0], args[1:])
+	case "workbench":
+		return runUserWorkbenchCommand(dataStore, args[1:])
 	case "purge-all":
 		return runUserPurgeAllCommand(dataStore, dataDir, args[1:])
 	default:
-		return errors.New("usage: server user <add|list|password|enable|disable|purge-all>")
+		return errors.New("usage: server user <add|list|password|enable|disable|workbench|purge-all>")
 	}
 }
 
@@ -330,6 +332,31 @@ func runUserStatusCommand(dataStore *store.Store, action string, args []string) 
 		return err
 	}
 	fmt.Printf("User %s is now %s\n", *username, status)
+	return nil
+}
+
+func runUserWorkbenchCommand(dataStore *store.Store, args []string) error {
+	flags := flag.NewFlagSet("user workbench", flag.ContinueOnError)
+	username := flags.String("username", "", "login username")
+	workbench := flags.String("workbench", "", "initial workbench: general or restaurant")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	reader := bufio.NewReader(os.Stdin)
+	*username = promptLine(reader, "Username: ", *username)
+	if strings.TrimSpace(*workbench) == "" {
+		*workbench = promptLine(reader, "Workbench (general/restaurant): ", "")
+	}
+	setting, err := dataStore.SetInitialWorkbenchByUsername(
+		context.Background(), *username, *workbench, "",
+	)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(
+		"User %s initial workbench is now %s (effective: %s)\n",
+		*username, setting.Initial, setting.Effective,
+	)
 	return nil
 }
 

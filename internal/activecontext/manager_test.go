@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/owui-personal-slim/owui-personal-slim/internal/config"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/guidance"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -31,6 +32,39 @@ func TestEstimateTextIsConservativeForChineseAndASCII(t *testing.T) {
 		want := (len(sample) + 1) / 2
 		if got := EstimateText(sample); got != want {
 			t.Errorf("%s estimate = %d, want %d", name, got, want)
+		}
+	}
+}
+
+func TestStructuredGuidancePartsAreEstimatedAndRendered(t *testing.T) {
+	messages := []store.Message{{
+		Role: "assistant",
+		Parts: []store.MessagePart{
+			{Type: guidance.PartClarification, TextContent: "需要确认：首要目标"},
+			{Type: guidance.PartTaskBrief, TextContent: "任务简报：增加复购"},
+			{Type: guidance.PartGuidanceError, TextContent: "卡片生成失败"},
+		},
+	}, {
+		Role: "user",
+		Parts: []store.MessagePart{{
+			Type: guidance.PartClarificationSubmission, TextContent: "本轮选择：家庭聚餐",
+		}},
+	}}
+	estimate := EstimateMessages(messages)
+	if estimate < EstimateText(
+		"需要确认：首要目标任务简报：增加复购卡片生成失败本轮选择：家庭聚餐",
+	) {
+		t.Fatalf("structured guidance estimate = %d", estimate)
+	}
+	rendered := renderMessages(messages)
+	for _, expected := range []string{
+		"需要确认：首要目标",
+		"任务简报：增加复购",
+		"卡片生成失败",
+		"本轮选择：家庭聚餐",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("rendered guidance history missing %q: %q", expected, rendered)
 		}
 	}
 }

@@ -125,7 +125,10 @@ func (s *Store) searchConversations(
 	}
 	messageQuery += `
 		WHERE c.archived_at IS NULL
-		  AND p.type = 'text' AND p.text_content LIKE ? ESCAPE '\'`
+		  AND p.type IN (
+		    'text', 'clarification', 'clarification_submission', 'task_brief'
+		  )
+		  AND p.text_content LIKE ? ESCAPE '\'`
 	messageArguments := []any{query, query, pattern}
 	if !withOwner {
 		messageQuery += ` AND c.user_id = ?`

@@ -16,14 +16,17 @@
     getSession,
     getStorageStatus,
     getUsage,
+    getWorkbench,
     login,
     logout,
     logoutAll,
     regenerateResponse,
     searchConversations,
+    streamGuidanceResponse,
     streamResponse,
     updateConversation,
     updateConversationWithMeta,
+    updateWorkbench,
     uploadAttachment
   } from './lib/api';
   import { locale, setLocale, translate } from './lib/i18n';
@@ -50,13 +53,15 @@
     Conversation,
     ConversationSearchResult,
     ContextCheckpoint,
+    GuidanceSubmission,
     Message,
     MessagePart,
     Model,
     StorageStatus,
     StreamEvent,
     UsageRow,
-    User
+    User,
+    WorkbenchSetting
   } from './lib/types';
 
   type Phase = 'boot' | 'login' | 'ready';
@@ -142,6 +147,10 @@
   let modelPickerOpen = false;
   let effortPickerOpen = false;
   let storageStatus: StorageStatus | null = null;
+  let workbenchSetting: WorkbenchSetting | null = null;
+  let restaurantGuidanceEnabled = false;
+  let workbenchPickerOpen = false;
+  let workbenchUpdating = false;
   let creatingConversation = false;
   let generationStage: GenerationStage | '' = '';
   let generationStartedAt = 0;
@@ -398,6 +407,48 @@
       mode: 'image'
     }
   ];
+  const restaurantSuggestionPool: Suggestion[] = [
+    {
+      id: 'restaurant-membership',
+      icon: 'plan',
+      chineseTitle: '设计会员体系',
+      englishTitle: 'Membership program',
+      chinesePrompt: '帮我设计饭店的充卡和会员体系',
+      englishPrompt: 'Help me design a restaurant prepaid membership program'
+    },
+    {
+      id: 'restaurant-soups',
+      icon: 'plan',
+      chineseTitle: '特色煨汤',
+      englishTitle: 'Signature soups',
+      chinesePrompt: '帮我设计 10 款特色煨汤',
+      englishPrompt: 'Help me design ten signature slow-simmered soups'
+    },
+    {
+      id: 'restaurant-training',
+      icon: 'sparkles',
+      chineseTitle: '员工培训',
+      englishTitle: 'Staff training',
+      chinesePrompt: '帮我做一套饭店新员工服务培训方案',
+      englishPrompt: 'Create a service training plan for new restaurant staff'
+    },
+    {
+      id: 'restaurant-menu',
+      icon: 'plan',
+      chineseTitle: '菜单优化',
+      englishTitle: 'Menu improvement',
+      chinesePrompt: '我想优化饭店菜单和菜品结构，你帮我规划一下',
+      englishPrompt: 'Help me improve my restaurant menu and dish mix'
+    },
+    {
+      id: 'restaurant-social',
+      icon: 'sparkles',
+      chineseTitle: '短视频宣传',
+      englishTitle: 'Social promotion',
+      chinesePrompt: '帮我规划饭店接下来一个月的短视频宣传内容',
+      englishPrompt: 'Plan one month of short-video promotion for my restaurant'
+    }
+  ];
   visibleSuggestions = suggestionPool.slice(0, 3);
   type Theme = 'light' | 'dark' | 'system';
   const savedTheme = localStorage.getItem('personal-chat-theme');
@@ -428,6 +479,10 @@
   $: lastUserMessageId = findLastUserMessageId(messages);
   $: dragActive = dragDepth > 0;
   $: selectableModels = visibleModeModels(models);
+  $: restaurantWorkbench =
+    restaurantGuidanceEnabled &&
+    workbenchSetting?.initial === 'restaurant' &&
+    workbenchSetting?.effective === 'restaurant';
   $: t = (chinese: string, english: string) => translate($locale, chinese, english);
   $: generationElapsedSeconds = generationStartedAt
     ? Math.max(0, Math.floor((generationNow - generationStartedAt) / 1000))
@@ -605,6 +660,34 @@
         '当前对话编译后超过 50 MiB，请减少本轮图片或开启新对话。',
         'The compiled conversation exceeds 50 MiB. Remove images from this turn or start a new chat.'
       ],
+      stale_guidance: [
+        '这张需求卡已提交或已被后续消息替代，请查看最新对话。',
+        'This request card was already submitted or superseded. Check the latest message.'
+      ],
+      invalid_guidance_submission: [
+        '本轮选择未能通过校验，请保留选择并重试。',
+        'These selections could not be validated. Your draft was kept; try again.'
+      ],
+      invalid_guidance_output: [
+        '交互卡片格式不符合安全限制，可重试或按原问题直接回答。',
+        'The interactive card was invalid. Retry it or answer the original request.'
+      ],
+      guidance_disabled: [
+        '餐饮需求引导当前未开启。',
+        'Restaurant request guidance is currently disabled.'
+      ],
+      guidance_state_unavailable: [
+        '暂时无法读取餐饮任务状态，请稍后重试。',
+        'The restaurant task state is temporarily unavailable.'
+      ],
+      guidance_bypass_not_allowed: [
+        '只有卡片生成失败后才能使用直接回答。',
+        'Direct bypass is only available after a card-generation failure.'
+      ],
+      invalid_workbench: [
+        '无法切换到所选工作台。',
+        'The selected workbench could not be activated.'
+      ],
       internal_error: ['服务器发生内部错误。', 'The server encountered an internal error.']
     };
     const message = messages[code];
@@ -640,14 +723,17 @@
   }
 
   async function loadWorkspace() {
-    const [loadedModels, loadedConversations, loadedStorage] = await Promise.all([
+    const [loadedModels, loadedConversations, loadedStorage, loadedWorkbench] = await Promise.all([
       getModels(),
       getConversations(false),
-      getStorageStatus().catch(() => null)
+      getStorageStatus().catch(() => null),
+      getWorkbench()
     ]);
     models = loadedModels;
     conversations = loadedConversations;
     storageStatus = loadedStorage;
+    workbenchSetting = loadedWorkbench.workbench;
+    restaurantGuidanceEnabled = loadedWorkbench.guidanceEnabled;
     const availableModes = visibleModeModels(loadedModels);
     const initialDraftModel =
       (user?.preferredModel &&
@@ -771,6 +857,9 @@
       uploads = [];
       generateImage = false;
       storageStatus = null;
+      workbenchSetting = null;
+      restaurantGuidanceEnabled = false;
+      workbenchPickerOpen = false;
       resetSpeech();
       profileOpen = false;
       onboardingOpen = false;
@@ -795,6 +884,9 @@
     uploads = [];
     generateImage = false;
     storageStatus = null;
+    workbenchSetting = null;
+    restaurantGuidanceEnabled = false;
+    workbenchPickerOpen = false;
     resetSpeech();
     profileOpen = false;
     dialog = '';
@@ -956,6 +1048,7 @@
     showArchived = false;
     followStream = true;
     showJumpToLatest = false;
+    workbenchPickerOpen = false;
     modelPickerOpen = false;
     effortPickerOpen = false;
     sidebarOpen = false;
@@ -1069,6 +1162,7 @@
   async function selectModel(model: string) {
     modelPickerOpen = false;
     effortPickerOpen = false;
+    workbenchPickerOpen = false;
     if (!activeConversation) {
       setDraftModel(model);
       await tick();
@@ -1099,12 +1193,52 @@
     if (generating || activeConversationReadOnly || !selectableModels.length) return;
     modelPickerOpen = !modelPickerOpen;
     effortPickerOpen = false;
+    workbenchPickerOpen = false;
   }
 
   function toggleEffortPicker() {
     if (generating || activeConversationReadOnly || !activeModel) return;
     effortPickerOpen = !effortPickerOpen;
     modelPickerOpen = false;
+    workbenchPickerOpen = false;
+  }
+
+  function toggleWorkbenchPicker() {
+    if (
+      generating ||
+      activeConversationReadOnly ||
+      !restaurantGuidanceEnabled ||
+      workbenchUpdating
+    ) return;
+    workbenchPickerOpen = !workbenchPickerOpen;
+    modelPickerOpen = false;
+    effortPickerOpen = false;
+  }
+
+  async function selectWorkbench(next: 'general' | 'restaurant') {
+    if (
+      generating ||
+      activeConversationReadOnly ||
+      workbenchUpdating ||
+      next === workbenchSetting?.effective
+    ) {
+      workbenchPickerOpen = false;
+      return;
+    }
+    workbenchUpdating = true;
+    workspaceError = '';
+    try {
+      const response = await updateWorkbench(next);
+      workbenchSetting = response.workbench;
+      restaurantGuidanceEnabled = response.guidanceEnabled;
+      workbenchPickerOpen = false;
+      await tick();
+      refreshSuggestions();
+    } catch (error) {
+      workspaceError = errorMessage(error);
+    } finally {
+      workbenchUpdating = false;
+    }
   }
 
   async function selectEffort(reasoningEffort: string) {
@@ -1680,11 +1814,17 @@
     });
   }
 
-  async function regenerate(message: Message) {
-    if (generating || !activeConversation || activeConversationReadOnly) return;
+  async function submitGuidance(submission: GuidanceSubmission) {
+    if (
+      generating ||
+      !activeConversation ||
+      activeConversationReadOnly ||
+      !restaurantWorkbench
+    ) return;
     const conversationId = activeConversation.id;
     const watchVersion = ++responseWatchVersion;
     const requestId = crypto.randomUUID();
+    speechController.stop();
     generating = true;
     activeResponseCancelId = requestId;
     beginGenerationClock('sending');
@@ -1696,7 +1836,50 @@
     await runAssistantStream({
       conversationId,
       watchVersion,
-      start: (onEvent, signal) => regenerateResponse(message.id, requestId, onEvent, signal),
+      start: (onEvent, signal) =>
+        streamGuidanceResponse(
+          conversationId,
+          submission,
+          requestId,
+          onEvent,
+          signal
+        ),
+      onStarted: (data) => {
+        const userMessage = data.userMessage as Message | undefined;
+        const assistantMessage = data.assistantMessage as Message;
+        messages = userMessage
+          ? [...messages, userMessage, assistantMessage]
+          : [...messages, assistantMessage];
+        return assistantMessage;
+      }
+    });
+  }
+
+  async function regenerate(message: Message, bypassGuidance = false) {
+    if (generating || !activeConversation || activeConversationReadOnly) return;
+    const conversationId = activeConversation.id;
+    const watchVersion = ++responseWatchVersion;
+    const requestId = crypto.randomUUID();
+    speechController.stop();
+    generating = true;
+    activeResponseCancelId = requestId;
+    beginGenerationClock('sending');
+    followStream = true;
+    showJumpToLatest = false;
+    workspaceError = '';
+    contextStatus = '';
+
+    await runAssistantStream({
+      conversationId,
+      watchVersion,
+      start: (onEvent, signal) =>
+        regenerateResponse(
+          message.id,
+          requestId,
+          onEvent,
+          signal,
+          bypassGuidance
+        ),
       onStarted: (data) => {
         const assistantMessage = data.assistantMessage as Message;
         messages = [...messages, assistantMessage];
@@ -2065,6 +2248,7 @@
   function openOnboarding() {
     profileOpen = false;
     sidebarOpen = false;
+    workbenchPickerOpen = false;
     modelPickerOpen = false;
     effortPickerOpen = false;
     updateAnnouncementOpen = false;
@@ -2083,6 +2267,7 @@
   function openUpdateAnnouncement() {
     profileOpen = false;
     sidebarOpen = false;
+    workbenchPickerOpen = false;
     modelPickerOpen = false;
     effortPickerOpen = false;
     onboardingOpen = false;
@@ -2124,7 +2309,8 @@
   function refreshSuggestions() {
     const current = new Set(visibleSuggestions.map((suggestion) => suggestion.id));
     const supportsImage = Boolean(activeModel?.imageGenerationMode);
-    const available = suggestionPool.filter(
+    const source = restaurantWorkbench ? restaurantSuggestionPool : suggestionPool;
+    const available = source.filter(
       (suggestion) => suggestion.mode !== 'image' || supportsImage
     );
     const fresh = available.filter((suggestion) => !current.has(suggestion.id));
@@ -2694,15 +2880,89 @@
           <Icon name="menu" size={20} />
         </button>
         <div class="selectors">
-          {#if modelPickerOpen || effortPickerOpen}
+          {#if workbenchPickerOpen || modelPickerOpen || effortPickerOpen}
             <button
               class="model-picker-scrim"
               aria-label={t('关闭选择列表', 'Close picker')}
               on:click={() => {
+                workbenchPickerOpen = false;
                 modelPickerOpen = false;
                 effortPickerOpen = false;
               }}
             ></button>
+          {/if}
+          {#if restaurantGuidanceEnabled && workbenchSetting?.initial === 'restaurant'}
+            <div class="workbench-picker">
+              <button
+                type="button"
+                class:restaurant={restaurantWorkbench}
+                class="workbench-picker-trigger"
+                aria-haspopup="listbox"
+                aria-expanded={workbenchPickerOpen}
+                on:click={toggleWorkbenchPicker}
+                disabled={generating || activeConversationReadOnly || workbenchUpdating}
+              >
+                <Icon name={restaurantWorkbench ? 'plan' : 'chat'} size={15} />
+                <span>
+                  {restaurantWorkbench
+                    ? t('餐饮任务', 'Restaurant')
+                    : t('通用聊天', 'General')}
+                </span>
+                <Icon name="chevron-down" size={14} />
+              </button>
+              {#if workbenchPickerOpen}
+                <div class="workbench-picker-panel">
+                  <div class="picker-heading">
+                    <strong>{t('选择工作台', 'Choose a workbench')}</strong>
+                    <small>
+                      {t(
+                        '餐饮任务会在问题模糊时先用按钮帮你补充需求',
+                        'Restaurant mode uses buttons to refine vague requests'
+                      )}
+                    </small>
+                  </div>
+                  <div class="workbench-options" role="listbox" aria-label={t('工作台', 'Workbench')}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={workbenchSetting?.effective === 'general'}
+                      class:selected={workbenchSetting?.effective === 'general'}
+                      on:click={() => selectWorkbench('general')}
+                    >
+                      <span class="workbench-option-icon"><Icon name="chat" size={16} /></span>
+                      <span>
+                        <strong>{t('通用聊天', 'General chat')}</strong>
+                        <small>{t('直接按普通对话方式回答', 'Use the standard chat flow')}</small>
+                      </span>
+                      {#if workbenchSetting?.effective === 'general'}
+                        <span class="model-check"><Icon name="check" size={17} /></span>
+                      {/if}
+                    </button>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={workbenchSetting?.effective === 'restaurant'}
+                      class:selected={workbenchSetting?.effective === 'restaurant'}
+                      on:click={() => selectWorkbench('restaurant')}
+                    >
+                      <span class="workbench-option-icon"><Icon name="plan" size={16} /></span>
+                      <span>
+                        <strong>{t('餐饮任务', 'Restaurant tasks')}</strong>
+                        <small>
+                          {t(
+                            '模糊问题先澄清，再确认任务简报',
+                            'Refine vague requests, then confirm a task brief'
+                          )}
+                        </small>
+                      </span>
+                      {#if workbenchSetting?.effective === 'restaurant'}
+                        <span class="model-check"><Icon name="check" size={17} /></span>
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </div>
           {/if}
           <div class="model-picker">
             <button
@@ -2867,12 +3127,21 @@
         {:else if messages.length === 0}
           <section class="welcome">
             <div class="welcome-glyph"><Icon name="sparkles" size={23} /></div>
-            <h2>{t('今天想聊点什么？', 'What would you like to talk about?')}</h2>
+            <h2>
+              {restaurantWorkbench
+                ? t('今天想解决哪件餐饮任务？', 'Which restaurant task should we tackle?')
+                : t('今天想聊点什么？', 'What would you like to talk about?')}
+            </h2>
             <p>
-              {t(
-                '我可以帮你写作、分析、搜索网页，也能理解和生成图片。',
-                'I can help you write, analyze, search the web, and understand or generate images.'
-              )}
+              {restaurantWorkbench
+                ? t(
+                    '先说个大概就行；需要时我会给出可点击选项，帮你把需求一步步说清楚。',
+                    'Start with a rough idea. When needed, I’ll offer tappable choices to refine it.'
+                  )
+                : t(
+                    '我可以帮你写作、分析、搜索网页，也能理解和生成图片。',
+                    'I can help you write, analyze, search the web, and understand or generate images.'
+                  )}
             </p>
             <div class="suggestion-heading">
               <span>{t('试试这些', 'Try one of these')}</span>
@@ -2948,8 +3217,18 @@
                   message.parts.some((part) => part.type === 'text' && part.text) &&
                   !generating &&
                   !activeConversationReadOnly}
+                userId={user?.id || ''}
+                guidanceCurrent={restaurantWorkbench &&
+                  !activeConversationReadOnly &&
+                  message.id === messages.at(-1)?.id &&
+                  (message.status === 'completed' || message.status === 'error')}
+                guidanceDisabled={generating}
+                guidanceDraftEnabled={!viewingOtherUser && !showArchived}
                 on:regenerate={(event) => regenerate(event.detail.message)}
                 on:edit={(event) => beginMessageEdit(event.detail.message)}
+                on:guidanceSubmit={(event) => submitGuidance(event.detail.submission)}
+                on:guidanceRetry={(event) =>
+                  regenerate(event.detail.message, event.detail.bypass)}
               />
               {/if}
               {#each checkpointsAfter(checkpoints, message.id) as checkpoint (checkpoint.id)}
@@ -3376,7 +3655,8 @@
 <svelte:window
   on:keydown={(event) => {
     if (event.key === 'Escape') {
-      if (modelPickerOpen || effortPickerOpen) {
+      if (workbenchPickerOpen || modelPickerOpen || effortPickerOpen) {
+        workbenchPickerOpen = false;
         modelPickerOpen = false;
         effortPickerOpen = false;
         return;
