@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/owui-personal-slim/owui-personal-slim/internal/guidance"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -304,7 +305,9 @@ func EstimateMessages(messages []store.Message) int {
 		total += 8
 		for _, part := range message.Parts {
 			switch part.Type {
-			case "text", "reasoning":
+			case "text", "reasoning", guidance.PartClarification,
+				guidance.PartClarificationSubmission, guidance.PartTaskBrief,
+				guidance.PartGuidanceError:
 				total += EstimateText(part.TextContent)
 			case "image":
 				total += 2048
@@ -397,7 +400,9 @@ func (m *Manager) estimateProviderBytes(
 		}
 		for _, part := range message.Parts {
 			switch part.Type {
-			case "text":
+			case "text", guidance.PartClarification,
+				guidance.PartClarificationSubmission, guidance.PartTaskBrief,
+				guidance.PartGuidanceError:
 				total += int64(len(part.TextContent)) + 64
 			case "image":
 				if message.Role != "user" {
@@ -461,7 +466,9 @@ func renderedMessageBytes(message store.Message) int {
 	total := len(message.Role) + 8
 	for _, part := range message.Parts {
 		switch part.Type {
-		case "text":
+		case "text", guidance.PartClarification,
+			guidance.PartClarificationSubmission, guidance.PartTaskBrief,
+			guidance.PartGuidanceError:
 			total += len(part.TextContent) + 1
 		case "image":
 			total += len(part.AttachmentID) + 24
@@ -480,7 +487,9 @@ func renderMessages(messages []store.Message) string {
 		result.WriteString("]\n")
 		for _, part := range message.Parts {
 			switch part.Type {
-			case "text":
+			case "text", guidance.PartClarification,
+				guidance.PartClarificationSubmission, guidance.PartTaskBrief,
+				guidance.PartGuidanceError:
 				result.WriteString(part.TextContent)
 				result.WriteByte('\n')
 			case "image":

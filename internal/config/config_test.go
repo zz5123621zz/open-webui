@@ -91,6 +91,21 @@ func TestLoadParsesProgressiveSummaryHardDisable(t *testing.T) {
 	}
 }
 
+func TestLoadParsesRestaurantGuidanceFeatureFlag(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("RESTAURANT_GUIDANCE_ENABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Tools.RestaurantGuidanceEnabled {
+		t.Fatal("restaurant guidance feature flag = false")
+	}
+}
+
 func TestLoadConfiguresVolcengineSpeechFromSecretFile(t *testing.T) {
 	apiKeyPath := filepath.Join(t.TempDir(), "volcengine-api-key")
 	if err := os.WriteFile(apiKeyPath, []byte("volcengine-secret\n"), 0o600); err != nil {

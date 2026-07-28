@@ -278,7 +278,10 @@ func startAssistantTurn(ctx context.Context, tx *sql.Tx, turn assistantTurn) (in
 			id, conversation_id, user_id, role, model, reasoning_effort_requested,
 			reasoning_effort_sent, status, parent_message_id, client_request_id, created_at
 		)
-		VALUES(?, ?, ?, 'assistant', ?, ?, NULLIF(?, ''), 'streaming', ?, ?, ?)
+		VALUES(
+			?, ?, ?, 'assistant', ?, ?, NULLIF(?, ''), 'streaming', ?,
+			NULLIF(?, ''), ?
+		)
 	`, turn.AssistantID, turn.ConversationID, turn.UserID, turn.Model, turn.RequestedEffort,
 		turn.SentEffort, turn.ParentMessageID, turn.ClientRequestID, now); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {

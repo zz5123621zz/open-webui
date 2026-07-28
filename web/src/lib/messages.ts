@@ -4,7 +4,12 @@ import type { Message } from './types';
 // edit prefill so the two can never drift apart.
 export function messageText(message: Message): string {
   return message.parts
-    .filter((part) => part.type === 'text')
+    .filter(
+      (part) =>
+        ['text', 'clarification', 'clarification_submission', 'task_brief', 'guidance_error'].includes(
+          part.type
+        )
+    )
     .map((part) => part.text || '')
     .join('\n\n');
 }

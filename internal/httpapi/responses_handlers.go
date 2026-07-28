@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/owui-personal-slim/owui-personal-slim/internal/activecontext"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/guidance"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/ids"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/jobs"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
@@ -61,14 +62,16 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 type createResponseRequest struct {
-	Text          string   `json:"text"`
-	AttachmentIDs []string `json:"attachmentIds"`
-	RequestID     string   `json:"requestId"`
-	GenerateImage bool     `json:"generateImage"`
+	Text               string                       `json:"text"`
+	AttachmentIDs      []string                     `json:"attachmentIds"`
+	RequestID          string                       `json:"requestId"`
+	GenerateImage      bool                         `json:"generateImage"`
+	GuidanceSubmission *guidance.GuidanceSubmission `json:"guidanceSubmission"`
 }
 
 type regenerateResponseRequest struct {
-	RequestID string `json:"requestId"`
+	RequestID      string `json:"requestId"`
+	BypassGuidance bool   `json:"bypassGuidance"`
 }
 
 // ensureStreamRequestID fills in a generated request id when absent and
@@ -118,8 +121,26 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &request) {
 		return
 	}
-	if strings.TrimSpace(request.Text) == "" && len(request.AttachmentIDs) == 0 {
+	structured := request.GuidanceSubmission != nil
+	if !structured && strings.TrimSpace(request.Text) == "" && len(request.AttachmentIDs) == 0 {
 		writeError(w, http.StatusBadRequest, "message_required", "Message text or an image is required.")
+		return
+	}
+	if structured &&
+		(strings.TrimSpace(request.Text) != "" ||
+			len(request.AttachmentIDs) != 0 ||
+			request.GenerateImage) {
+		writeError(
+			w, http.StatusBadRequest, "invalid_guidance_submission",
+			"A guidance submission cannot include message text, attachments, or image generation.",
+		)
+		return
+	}
+	if structured && !s.cfg.Tools.RestaurantGuidanceEnabled {
+		writeError(
+			w, http.StatusConflict, "guidance_disabled",
+			"Restaurant guidance is currently disabled.",
+		)
 		return
 	}
 	if len(request.Text) > 2*1024*1024 {
@@ -197,15 +218,46 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	defer lease.Release()
 	summaryMode := s.progressiveSummaryMode(r.Context())
 
-	userMessage, assistantMessage, err := s.store.BeginResponse(
-		r.Context(), session.User.ID, conversationID, request.RequestID,
-		request.Text, conversation.Model, conversation.ReasoningEffort, sentEffort,
-		request.AttachmentIDs,
-	)
+	var userMessage, assistantMessage store.Message
+	if structured {
+		userMessage, assistantMessage, err = s.store.BeginGuidanceResponse(
+			r.Context(), session.User.ID, conversationID, request.RequestID,
+			*request.GuidanceSubmission, conversation.Model,
+			conversation.ReasoningEffort, sentEffort,
+		)
+	} else {
+		userMessage, assistantMessage, err = s.store.BeginResponse(
+			r.Context(), session.User.ID, conversationID, request.RequestID,
+			request.Text, conversation.Model, conversation.ReasoningEffort, sentEffort,
+			request.AttachmentIDs,
+		)
+	}
 	if errors.Is(err, store.ErrDuplicateRequest) {
 		respondBeforeStreamStart(
 			queuedStream, w, http.StatusConflict, "duplicate_request",
 			"This request has already been submitted.",
+		)
+		return
+	}
+	if errors.Is(err, store.ErrStaleGuidance) {
+		respondBeforeStreamStart(
+			queuedStream, w, http.StatusConflict, "stale_guidance",
+			"This guidance card is no longer actionable.",
+		)
+		return
+	}
+	if structured && errors.Is(err, store.ErrNotFound) {
+		respondBeforeStreamStart(
+			queuedStream, w, http.StatusNotFound, "not_found",
+			"The guidance card was not found.",
+		)
+		return
+	}
+	if structured && err != nil {
+		s.logger.Warn("guidance submission rejected", "error", err)
+		respondBeforeStreamStart(
+			queuedStream, w, http.StatusBadRequest, "invalid_guidance_submission",
+			"The selected guidance answers could not be accepted.",
 		)
 		return
 	}
@@ -228,8 +280,9 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 	s.streamAssistantResponse(
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
-		summaryMode, "create", assistantMessage, &userMessage, nil, queuedStream,
-		request.GenerateImage, request.Text,
+		summaryMode, map[bool]string{true: "guidance", false: "create"}[structured],
+		assistantMessage, &userMessage, nil, queuedStream,
+		request.GenerateImage, request.Text, false,
 	)
 }
 
@@ -252,6 +305,13 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.internalError(w, "get response for regeneration", err)
+		return
+	}
+	if request.BypassGuidance && original.ErrorCode != "invalid_guidance_output" {
+		writeError(
+			w, http.StatusBadRequest, "guidance_bypass_not_allowed",
+			"Guidance can only be bypassed after an invalid guidance output.",
+		)
 		return
 	}
 	conversation, err := s.store.ConversationByID(r.Context(), session.User.ID, original.ConversationID)
@@ -329,7 +389,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, "regenerate", assistant, nil, history, queuedStream, generateImage,
-		latestUserText(history),
+		latestUserText(history), request.BypassGuidance,
 	)
 }
 
@@ -351,6 +411,7 @@ func (s *Server) streamAssistantResponse(
 	stream *sseWriter,
 	generateImage bool,
 	imagePrompt string,
+	forceGuidanceFinal bool,
 ) {
 	s.registerResponse(assistantMessage.ID, userID, cancelResponse)
 	defer s.unregisterResponse(assistantMessage.ID)
@@ -426,6 +487,25 @@ func (s *Server) streamAssistantResponse(
 			return
 		}
 	}
+	guidanceState, err := s.guidanceRuntime(
+		r.Context(), userID, history, forceGuidanceFinal, generateImage,
+	)
+	if err != nil {
+		if r.Context().Err() != nil {
+			completeInterruption(nil)
+			return
+		}
+		_, _ = s.failAssistant(
+			context.WithoutCancel(r.Context()), userID, assistantMessage.ID,
+			"guidance_state_unavailable", nil,
+		)
+		s.logger.Error("prepare guidance state failed", "error", err)
+		_ = stream.send("response.error", map[string]string{
+			"code":    "guidance_state_unavailable",
+			"message": "Restaurant guidance state could not be prepared.",
+		})
+		return
+	}
 	active, err := s.contexts.Prepare(
 		r.Context(), userID, conversation, model, sentEffort, history, assistantMessage.ID,
 		func(status string, data map[string]any) error {
@@ -449,7 +529,10 @@ func (s *Server) streamAssistantResponse(
 	if active.CompactionWarning != nil {
 		s.logger.Warn("context compaction failed below hard threshold", "error", active.CompactionWarning, "conversation_id", conversation.ID)
 	}
-	providerRequest, err := s.buildResponsesRequest(r.Context(), userID, conversation, model, sentEffort, active.Checkpoint, active.Messages)
+	providerRequest, err := s.buildResponsesRequest(
+		r.Context(), userID, conversation, model, sentEffort,
+		active.Checkpoint, active.Messages, guidanceState,
+	)
 	if err != nil {
 		if r.Context().Err() != nil {
 			completeInterruption(nil)
@@ -473,6 +556,8 @@ func (s *Server) streamAssistantResponse(
 	_ = stream.send("response.stage", map[string]string{"stage": "waiting_for_model"})
 	newAccumulator := func() responseAccumulator {
 		return responseAccumulator{
+			guidanceRuntime:    guidanceState,
+			guidanceInstanceID: assistantMessage.ID,
 			saveImage: func(encoded string) (generatedImage, error) {
 				return s.saveGeneratedImage(context.WithoutCancel(r.Context()), userID, conversation.ID, assistantMessage.ID, encoded)
 			},
@@ -571,7 +656,7 @@ func (s *Server) streamAssistantResponse(
 			}
 			providerRequest, err = s.buildResponsesRequest(
 				r.Context(), userID, conversation, model, sentEffort,
-				forced.Checkpoint, forced.Messages,
+				forced.Checkpoint, forced.Messages, guidanceState,
 			)
 			if err != nil {
 				s.summaries.MarkInconclusive(summaryDecision)
@@ -595,6 +680,7 @@ func (s *Server) streamAssistantResponse(
 		}
 		break
 	}
+	accumulator.finalizeGuidance()
 	if startErr != nil {
 		if r.Context().Err() != nil {
 			completeInterruption(nil)
@@ -742,7 +828,7 @@ func (s *Server) streamDedicatedImage(
 			}},
 		)
 		_ = stream.send("response.error", map[string]string{
-			"code": "persistence_failed",
+			"code":    "persistence_failed",
 			"message": "The image response could not be tracked safely.",
 		})
 		return
@@ -1061,7 +1147,16 @@ func isContextWindowCode(value string) bool {
 		strings.Contains(value, "too_many_tokens")
 }
 
-func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conversation store.Conversation, model provider.Model, effort string, checkpoint *store.ContextCheckpoint, messages []store.Message) (provider.ResponsesRequest, error) {
+func (s *Server) buildResponsesRequest(
+	ctx context.Context,
+	userID string,
+	conversation store.Conversation,
+	model provider.Model,
+	effort string,
+	checkpoint *store.ContextCheckpoint,
+	messages []store.Message,
+	guidanceState guidance.Runtime,
+) (provider.ResponsesRequest, error) {
 	input := make([]provider.ResponseInput, 0, len(messages)+1)
 	if checkpoint != nil {
 		input = append(input, provider.ResponseInput{
@@ -1082,8 +1177,15 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 			}
 			var generatedNotes []string
 			for _, part := range message.Parts {
-				if part.Type == "image" && part.AttachmentID != "" {
+				switch {
+				case part.Type == "image" && part.AttachmentID != "":
 					generatedNotes = append(generatedNotes, "[Generated image attachment "+part.AttachmentID+"]")
+				case part.Type == guidance.PartClarification ||
+					part.Type == guidance.PartTaskBrief ||
+					part.Type == guidance.PartGuidanceError:
+					if strings.TrimSpace(part.TextContent) != "" {
+						generatedNotes = append(generatedNotes, part.TextContent)
+					}
 				}
 			}
 			if len(generatedNotes) > 0 {
@@ -1098,7 +1200,9 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 		content := make([]provider.ResponseContent, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			switch part.Type {
-			case "text":
+			case "text", guidance.PartClarification,
+				guidance.PartClarificationSubmission, guidance.PartTaskBrief,
+				guidance.PartGuidanceError:
 				contentType := "input_text"
 				if message.Role == "assistant" {
 					contentType = "output_text"
@@ -1130,8 +1234,20 @@ func (s *Server) buildResponsesRequest(ctx context.Context, userID string, conve
 	if s.cfg.Tools.ImageGenerationEnabled && model.ImageGenerationMode == "responses_tool" {
 		tools = append(tools, map[string]any{"type": "image_generation"})
 	}
+	if guidanceState.Enabled &&
+		!guidanceState.FinalAnswer &&
+		(guidanceState.AllowClarification || guidanceState.AllowTaskBrief) {
+		tools = append(
+			tools,
+			guidance.ToolDefinitions(
+				guidanceState.AllowClarification,
+				guidanceState.MaxQuestions,
+			)...,
+		)
+	}
 	return provider.ResponsesRequest{
-		Model: conversation.Model, Instructions: responseInstructions,
+		Model:            conversation.Model,
+		Instructions:     responseInstructions + guidance.CompileInstructions(guidanceState),
 		SafetyIdentifier: s.providerSafetyIdentifier(userID),
 		Input:            input, Stream: true, Store: false,
 		Reasoning: provider.ReasoningOptions{Effort: effort, Summary: "auto"},
@@ -1364,22 +1480,32 @@ func readLimitedLine(reader *bufio.Reader, maximum int) ([]byte, error) {
 }
 
 type responseAccumulator struct {
-	responseID      string
-	text            strings.Builder
-	reasoning       []*reasoningSection
-	reasoningByKey  map[string]*reasoningSection
-	citations       []citation
-	tools           []toolSnapshot
-	toolStarted     map[string]time.Time
-	images          []generatedImage
-	partOrder       []accumulatorPart
-	inputTokens     int64
-	outputTokens    int64
-	reasoningTokens int64
-	completed       bool
-	failureCode     string
-	saveImage       func(string) (generatedImage, error)
-	providerItems   []store.NewProviderItem
+	responseID          string
+	text                strings.Builder
+	reasoning           []*reasoningSection
+	reasoningByKey      map[string]*reasoningSection
+	citations           []citation
+	tools               []toolSnapshot
+	toolStarted         map[string]time.Time
+	images              []generatedImage
+	partOrder           []accumulatorPart
+	inputTokens         int64
+	outputTokens        int64
+	reasoningTokens     int64
+	completed           bool
+	failureCode         string
+	saveImage           func(string) (generatedImage, error)
+	providerItems       []store.NewProviderItem
+	guidanceRuntime     guidance.Runtime
+	guidanceInstanceID  string
+	guidanceCalls       []guidanceCall
+	guidanceControlPart *guidance.ControlPart
+}
+
+type guidanceCall struct {
+	ID        string
+	Name      string
+	Arguments json.RawMessage
 }
 
 func (a *responseAccumulator) markExplicitImageGeneration() {
@@ -1541,12 +1667,14 @@ func (a *responseAccumulator) handleItem(
 		return nil
 	}
 	var item struct {
-		ID     string `json:"id"`
-		Type   string `json:"type"`
-		Status string `json:"status"`
-		Result string `json:"result"`
-		Action any    `json:"action"`
-		Error  struct {
+		ID        string          `json:"id"`
+		Type      string          `json:"type"`
+		Status    string          `json:"status"`
+		Result    string          `json:"result"`
+		Action    any             `json:"action"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Error     struct {
 			Code string `json:"code"`
 		} `json:"error"`
 		Content []struct {
@@ -1585,6 +1713,24 @@ func (a *responseAccumulator) handleItem(
 		}
 	}
 	switch item.Type {
+	case "function_call":
+		if fallbackStatus == "completed" && a.guidanceRuntime.Enabled {
+			arguments, ok := functionCallArguments(item.Arguments)
+			if !ok {
+				arguments = nil
+			}
+			call := guidanceCall{
+				ID: item.ID, Name: item.Name, Arguments: arguments,
+			}
+			for index := range a.guidanceCalls {
+				if call.ID != "" && a.guidanceCalls[index].ID == call.ID {
+					a.guidanceCalls[index] = call
+					return nil
+				}
+			}
+			a.guidanceCalls = append(a.guidanceCalls, call)
+		}
+		return nil
 	case "reasoning":
 		if status != "completed" {
 			return nil
@@ -1675,6 +1821,62 @@ func (a *responseAccumulator) handleItem(
 		}
 	}
 	return nil
+}
+
+func functionCallArguments(raw json.RawMessage) (json.RawMessage, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, false
+	}
+	arguments := json.RawMessage(encoded)
+	return arguments, json.Valid(arguments)
+}
+
+func (a *responseAccumulator) finalizeGuidance() {
+	if !a.guidanceRuntime.Enabled || len(a.guidanceCalls) == 0 {
+		return
+	}
+	invalid := len(a.guidanceCalls) != 1 || strings.TrimSpace(a.text.String()) != ""
+	var control guidance.ControlPart
+	if !invalid {
+		call := a.guidanceCalls[0]
+		switch call.Name {
+		case guidance.ToolShowClarificationCards:
+			invalid = !a.guidanceRuntime.AllowClarification
+		case guidance.ToolShowTaskBrief:
+			invalid = !a.guidanceRuntime.AllowTaskBrief
+		default:
+			invalid = true
+		}
+		if len(call.Arguments) == 0 {
+			invalid = true
+		}
+		if !invalid {
+			var err error
+			control, err = guidance.ParseControlCall(
+				call.Name,
+				call.Arguments,
+				a.guidanceInstanceID,
+				a.guidanceRuntime.MaxQuestions,
+			)
+			invalid = err != nil
+		}
+	}
+	if invalid {
+		fallback := guidance.GuidanceErrorPart("invalid_guidance_output")
+		a.guidanceControlPart = &fallback
+		a.failureCode = "invalid_guidance_output"
+		a.providerItems = nil
+		return
+	}
+	if strings.TrimSpace(a.text.String()) == "" {
+		a.text.Reset()
+	}
+	a.guidanceControlPart = &control
+	a.ensurePart(control.Type, "")
 }
 
 func normalizeOutputItemStatus(status, eventStatus string) string {
@@ -2025,6 +2227,13 @@ func (a *responseAccumulator) progressParts() []store.NewMessagePart {
 }
 
 func (a *responseAccumulator) buildParts() []store.NewMessagePart {
+	if a.failureCode == "invalid_guidance_output" && a.guidanceControlPart != nil {
+		return []store.NewMessagePart{{
+			Type:        a.guidanceControlPart.Type,
+			TextContent: a.guidanceControlPart.Text,
+			JSONContent: a.guidanceControlPart.Data,
+		}}
+	}
 	parts := make([]store.NewMessagePart, 0, len(a.partOrder)+4)
 	emitted := make(map[string]bool, len(a.partOrder)+4)
 	appendPart := func(partType, key string) {
@@ -2034,6 +2243,16 @@ func (a *responseAccumulator) buildParts() []store.NewMessagePart {
 		}
 		emitted[identity] = true
 		switch partType {
+		case guidance.PartClarification, guidance.PartTaskBrief:
+			if a.guidanceControlPart == nil ||
+				a.guidanceControlPart.Type != partType {
+				return
+			}
+			parts = append(parts, store.NewMessagePart{
+				Type:        a.guidanceControlPart.Type,
+				TextContent: a.guidanceControlPart.Text,
+				JSONContent: a.guidanceControlPart.Data,
+			})
 		case "reasoning":
 			for _, section := range a.reasoning {
 				if section.key != key {
@@ -2098,6 +2317,9 @@ func (a *responseAccumulator) buildParts() []store.NewMessagePart {
 	}
 	for _, image := range a.images {
 		appendPart("image", image.AttachmentID)
+	}
+	if a.guidanceControlPart != nil {
+		appendPart(a.guidanceControlPart.Type, "")
 	}
 	return parts
 }

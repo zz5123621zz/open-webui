@@ -1,12 +1,21 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import type { Message, MessagePart } from './types';
+  import type {
+    ClarificationCardsData,
+    GuidanceSubmission,
+    Message,
+    MessagePart,
+    TaskBriefData
+  } from './types';
   import { attachmentURL } from './api';
   import { messageText } from './messages';
   import { translate, type Locale } from './i18n';
+  import ClarificationCards from './ClarificationCards.svelte';
+  import GuidanceError from './GuidanceError.svelte';
   import Icon from './Icon.svelte';
   import Markdown from './Markdown.svelte';
   import SpeechMessageControl from './SpeechMessageControl.svelte';
+  import TaskBrief from './TaskBrief.svelte';
 
   export let message: Message;
   export let locale: Locale = 'zh-CN';
@@ -15,16 +24,36 @@
   export let streamingStage = '';
   export let streamNow = Date.now();
   export let elapsedSeconds = 0;
+  export let userId = '';
+  export let guidanceCurrent = false;
+  export let guidanceDisabled = false;
+  export let guidanceDraftEnabled = true;
   let copied = false;
   const dispatch = createEventDispatcher<{
     regenerate: { message: Message };
     edit: { message: Message };
+    guidanceSubmit: { submission: GuidanceSubmission };
+    guidanceRetry: { message: Message; bypass: boolean };
   }>();
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
   $: reasoningCount = message.parts.filter(
     (part) => part.type === 'reasoning' && part.text
   ).length;
+  $: hasReadableAssistantContent = message.parts.some(
+    (part) =>
+      ['text', 'clarification', 'task_brief', 'guidance_error'].includes(part.type) &&
+      Boolean(part.text)
+  );
+  $: hasGuidanceError = message.parts.some((part) => part.type === 'guidance_error');
+
+  function clarificationData(part: MessagePart): ClarificationCardsData {
+    return part.data as unknown as ClarificationCardsData;
+  }
+
+  function taskBriefData(part: MessagePart): TaskBriefData {
+    return part.data as unknown as TaskBriefData;
+  }
 
   function toolLabel(part: MessagePart): string {
     const type = String(part.data?.type || '');
@@ -111,7 +140,11 @@
       response_timeout: ['运行超过 30 分钟，已自动停止', 'Stopped after exceeding 30 minutes'],
       response_interrupted: ['生成过程意外中断', 'Generation was interrupted unexpectedly'],
       provider_stream_incomplete: ['模型未发送完整的结束事件', 'The model did not send a complete ending event'],
-      persistence_failed: ['回答进度无法安全保存', 'Response progress could not be saved safely']
+      persistence_failed: ['回答进度无法安全保存', 'Response progress could not be saved safely'],
+      invalid_guidance_output: [
+        '交互卡片格式不符合安全限制',
+        'The interactive card did not meet the safety constraints'
+      ]
     };
     if (!code) return '';
     const description = descriptions[code];
@@ -239,6 +272,44 @@
         </details>
       {:else if part.type === 'text' && part.text}
         <div class="answer"><Markdown text={part.text} {locale} /></div>
+      {:else if part.type === 'clarification' && part.data}
+        <ClarificationCards
+          data={clarificationData(part)}
+          sourceMessageId={message.id}
+          sourcePartId={part.id || ''}
+          conversationId={message.conversationId}
+          {userId}
+          {locale}
+          current={guidanceCurrent && Boolean(part.id)}
+          disabled={guidanceDisabled}
+          draftEnabled={guidanceDraftEnabled}
+          on:submit={(event) => dispatch('guidanceSubmit', event.detail)}
+        />
+      {:else if part.type === 'task_brief' && part.data}
+        <TaskBrief
+          data={taskBriefData(part)}
+          sourceMessageId={message.id}
+          sourcePartId={part.id || ''}
+          conversationId={message.conversationId}
+          {userId}
+          {locale}
+          current={guidanceCurrent && Boolean(part.id)}
+          disabled={guidanceDisabled}
+          draftEnabled={guidanceDraftEnabled}
+          on:submit={(event) => dispatch('guidanceSubmit', event.detail)}
+        />
+      {:else if part.type === 'clarification_submission' && part.text}
+        <div class="answer guidance-submission">
+          <Markdown text={part.text} {locale} />
+        </div>
+      {:else if part.type === 'guidance_error'}
+        <GuidanceError
+          {locale}
+          current={guidanceCurrent}
+          disabled={guidanceDisabled}
+          on:retry={() => dispatch('guidanceRetry', { message, bypass: false })}
+          on:bypass={() => dispatch('guidanceRetry', { message, bypass: true })}
+        />
       {:else if part.type === 'image' && part.attachmentId}
         <a
           class="message-image-link"
@@ -336,7 +407,7 @@
         <span class="tool-spinner" aria-hidden="true"></span>
       </div>
     {/if}
-    {#if message.status === 'error' || message.status === 'interrupted'}
+    {#if (message.status === 'error' || message.status === 'interrupted') && !hasGuidanceError}
       <div class="message-error" role="alert">
         <Icon name="alert" size={15} />
         {message.status === 'interrupted'
@@ -362,8 +433,7 @@
         </button>
       </div>
     {/if}
-    {#if message.role === 'assistant' &&
-      message.parts.some((part) => part.type === 'text' && part.text)}
+    {#if message.role === 'assistant' && hasReadableAssistantContent}
       <div class:streaming={message.status === 'streaming'} class="message-footer">
         <SpeechMessageControl {message} {locale} />
         {#if message.status !== 'streaming'}
@@ -377,7 +447,7 @@
             {copied ? t('已复制', 'Copied') : t('复制', 'Copy')}
           </button>
         {/if}
-        {#if canRegenerate && message.status !== 'streaming'}
+        {#if canRegenerate && message.status !== 'streaming' && !hasGuidanceError}
           <button
             class="copy-answer"
             title={message.status === 'completed'

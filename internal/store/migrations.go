@@ -242,3 +242,50 @@ VALUES(
 )
 ON CONFLICT(id) DO NOTHING;
 `
+
+const schemaV6 = `
+ALTER TABLE users
+ADD COLUMN initial_workbench TEXT NOT NULL DEFAULT 'general'
+CHECK (initial_workbench IN ('general', 'restaurant'));
+
+ALTER TABLE users
+ADD COLUMN workbench_preference TEXT
+CHECK (
+	workbench_preference IS NULL OR
+	workbench_preference IN ('general', 'restaurant')
+);
+
+CREATE TABLE IF NOT EXISTS workbench_assignment_audit (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+	old_value TEXT NOT NULL CHECK (old_value IN ('general', 'restaurant')),
+	new_value TEXT NOT NULL CHECK (new_value IN ('general', 'restaurant')),
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workbench_assignment_audit_user
+ON workbench_assignment_audit(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS restaurant_profile_facts (
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	field_key TEXT NOT NULL,
+	value TEXT NOT NULL,
+	source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY(user_id, field_key)
+);
+
+CREATE TABLE IF NOT EXISTS restaurant_profile_audit (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	field_key TEXT NOT NULL,
+	operation TEXT NOT NULL CHECK (operation IN ('set', 'replace', 'delete')),
+	old_value TEXT,
+	new_value TEXT,
+	source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_restaurant_profile_audit_user
+ON restaurant_profile_audit(user_id, created_at DESC);
+`

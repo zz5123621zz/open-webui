@@ -106,6 +106,18 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/v1/me/password", s.auth(s.origin(s.csrf(http.HandlerFunc(s.changePassword)))))
 	s.mux.Handle("GET /api/v1/me/storage", s.auth(http.HandlerFunc(s.storageStatus)))
 	s.mux.Handle("GET /api/v1/me/speech", s.auth(http.HandlerFunc(s.getMySpeechPreference)))
+	s.mux.Handle("GET /api/v1/me/workbench", s.auth(http.HandlerFunc(s.getMyWorkbench)))
+	s.mux.Handle(
+		"PUT /api/v1/me/workbench",
+		s.auth(s.limitAction(
+			"workbench_preference", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateMyWorkbench))),
+		)),
+	)
+	s.mux.Handle(
+		"GET /api/v1/me/restaurant-profile",
+		s.auth(http.HandlerFunc(s.getMyRestaurantProfile)),
+	)
 	s.mux.Handle(
 		"PUT /api/v1/me/speech",
 		s.auth(s.limitAction(
@@ -172,13 +184,14 @@ func (s *Server) routes() {
 
 func (s *Server) publicConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"registrationEnabled":     false,
-		"provider":                s.cfg.Provider.Kind,
-		"maxUploadBytes":          maxUploadBytes,
-		"maxImagesPerMessage":     4,
-		"maxImageBytesPerMessage": 30 * 1024 * 1024,
-		"webSearchEnabled":        s.cfg.Tools.WebSearchEnabled,
-		"imageGenerationEnabled":  s.cfg.Tools.ImageGenerationEnabled,
+		"registrationEnabled":       false,
+		"provider":                  s.cfg.Provider.Kind,
+		"maxUploadBytes":            maxUploadBytes,
+		"maxImagesPerMessage":       4,
+		"maxImageBytesPerMessage":   30 * 1024 * 1024,
+		"webSearchEnabled":          s.cfg.Tools.WebSearchEnabled,
+		"imageGenerationEnabled":    s.cfg.Tools.ImageGenerationEnabled,
+		"restaurantGuidanceEnabled": s.cfg.Tools.RestaurantGuidanceEnabled,
 	})
 }
 

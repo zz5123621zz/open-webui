@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/owui-personal-slim/owui-personal-slim/internal/guidance"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/store"
 )
@@ -454,4 +455,169 @@ func TestExplicitImageMarkerControlsRegenerationMode(t *testing.T) {
 	if messageRequestedImageGeneration(message) {
 		t.Fatal("ordinary image output was treated as explicit image mode")
 	}
+}
+
+func TestGuidanceFunctionCallBecomesValidatedStructuredPart(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := responseAccumulator{
+		guidanceRuntime: guidance.Runtime{
+			Enabled: true, AllowClarification: true, AllowTaskBrief: true,
+			MaxQuestions: 2,
+		},
+		guidanceInstanceID: "assistant_guidance_1",
+	}
+	arguments := `{
+		"schemaVersion":1,
+		"intro":"先确认两个关键点。",
+		"currentUnderstanding":["需要设计会员体系"],
+		"questions":[{
+			"key":"goal","prompt":"首要目标是什么？","selection":"single_select",
+			"options":[
+				{"key":"repeat","label":"增加复购","description":null},
+				{"key":"cash","label":"回笼资金","description":null}
+			],
+			"allowOther":true,"allowDelegatedDefault":true,
+			"minimumSelections":1,"maximumSelections":1
+		},{
+			"key":"audience","prompt":"主要顾客是谁？","selection":"single_select",
+			"options":[
+				{"key":"family","label":"家庭聚餐","description":null},
+				{"key":"business","label":"商务宴请","description":null}
+			],
+			"allowOther":true,"allowDelegatedDefault":true,
+			"minimumSelections":1,"maximumSelections":1
+		}]
+	}`
+	item, err := json.Marshal(map[string]any{
+		"id":        "call_1",
+		"type":      "function_call",
+		"status":    "completed",
+		"name":      guidance.ToolShowClarificationCards,
+		"arguments": arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.handle(stream, providerStreamEvent{
+		Type: "response.output_item.done", Item: item,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	accumulator.finalizeGuidance()
+	parts := accumulator.parts()
+	if accumulator.failureCode != "" || len(parts) != 1 ||
+		parts[0].Type != guidance.PartClarification ||
+		!strings.Contains(parts[0].TextContent, "增加复购") {
+		t.Fatalf(
+			"validated guidance output = failure %q parts %#v",
+			accumulator.failureCode, parts,
+		)
+	}
+	cards, err := guidance.DecodeClarificationCards(parts[0].JSONContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cards.InstanceID != "assistant_guidance_1" || len(cards.Questions) != 2 {
+		t.Fatalf("stored guidance cards = %#v", cards)
+	}
+	if len(accumulator.providerItems) != 0 {
+		t.Fatalf("function call was persisted as provider replay: %#v", accumulator.providerItems)
+	}
+}
+
+func TestInvalidGuidanceOutputPersistsOnlyFixedSafePart(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		events []providerStreamEvent
+	}{
+		{
+			name: "unknown function",
+			events: []providerStreamEvent{guidanceFunctionEvent(
+				t, "call_1", "invent_custom_button", `{}`,
+			)},
+		},
+		{
+			name: "multiple functions",
+			events: []providerStreamEvent{
+				guidanceFunctionEvent(
+					t, "call_1", guidance.ToolShowTaskBrief, validTaskBriefArguments(),
+				),
+				guidanceFunctionEvent(
+					t, "call_2", guidance.ToolShowTaskBrief, validTaskBriefArguments(),
+				),
+			},
+		},
+		{
+			name: "function and substantive text",
+			events: []providerStreamEvent{
+				{Type: "response.output_text.delta", Delta: "模型自行生成的正文"},
+				guidanceFunctionEvent(
+					t, "call_1", guidance.ToolShowTaskBrief, validTaskBriefArguments(),
+				),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			stream := newSSEWriter(recorder)
+			accumulator := responseAccumulator{
+				guidanceRuntime: guidance.Runtime{
+					Enabled: true, AllowClarification: true,
+					AllowTaskBrief: true, MaxQuestions: 3,
+				},
+				guidanceInstanceID: "assistant_invalid_guidance",
+				providerItems: []store.NewProviderItem{{
+					ItemType: "message", ReplayJSON: json.RawMessage(`{"type":"message"}`),
+				}},
+			}
+			for _, event := range test.events {
+				if err := accumulator.handle(stream, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			accumulator.finalizeGuidance()
+			parts := accumulator.parts()
+			if accumulator.failureCode != "invalid_guidance_output" ||
+				len(parts) != 1 ||
+				parts[0].Type != guidance.PartGuidanceError ||
+				strings.Contains(parts[0].TextContent, "模型自行生成") ||
+				len(accumulator.providerItems) != 0 {
+				t.Fatalf(
+					"invalid guidance output = failure %q parts %#v provider %#v",
+					accumulator.failureCode, parts, accumulator.providerItems,
+				)
+			}
+		})
+	}
+}
+
+func guidanceFunctionEvent(
+	t *testing.T,
+	id string,
+	name string,
+	arguments string,
+) providerStreamEvent {
+	t.Helper()
+	item, err := json.Marshal(map[string]any{
+		"id": id, "type": "function_call", "status": "completed",
+		"name": name, "arguments": arguments,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return providerStreamEvent{Type: "response.output_item.done", Item: item}
+}
+
+func validTaskBriefArguments() string {
+	return `{
+		"schemaVersion":1,
+		"goal":"设计会员体系",
+		"context":[],
+		"constraints":[],
+		"desiredOutput":["充值档位和规则"],
+		"delegatedAssumptions":[],
+		"unresolved":[],
+		"profileUpdateProposal":null
+	}`
 }

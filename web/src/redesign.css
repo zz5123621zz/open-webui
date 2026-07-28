@@ -766,6 +766,115 @@ button:disabled {
   gap: 8px;
 }
 
+.workbench-picker {
+  position: relative;
+  z-index: 13;
+}
+
+.workbench-picker-trigger {
+  display: flex;
+  min-height: 44px;
+  max-width: 176px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.workbench-picker-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workbench-picker-trigger.restaurant,
+.workbench-picker-trigger:hover,
+.workbench-picker-trigger[aria-expanded="true"] {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: var(--primary-soft);
+}
+
+.workbench-picker-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.workbench-picker-panel {
+  position: absolute;
+  top: 50px;
+  left: 0;
+  z-index: 14;
+  width: min(370px, calc(100vw - 32px));
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.workbench-options {
+  display: grid;
+  gap: 4px;
+}
+
+.workbench-options > button {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  color: var(--text);
+  text-align: left;
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  background: transparent;
+}
+
+.workbench-options > button:hover,
+.workbench-options > button.selected {
+  background: var(--primary-soft);
+}
+
+.workbench-option-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--border));
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.workbench-options > button > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.workbench-options strong {
+  font-size: 0.8125rem;
+}
+
+.workbench-options small {
+  margin-top: 2px;
+  color: var(--text-soft);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
 .model-picker-trigger,
 .select-control {
   min-height: 44px;
@@ -3528,6 +3637,89 @@ button:disabled {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Restaurant requirement guidance */
+
+.workbench-picker-trigger,
+.workbench-options > button {
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 140ms var(--ease-out-strong);
+}
+
+.workbench-picker-trigger:not(:disabled):active,
+.workbench-options > button:active {
+  transform: scale(0.97);
+}
+
+.workbench-picker-panel {
+  transform-origin: top left;
+  transition:
+    opacity 150ms var(--ease-out-strong),
+    transform 150ms var(--ease-out-strong);
+}
+
+@starting-style {
+  .workbench-picker-panel {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.guidance-submission {
+  padding-left: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--primary) 55%, var(--border));
+}
+
+@media (max-width: 760px) {
+  .workbench-picker {
+    min-width: 44px;
+  }
+
+  .workbench-picker-trigger {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .workbench-picker-trigger > span,
+  .workbench-picker-trigger > svg:last-child {
+    display: none;
+  }
+
+  .workbench-picker-panel {
+    position: fixed;
+    top: calc(56px + env(safe-area-inset-top));
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-height: calc(100dvh - 72px - env(safe-area-inset-top));
+    overflow-y: auto;
+    transform: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .model-picker-trigger {
+    max-width: 86px;
+  }
+
+  .effort-picker-trigger {
+    width: 84px;
+    min-width: 84px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workbench-picker-trigger,
+  .workbench-options > button,
+  .workbench-picker-panel {
+    transition: none;
   }
 }
 

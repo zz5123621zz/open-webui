@@ -25,6 +25,7 @@ var (
 	ErrConversationLimit   = errors.New("active conversation limit reached")
 	ErrPinLimit            = errors.New("pinned conversation limit reached")
 	ErrStorageQuota        = errors.New("storage allowance exceeded")
+	ErrStaleGuidance       = errors.New("guidance card is no longer actionable")
 )
 
 type Store struct {
@@ -187,6 +188,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			INSERT INTO schema_migrations(version, applied_at) VALUES(5, ?)
 		`, time.Now().Unix()); err != nil {
 			return fmt.Errorf("record schema v5: %w", err)
+		}
+	}
+	var hasV6 int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 6`).Scan(&hasV6); err != nil {
+		return fmt.Errorf("inspect schema v6: %w", err)
+	}
+	if hasV6 == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV6); err != nil {
+			return fmt.Errorf("apply schema v6: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(version, applied_at) VALUES(6, ?)
+		`, time.Now().Unix()); err != nil {
+			return fmt.Errorf("record schema v6: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
