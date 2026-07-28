@@ -27,9 +27,12 @@ import (
 )
 
 const (
-	maxProviderEventBytes = 50 * 1024 * 1024
-	sseHeartbeatInterval  = 15 * time.Second
-	responseInstructions  = `Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Make user-visible reasoning summaries clear and informative when the provider supports them, but never reveal private chain-of-thought; summarize only the approach, checks, and current progress.
+	maxProviderEventBytes            = 50 * 1024 * 1024
+	sseHeartbeatInterval             = 15 * time.Second
+	providerContinuationInstructions = `
+
+The immediately preceding assistant draft was interrupted by a transient upstream server failure after some text had already been delivered. Continue only the missing remainder from the exact cutoff. Do not repeat the introduction, headings, completed rows, searches, or any other material already present. Do not call tools. Finish the requested deliverable succinctly and in the same language and format as the draft.`
+	responseInstructions = `Reply in the language used by the latest user message. When the latest user message is primarily Chinese, write the final answer and every user-visible reasoning summary in Simplified Chinese. Make user-visible reasoning summaries clear and informative when the provider supports them, but never reveal private chain-of-thought; summarize only the approach, checks, and current progress.
 
 Use a China-first web-search strategy when the subject is in mainland China or the user asks about a Chinese local place, business, person, event, policy, or service. Start with Simplified Chinese queries and include any known city, province, or district. Prioritize current mainland first-party or official sources, government websites, and official accounts or pages. For local businesses, Chinese map and local platforms such as 高德地图、百度地图、大众点评、美团和小红书 may be used for discovery, but distinguish user-generated content from verified facts and cross-check addresses, opening hours, and other practical details against an official source or at least two independent recent local sources when possible. Do not substitute a same-named foreign entity or search primarily non-Chinese sites when relevant Chinese sources exist. Ask for the city or location when the entity is ambiguous. For genuinely global topics, or when credible Chinese sources are unavailable, use the best international sources and state that limitation. When web search is used, cite the sources actually relied on and distinguish official facts from reviews or other user-generated claims.`
 )
@@ -680,6 +683,59 @@ func (s *Server) streamAssistantResponse(
 		}
 		break
 	}
+	continuedAfterTransientFailure := false
+	if startErr == nil &&
+		consumeErr == nil &&
+		canSafelyContinueProviderResponse(
+			&accumulator,
+			guidanceState,
+			generateImage,
+		) {
+		firstInputTokens := accumulator.inputTokens
+		firstOutputTokens := accumulator.outputTokens
+		firstReasoningTokens := accumulator.reasoningTokens
+		originalFailureCode := accumulator.failureCode
+		continuationRequest := providerContinuationRequest(
+			providerRequest,
+			accumulator.text.String(),
+		)
+		accumulator.failureCode = ""
+		accumulator.completed = false
+		// The continuation belongs to a new provider response lineage. Clear
+		// replay items before it starts so an in-progress save can never mix
+		// items from two responses. The combined visible text remains the
+		// canonical history if the continuation is interrupted again.
+		accumulator.responseTextStart = accumulator.text.Len()
+		accumulator.suppressProviderItems = true
+		accumulator.providerItems = nil
+		_ = stream.send(
+			"response.stage",
+			map[string]string{"stage": "continuing_answer"},
+		)
+		s.logger.Warn(
+			"continuing partial response after transient provider failure",
+			"failure_code", originalFailureCode,
+			"conversation_id", conversation.ID,
+		)
+		continuationStartErr, continuationConsumeErr := runProvider(
+			continuationRequest,
+			&accumulator,
+		)
+		if continuationStartErr != nil {
+			accumulator.failureCode = originalFailureCode
+			s.logger.Warn(
+				"provider continuation could not start",
+				"error", continuationStartErr,
+				"conversation_id", conversation.ID,
+			)
+		} else {
+			continuedAfterTransientFailure = true
+			consumeErr = continuationConsumeErr
+			accumulator.inputTokens += firstInputTokens
+			accumulator.outputTokens += firstOutputTokens
+			accumulator.reasoningTokens += firstReasoningTokens
+		}
+	}
 	accumulator.finalizeGuidance()
 	if startErr != nil {
 		if r.Context().Err() != nil {
@@ -743,6 +799,7 @@ func (s *Server) streamAssistantResponse(
 		"provider_request_id", accumulator.responseID,
 		"status", status,
 		"error_code", errorCode,
+		"continued_after_transient_failure", continuedAfterTransientFailure,
 	)
 	if status == "completed" {
 		_ = stream.send("response.completed", map[string]any{"message": finalMessage})
@@ -1390,6 +1447,8 @@ func (s *sseWriter) startHeartbeat(
 
 type providerStreamEvent struct {
 	Type           string          `json:"type"`
+	Code           string          `json:"code"`
+	Message        string          `json:"message"`
 	Delta          string          `json:"delta"`
 	Text           string          `json:"text"`
 	ItemID         string          `json:"item_id"`
@@ -1484,26 +1543,28 @@ func readLimitedLine(reader *bufio.Reader, maximum int) ([]byte, error) {
 }
 
 type responseAccumulator struct {
-	responseID          string
-	text                strings.Builder
-	reasoning           []*reasoningSection
-	reasoningByKey      map[string]*reasoningSection
-	citations           []citation
-	tools               []toolSnapshot
-	toolStarted         map[string]time.Time
-	images              []generatedImage
-	partOrder           []accumulatorPart
-	inputTokens         int64
-	outputTokens        int64
-	reasoningTokens     int64
-	completed           bool
-	failureCode         string
-	saveImage           func(string) (generatedImage, error)
-	providerItems       []store.NewProviderItem
-	guidanceRuntime     guidance.Runtime
-	guidanceInstanceID  string
-	guidanceCalls       []guidanceCall
-	guidanceControlPart *guidance.ControlPart
+	responseID            string
+	text                  strings.Builder
+	reasoning             []*reasoningSection
+	reasoningByKey        map[string]*reasoningSection
+	citations             []citation
+	tools                 []toolSnapshot
+	toolStarted           map[string]time.Time
+	images                []generatedImage
+	partOrder             []accumulatorPart
+	inputTokens           int64
+	outputTokens          int64
+	reasoningTokens       int64
+	completed             bool
+	failureCode           string
+	saveImage             func(string) (generatedImage, error)
+	providerItems         []store.NewProviderItem
+	guidanceRuntime       guidance.Runtime
+	guidanceInstanceID    string
+	guidanceCalls         []guidanceCall
+	guidanceControlPart   *guidance.ControlPart
+	responseTextStart     int
+	suppressProviderItems bool
 }
 
 type guidanceCall struct {
@@ -1600,12 +1661,15 @@ func (a *responseAccumulator) handle(stream *sseWriter, event providerStreamEven
 		a.finishOpenReasoning()
 		a.completed = true
 		a.readResponseMetadata(event.Response)
-	case "response.failed", "response.incomplete":
+	case "response.failed":
 		a.finishOpenReasoning()
-		a.readFailure(event.Response, event.Error)
+		a.readFailure(event.Response, event.Error, event.Code)
+	case "response.incomplete":
+		a.finishOpenReasoning()
+		a.readIncomplete(event.Response, event.Code)
 	case "error":
 		a.finishOpenReasoning()
-		a.readFailure(nil, event.Error)
+		a.readFailure(nil, event.Error, event.Code)
 	default:
 		if strings.Contains(event.Type, "web_search_call") {
 			a.finishOpenReasoning()
@@ -1640,7 +1704,7 @@ func (a *responseAccumulator) handle(stream *sseWriter, event providerStreamEven
 }
 
 func (a *responseAccumulator) captureProviderItem(raw json.RawMessage) {
-	if len(raw) == 0 {
+	if a.suppressProviderItems || len(raw) == 0 {
 		return
 	}
 	var header struct {
@@ -1798,7 +1862,7 @@ func (a *responseAccumulator) handleItem(
 		}
 		return stream.send("response.tool", snapshot)
 	case "message":
-		if a.text.Len() == 0 {
+		if a.text.Len() == a.responseTextStart {
 			for _, content := range item.Content {
 				if content.Type == "output_text" {
 					a.finishOpenReasoning()
@@ -2180,26 +2244,120 @@ func (a *responseAccumulator) readResponseMetadata(raw json.RawMessage) {
 	a.reasoningTokens = response.Usage.OutputTokenDetails.ReasoningTokens
 }
 
-func (a *responseAccumulator) readFailure(responseRaw, errorRaw json.RawMessage) {
+func (a *responseAccumulator) readFailure(
+	responseRaw,
+	errorRaw json.RawMessage,
+	topLevelCode string,
+) {
+	a.readResponseMetadata(responseRaw)
 	a.failureCode = "provider_response_failed"
+	a.applyFailureCode(topLevelCode)
 	if len(responseRaw) > 0 {
 		var response struct {
 			Error struct {
 				Code string `json:"code"`
+				Type string `json:"type"`
 			} `json:"error"`
 		}
-		if json.Unmarshal(responseRaw, &response) == nil && response.Error.Code != "" {
-			a.failureCode = sanitizeCode(response.Error.Code)
+		if json.Unmarshal(responseRaw, &response) == nil {
+			a.applyFailureCode(response.Error.Type)
+			a.applyFailureCode(response.Error.Code)
 		}
 	}
 	if len(errorRaw) > 0 {
 		var upstream struct {
 			Code string `json:"code"`
+			Type string `json:"type"`
 		}
-		if json.Unmarshal(errorRaw, &upstream) == nil && upstream.Code != "" {
-			a.failureCode = sanitizeCode(upstream.Code)
+		if json.Unmarshal(errorRaw, &upstream) == nil {
+			a.applyFailureCode(upstream.Type)
+			a.applyFailureCode(upstream.Code)
 		}
 	}
+}
+
+func (a *responseAccumulator) readIncomplete(
+	responseRaw json.RawMessage,
+	topLevelCode string,
+) {
+	a.readResponseMetadata(responseRaw)
+	a.failureCode = "provider_response_incomplete"
+	a.applyFailureCode(topLevelCode)
+	if len(responseRaw) == 0 {
+		return
+	}
+	var response struct {
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(responseRaw, &response) == nil {
+		a.applyFailureCode(response.IncompleteDetails.Reason)
+	}
+}
+
+func (a *responseAccumulator) applyFailureCode(value string) {
+	if strings.TrimSpace(value) != "" {
+		a.failureCode = sanitizeCode(value)
+	}
+}
+
+func canSafelyContinueProviderResponse(
+	accumulator *responseAccumulator,
+	guidanceState guidance.Runtime,
+	generateImage bool,
+) bool {
+	if accumulator == nil ||
+		!guidanceState.FinalAnswer ||
+		generateImage ||
+		accumulator.completed ||
+		!isTransientProviderFailure(accumulator.failureCode) ||
+		strings.TrimSpace(accumulator.text.String()) == "" ||
+		len(accumulator.images) > 0 ||
+		len(accumulator.guidanceCalls) > 0 ||
+		accumulator.guidanceControlPart != nil {
+		return false
+	}
+	for _, tool := range accumulator.tools {
+		if tool.Type != "web_search" {
+			return false
+		}
+	}
+	return true
+}
+
+func isTransientProviderFailure(code string) bool {
+	switch sanitizeCode(code) {
+	case "server_error", "internal_server_error", "bad_gateway":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerContinuationRequest(
+	request provider.ResponsesRequest,
+	partialText string,
+) provider.ResponsesRequest {
+	continuation := request
+	continuation.Instructions += providerContinuationInstructions
+	continuation.Input = append(
+		append([]provider.ResponseInput(nil), request.Input...),
+		provider.ResponseInput{
+			Role: "assistant",
+			Content: []provider.ResponseContent{{
+				Type: "output_text",
+				Text: partialText,
+			}},
+		},
+		provider.ResponseInput{
+			Role:    "developer",
+			Content: "Continue the interrupted assistant draft according to the continuation instructions.",
+		},
+	)
+	continuation.Tools = nil
+	continuation.ToolChoice = ""
+	return continuation
 }
 
 func sanitizeCode(value string) string {

@@ -25,6 +25,7 @@
   export let current = false;
   export let disabled = false;
   export let draftEnabled = true;
+  export let submittedAnswers: ClarificationAnswer[] = [];
 
   const dispatch = createEventDispatcher<{
     submit: { submission: GuidanceSubmission };
@@ -40,6 +41,7 @@
   let currentRoundNumber: number | null = null;
   let roundLimit: number | null = null;
   let finalRound = false;
+  let answerSeedKey = '';
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
   $: currentRoundNumber =
@@ -58,8 +60,10 @@
     currentRoundNumber >= roundLimit;
   $: draftKey =
     `restaurant-guidance-draft-v1:${userId}:${conversationId}:${sourceMessageId}`;
-  $: if (draftKey !== initializedKey) initializeDraft(draftKey);
-  $: if (!current && initializedKey === draftKey) clearDraft();
+  $: answerSeedKey = current
+    ? `draft:${draftKey}`
+    : `submitted:${draftKey}:${JSON.stringify(submittedAnswers)}`;
+  $: if (answerSeedKey !== initializedKey) initializeAnswers(answerSeedKey);
   $: interactionDisabled = disabled || !current;
   $: {
     answers;
@@ -88,13 +92,40 @@
     };
   }
 
-  function initializeDraft(key: string) {
-    initializedKey = key;
+  function initializeAnswers(seedKey: string) {
+    initializedKey = seedKey;
     const initial: Record<string, DraftAnswer> = {};
     for (const question of data.questions) initial[question.key] = emptyAnswer();
-    if (draftEnabled) {
+    if (!current) {
+      const submittedByQuestion = new Map(
+        submittedAnswers.map(
+          (answer): [string, ClarificationAnswer] => [answer.questionKey, answer]
+        )
+      );
+      for (const question of data.questions) {
+        const submitted = submittedByQuestion.get(question.key);
+        if (!submitted) continue;
+        const known = new Set(question.options.map((option) => option.key));
+        const otherText =
+          typeof submitted.otherText === 'string'
+            ? Array.from(submitted.otherText).slice(0, 600).join('')
+            : '';
+        initial[question.key] = {
+          selectedOptionKeys: Array.isArray(submitted.selectedOptionKeys)
+            ? submitted.selectedOptionKeys.filter(
+                (key): key is string => typeof key === 'string' && known.has(key)
+              )
+            : [],
+          otherText,
+          delegatedDefault:
+            submitted.delegatedDefault === true && question.allowDelegatedDefault,
+          otherOpen: Boolean(otherText.trim())
+        };
+      }
+      clearDraft();
+    } else if (draftEnabled) {
       try {
-        const raw = localStorage.getItem(key);
+        const raw = localStorage.getItem(draftKey);
         const saved = raw ? (JSON.parse(raw) as Record<string, Partial<DraftAnswer>>) : {};
         for (const question of data.questions) {
           const candidate = saved[question.key];
@@ -119,7 +150,7 @@
           };
         }
       } catch {
-        localStorage.removeItem(key);
+        localStorage.removeItem(draftKey);
       }
     }
     answers = initial;

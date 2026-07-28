@@ -50,6 +50,7 @@
   } from './lib/speech';
   import type {
     Attachment,
+    ClarificationAnswer,
     Conversation,
     ConversationSearchResult,
     ContextCheckpoint,
@@ -74,6 +75,7 @@
     | 'searching'
     | 'generating_image'
     | 'answering'
+    | 'continuing_answer'
     | 'background';
   type SuggestionIcon = 'plan' | 'search' | 'image-plus' | 'sparkles' | 'upload';
   type Suggestion = {
@@ -102,6 +104,8 @@
   let conversations: Conversation[] = [];
   let activeConversationId = '';
   let messages: Message[] = [];
+  let submittedGuidanceAnswers: Record<string, ClarificationAnswer[]> = {};
+  let submittedGuidanceAnswersUserMessageId: string | null = null;
   let checkpoints: ContextCheckpoint[] = [];
   let draftModel = '';
   let draftReasoningEffort = 'high';
@@ -477,6 +481,10 @@
     );
   $: activeConversationReadOnly = showArchived || viewingOtherUser;
   $: lastUserMessageId = findLastUserMessageId(messages);
+  $: if (lastUserMessageId !== submittedGuidanceAnswersUserMessageId) {
+    submittedGuidanceAnswersUserMessageId = lastUserMessageId;
+    submittedGuidanceAnswers = collectSubmittedGuidanceAnswers(messages);
+  }
   $: dragActive = dragDepth > 0;
   $: selectableModels = visibleModeModels(models);
   $: restaurantWorkbench =
@@ -621,6 +629,22 @@
         'The response exceeded 30 minutes and was stopped by the server.'
       ],
       response_interrupted: ['回答被中断。', 'The response was interrupted.'],
+      provider_response_incomplete: [
+        '上游模型没有完成回答；已保留现有内容，可手动重试。',
+        'The upstream model did not complete the response. Existing content was saved and can be retried manually.'
+      ],
+      server_error: [
+        '上游模型服务暂时中断；已保留现有内容，可手动重试。',
+        'The upstream model service was interrupted. Existing content was saved and can be retried manually.'
+      ],
+      internal_server_error: [
+        '上游模型服务暂时中断；已保留现有内容，可手动重试。',
+        'The upstream model service was interrupted. Existing content was saved and can be retried manually.'
+      ],
+      bad_gateway: [
+        '上游模型服务暂时中断；已保留现有内容，可手动重试。',
+        'The upstream model service was interrupted. Existing content was saved and can be retried manually.'
+      ],
       persistence_failed: [
         '回答进度无法安全保存，生成已停止。',
         'Response progress could not be saved safely, so generation stopped.'
@@ -1491,6 +1515,7 @@
       'searching',
       'generating_image',
       'answering',
+      'continuing_answer',
       'background'
     ];
     if (knownStages.includes(stage as GenerationStage)) {
@@ -1508,6 +1533,10 @@
       searching: ['正在搜索并核对网页', 'Searching and checking web pages'],
       generating_image: ['正在生成图片', 'Generating the image'],
       answering: ['正在组织并输出回答', 'Composing and streaming the answer'],
+      continuing_answer: [
+        '上游短暂中断，正在从断点继续回答',
+        'The provider was interrupted; continuing from the cutoff'
+      ],
       background: [
         '回答正在服务器后台继续生成',
         'The response is continuing on the server'
@@ -1523,6 +1552,29 @@
       if (items[index].role === 'user') return items[index].id;
     }
     return '';
+  }
+
+  function collectSubmittedGuidanceAnswers(
+    items: Message[]
+  ): Record<string, ClarificationAnswer[]> {
+    const result: Record<string, ClarificationAnswer[]> = {};
+    for (const message of items) {
+      for (const part of message.parts) {
+        if (part.type !== 'clarification_submission' || !part.data) continue;
+        const submission = part.data as unknown as Partial<GuidanceSubmission>;
+        if (
+          typeof submission.sourceAssistantMessageId !== 'string' ||
+          typeof submission.sourcePartId !== 'string' ||
+          !Array.isArray(submission.answers)
+        ) {
+          continue;
+        }
+        result[
+          `${submission.sourceAssistantMessageId}:${submission.sourcePartId}`
+        ] = submission.answers;
+      }
+    }
+    return result;
   }
 
   function isRunningResponse(message: Message | undefined): boolean {
@@ -3229,6 +3281,7 @@
                   (message.status === 'completed' || message.status === 'error')}
                 guidanceDisabled={generating}
                 guidanceDraftEnabled={!viewingOtherUser && !showArchived}
+                {submittedGuidanceAnswers}
                 on:regenerate={(event) => regenerate(event.detail.message)}
                 on:edit={(event) => beginMessageEdit(event.detail.message)}
                 on:guidanceSubmit={(event) => submitGuidance(event.detail.submission)}
