@@ -431,9 +431,10 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 - [x] `sh -n deploy/*.sh`：发布、预检、备份和安装脚本语法通过。
 - [x] 应用 Docker 镜像构建和 Trivy `HIGH,CRITICAL`、`ignore-unfixed`
   阻断扫描。
-- [ ] 刚构建的最终镜像以生产约束启动，验证 `/healthz`、`/readyz`、内嵌
-  前端、公开配置、Bridge 未认证拒绝和容器内 healthcheck：新增
-  GitHub-hosted 闸门待验证。
+- [x] 刚构建的最终镜像以生产约束启动，验证 `/healthz`、`/readyz`、内嵌
+  前端、公开配置、Bridge 未认证拒绝和容器内 healthcheck：
+  [run 30435280640](https://github.com/zz5123621zz/open-webui/actions/runs/30435280640)
+  通过。
 - [x] 工作树审计：Git 候选文件中没有 Bridge token、私钥、数据库、生成 WAV
   或 Playwright trace；详见第 14.2 节。
 
@@ -450,7 +451,10 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
   在同一 PR 重新通过，不能借用旧 head 的绿灯。
 - Hermes 增强运行时合同修复提交是
   `929c0c144760c958898ae7f9d01dc154f801c598`，其完整 PR CI 已通过；本节
-  验证记录的文档提交仍须在同一 PR 重新通过，之后才可发布部署候选。
+  验证记录的后续文档提交也已在同一 PR 通过。
+- 产物级 smoke 闸门提交是
+  `22ef031f417c87ca1314b9dd8bc1fccba1bed4f8`，其完整 PR CI 已通过；本节
+  当前验证记录提交仍须在同一 PR 重新通过，之后才可发布部署候选。
 - Hermes 源码基线：0.19.0，
   `8a71feb84ca20d92908ab95a45f7fb39fd376b26`；镜像固定为
   `nousresearch/hermes-agent@sha256:8b4aac05369e6c30132ccaf2d2dab895f4e0cd7a67b44c570996363ff2d6933d`。
@@ -493,10 +497,18 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 行为探针通过，基础 Compose 与豆包 TTS override 接线通过，候选镜像在
 `HIGH,CRITICAL`、`ignore-unfixed`、`exit-code=1` 条件下通过 Trivy。
 
-首轮 PR 事件构建的是临时 merge ref，只加载到 Runner，没有推送到 GHCR，不能
-拿它部署。增强运行时合同的 PR 事件构建同样没有推送到 GHCR。当前分支最终
-head 通过后，必须再用 `workflow_dispatch` 从该 head 发布 `sha-*` 镜像，
-随后以 registry 返回的 digest 固定部署。
+产物级 smoke 闸门的 GitHub Actions：
+[run 30435280640](https://github.com/zz5123621zz/open-webui/actions/runs/30435280640)。
+该 run 对应 head `22ef031f417c87ca1314b9dd8bc1fccba1bed4f8`；`test` job
+用时 2 分 28 秒，`image` job 用时 1 分 26 秒，结论均为 `success`。刚构建
+镜像在 320 MiB 内存上限、只读根文件系统、非 root、`cap-drop ALL`、
+`no-new-privileges`、文件型 CPA/豆包假密钥和独立临时数据库下正常启动；
+`/healthz`、`/readyz`、内嵌前端、公开配置、Bridge 未认证 `401` 及容器内
+healthcheck 均通过。测试没有请求真实 CPA、豆包、微信或生产数据。
+
+所有 PR 事件构建的都是临时 merge ref，只加载到 Runner，没有推送到 GHCR，
+不能拿来部署。当前分支最终 head 通过后，必须再用 `workflow_dispatch` 从该
+head 发布 `sha-*` 镜像，随后以 registry 返回的 digest 固定部署。
 
 仓库原有的 `static/audio/greeting.mp3` 和 `notification.mp3` 是受版本控制的
 产品静态提示音，不是本轮 TTS 产物。用户原有、未跟踪的
@@ -532,15 +544,19 @@ head 通过后，必须再用 `workflow_dispatch` 从该 head 发布 `sha-*` 镜
   已通过这一真实行为检查。
 - 明确记录 Hermes 二级 Profile adapter 的 fail-closed 规则，避免把只有默认
   Weixin adapter 的环境误判为可直接路由。
+- CI 原先只验证源码测试、镜像构建和扫描，没有启动刚构建的实际产物；现增加
+  受生产资源和安全约束的容器 smoke，覆盖数据库迁移、健康/就绪、静态前端、
+  公开餐饮开关、Bridge 未认证拒绝和镜像内 healthcheck。
 
 ### 14.4 当前结论
 
-截至增强运行时合同提交 `929c0c144760c958898ae7f9d01dc154f801c598`，完整
-CI 没有遗留失败；race、vet、完整浏览器 E2E、Hermes 固定镜像加载、应用镜像
-构建及安全扫描均有远端证据。本次验证记录提交仍必须重新通过，且只有
-`workflow_dispatch` 从最终 head 推送并取得不可变应用镜像 digest 后，才能
-称为部署候选。微信侧最终收到的是完整文字和一个或多个可播放 WAV 文件附件；
-腾讯 iLink/Hermes 当前没有可由发送端保证的原生语音气泡或自动播放字段。
+截至产物级 smoke 提交 `22ef031f417c87ca1314b9dd8bc1fccba1bed4f8`，完整 CI
+没有遗留失败；race、vet、完整浏览器 E2E、Hermes 固定镜像加载、受限容器启动、
+应用镜像构建及安全扫描均有远端证据。本次验证记录提交仍必须重新通过，且
+只有 `workflow_dispatch` 从最终 head 推送并取得不可变应用镜像 digest 后，
+才能称为部署候选。微信侧最终收到的是完整文字和一个或多个可播放 WAV 文件
+附件；腾讯 iLink/Hermes 当前没有可由发送端保证的原生语音气泡或自动播放
+字段。
 
 **未部署，等待用户指令。**
 
