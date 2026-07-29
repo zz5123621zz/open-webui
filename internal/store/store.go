@@ -204,6 +204,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("record schema v6: %w", err)
 		}
 	}
+	var hasV7 int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 7`).Scan(&hasV7); err != nil {
+		return fmt.Errorf("inspect schema v7: %w", err)
+	}
+	if hasV7 == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV7); err != nil {
+			return fmt.Errorf("apply schema v7: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(version, applied_at) VALUES(7, ?)
+		`, time.Now().Unix()); err != nil {
+			return fmt.Errorf("record schema v7: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}

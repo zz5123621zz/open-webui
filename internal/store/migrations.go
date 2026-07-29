@@ -289,3 +289,52 @@ CREATE TABLE IF NOT EXISTS restaurant_profile_audit (
 CREATE INDEX IF NOT EXISTS idx_restaurant_profile_audit_user
 ON restaurant_profile_audit(user_id, created_at DESC);
 `
+
+const schemaV7 = `
+CREATE TABLE IF NOT EXISTS hermes_restaurant_credentials (
+	id TEXT PRIMARY KEY,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	label TEXT NOT NULL,
+	token_hash BLOB NOT NULL UNIQUE,
+	model TEXT NOT NULL,
+	reasoning_effort TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active'
+		CHECK (status IN ('active', 'revoked')),
+	created_at INTEGER NOT NULL,
+	last_used_at INTEGER,
+	revoked_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_restaurant_credentials_user
+ON hermes_restaurant_credentials(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hermes_restaurant_sessions (
+	credential_id TEXT NOT NULL
+		REFERENCES hermes_restaurant_credentials(id) ON DELETE CASCADE,
+	external_session_hash BLOB NOT NULL,
+	conversation_id TEXT NOT NULL
+		REFERENCES conversations(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL,
+	PRIMARY KEY(credential_id, external_session_hash)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_restaurant_session_conversation
+ON hermes_restaurant_sessions(conversation_id);
+
+CREATE TABLE IF NOT EXISTS hermes_restaurant_audio (
+	id TEXT PRIMARY KEY,
+	credential_id TEXT NOT NULL
+		REFERENCES hermes_restaurant_credentials(id) ON DELETE CASCADE,
+	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	request_key TEXT NOT NULL,
+	part_index INTEGER NOT NULL CHECK (part_index >= 0),
+	file_name TEXT NOT NULL,
+	storage_path TEXT NOT NULL,
+	byte_size INTEGER NOT NULL CHECK (byte_size > 44),
+	sha256 TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	UNIQUE(credential_id, request_key, part_index)
+);
+CREATE INDEX IF NOT EXISTS idx_hermes_restaurant_audio_expiry
+ON hermes_restaurant_audio(expires_at);
+`

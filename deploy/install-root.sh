@@ -138,14 +138,22 @@ cd "$DEPLOY_ROOT"
 ./deploy/preflight.sh
 
 if [ "$DEPLOY_START" = "1" ]; then
-  docker compose pull
-  docker compose up -d
-  docker compose ps
+  set -- -f compose.yaml
+  if [ -s secrets/tts_volcengine_api_key ]; then
+    set -- "$@" -f compose.tts-volcengine.yaml
+  fi
+  if [ -s secrets/tts_aliyun_access_key_id ] &&
+    [ -s secrets/tts_aliyun_access_key_secret ]; then
+    set -- "$@" -f compose.tts.yaml
+  fi
+  docker compose "$@" pull
+  docker compose "$@" up -d
+  docker compose "$@" ps
   attempts=0
   until curl --fail --silent http://127.0.0.1:3001/readyz >/dev/null; do
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 30 ]; then
-      echo "Container did not become ready; inspect: docker compose logs app" >&2
+      echo "Container did not become ready; inspect the app service logs." >&2
       exit 1
     fi
     sleep 1

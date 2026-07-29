@@ -26,6 +26,24 @@ require_file .env
 require_file compose.yaml
 require_file secrets/app_secret
 require_file secrets/provider_api_key
+runtime_secrets="secrets/app_secret secrets/provider_api_key"
+
+set -- -f compose.yaml
+if [ -e secrets/tts_volcengine_api_key ]; then
+  require_file compose.tts-volcengine.yaml
+  require_file secrets/tts_volcengine_api_key
+  runtime_secrets="$runtime_secrets secrets/tts_volcengine_api_key"
+  set -- "$@" -f compose.tts-volcengine.yaml
+fi
+if [ -e secrets/tts_aliyun_access_key_id ] ||
+  [ -e secrets/tts_aliyun_access_key_secret ]; then
+  require_file compose.tts.yaml
+  require_file secrets/tts_aliyun_access_key_id
+  require_file secrets/tts_aliyun_access_key_secret
+  runtime_secrets="$runtime_secrets secrets/tts_aliyun_access_key_id"
+  runtime_secrets="$runtime_secrets secrets/tts_aliyun_access_key_secret"
+  set -- "$@" -f compose.tts.yaml
+fi
 
 if [ -s .env ]; then
   app_image=$(sed -n 's/^APP_IMAGE=//p' .env | tail -n 1)
@@ -40,7 +58,7 @@ if [ -s .env ]; then
   esac
 fi
 
-for secret in secrets/app_secret secrets/provider_api_key; do
+for secret in $runtime_secrets; do
   [ -e "$secret" ] || continue
   mode=$(stat -c '%a' "$secret")
   owner=$(stat -c '%u:%g' "$secret")
@@ -53,8 +71,8 @@ done
 
 if docker info >/dev/null 2>&1; then
   pass "Docker daemon is accessible"
-  if docker compose config --quiet; then
-    pass "Compose configuration is valid"
+  if docker compose "$@" config --quiet; then
+    pass "Compose configuration and configured TTS overrides are valid"
   else
     fail "Compose configuration is invalid"
   fi

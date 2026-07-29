@@ -452,6 +452,11 @@ async function mockAPI(page: Page) {
 }
 
 test('login and streaming chat are visually usable', async ({ page }, testInfo) => {
+  // This scenario intentionally exercises onboarding, settings, model
+  // selection, streaming, rich content, speech, and scrolling in one flow.
+  // It can exceed Playwright's 30 s default on the 1 GiB validation VPS even
+  // though each assertion is progressing normally.
+  test.setTimeout(60_000);
   const { speechTexts } = await mockAPI(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();

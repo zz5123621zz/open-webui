@@ -263,3 +263,29 @@ _Avoid_: Automatic reading
 The start of a new speech session. Speech service-setting changes affect new
 sessions and never reconfigure or interrupt an existing session.
 _Avoid_: Response activation boundary, live provider mutation
+
+**Messaging bridge**:
+An authenticated server-to-server boundary that lets an external messaging
+gateway use a User's La4RainGPT restaurant conversation without sharing that
+User's browser session.
+_Avoid_: Browser API proxy, shared Agent account
+
+**Bridge credential**:
+A revocable, single-User secret that authorizes one messaging profile to use
+the restaurant messaging bridge.
+_Avoid_: User password, global integration key
+
+**Bridge session**:
+One external messaging session mapped to one active La4RainGPT conversation
+for the User bound to its Bridge credential.
+_Avoid_: WeChat account, Hermes profile, browser session
+
+**WeChat clarification round**:
+A Clarification round rendered as exactly three numbered plain-text questions,
+each with locally assigned letter choices, for a WeChat Bridge session.
+_Avoid_: WeChat card, Mini Program form
+
+**Playable audio attachment**:
+One of the ordered WAV files generated from a completed answer and sent after
+the answer text through the messaging gateway.
+_Avoid_: Native voice bubble, guaranteed autoplay

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -57,6 +58,9 @@ func run(logger *slog.Logger, args []string) error {
 	}
 	if len(args) > 0 && args[0] == "backup" {
 		return runBackupCommand(dataStore, cfg.DataDir, args[1:])
+	}
+	if len(args) > 0 && args[0] == "integration" {
+		return runIntegrationCommand(dataStore, args[1:], os.Stdout)
 	}
 	if len(args) > 0 && args[0] != "serve" {
 		return fmt.Errorf("unknown command %q", args[0])
@@ -173,6 +177,29 @@ func runMaintenance(
 	if err := dataStore.DeleteExpiredSessions(maintenanceContext); err != nil {
 		logger.Warn("expired session cleanup failed", "error", err)
 	}
+	audioPaths, err := dataStore.PurgeExpiredHermesRestaurantAudio(
+		maintenanceContext,
+		time.Now().UnixMilli(),
+	)
+	if err != nil {
+		logger.Warn("expired Hermes restaurant audio cleanup failed", "error", err)
+	} else {
+		removed, removeErr := removeStoredFiles(dataDir, audioPaths)
+		if removeErr != nil {
+			logger.Warn(
+				"expired Hermes restaurant audio file cleanup incomplete",
+				"error",
+				removeErr,
+			)
+		}
+		if removed > 0 {
+			logger.Info(
+				"expired Hermes restaurant audio cleanup completed",
+				"audio_files",
+				removed,
+			)
+		}
+	}
 	cutoff := time.Now().Add(-retentionTTL).UnixMilli()
 	paths, conversations, err := dataStore.PurgeExpiredRetained(maintenanceContext, cutoff)
 	if err != nil {
@@ -208,6 +235,163 @@ func runBackupCommand(dataStore *store.Store, dataDir string, args []string) err
 	}
 	fmt.Printf("Created database backup %s\n", *output)
 	return nil
+}
+
+func runIntegrationCommand(
+	dataStore *store.Store,
+	args []string,
+	output io.Writer,
+) error {
+	if len(args) == 0 || args[0] != "hermes-token" {
+		return errors.New(
+			"usage: server integration hermes-token <issue|list|revoke>",
+		)
+	}
+	if len(args) < 2 {
+		return errors.New(
+			"usage: server integration hermes-token <issue|list|revoke>",
+		)
+	}
+	switch args[1] {
+	case "issue":
+		return runHermesTokenIssueCommand(dataStore, args[2:], output)
+	case "list":
+		return runHermesTokenListCommand(dataStore, args[2:], output)
+	case "revoke":
+		return runHermesTokenRevokeCommand(dataStore, args[2:], output)
+	default:
+		return errors.New(
+			"usage: server integration hermes-token <issue|list|revoke>",
+		)
+	}
+}
+
+func runHermesTokenIssueCommand(
+	dataStore *store.Store,
+	args []string,
+	output io.Writer,
+) error {
+	flags := flag.NewFlagSet("integration hermes-token issue", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	username := flags.String("username", "", "slim username")
+	label := flags.String("label", "", "credential label")
+	model := flags.String("model", "", "CPA model")
+	reasoningEffort := flags.String(
+		"reasoning-effort",
+		"high",
+		"reasoning effort",
+	)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 ||
+		strings.TrimSpace(*username) == "" ||
+		strings.TrimSpace(*label) == "" ||
+		strings.TrimSpace(*model) == "" {
+		return errors.New(
+			"hermes-token issue requires --username, --label, and --model",
+		)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	credential, rawToken, err := dataStore.CreateHermesRestaurantCredential(
+		ctx,
+		*username,
+		*label,
+		*model,
+		*reasoningEffort,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(
+		output,
+		"Created Hermes restaurant credential %s for %s (%s).\n"+
+			"Token (shown once): %s\n",
+		credential.ID,
+		credential.Username,
+		credential.Label,
+		rawToken,
+	)
+	return err
+}
+
+func runHermesTokenListCommand(
+	dataStore *store.Store,
+	args []string,
+	output io.Writer,
+) error {
+	flags := flag.NewFlagSet("integration hermes-token list", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("hermes-token list does not accept positional arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	credentials, err := dataStore.ListHermesRestaurantCredentials(ctx)
+	if err != nil {
+		return err
+	}
+	if len(credentials) == 0 {
+		_, err := fmt.Fprintln(output, "No Hermes restaurant credentials")
+		return err
+	}
+	if _, err := fmt.Fprintln(
+		output,
+		"ID\tUSERNAME\tLABEL\tMODEL\tEFFORT\tSTATUS\tCREATED_AT\tLAST_USED_AT",
+	); err != nil {
+		return err
+	}
+	for _, credential := range credentials {
+		if _, err := fmt.Fprintf(
+			output,
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			credential.ID,
+			credential.Username,
+			credential.Label,
+			credential.Model,
+			credential.ReasoningEffort,
+			credential.Status,
+			formatOptionalUnixMillis(credential.CreatedAt),
+			formatOptionalUnixMillis(credential.LastUsedAt),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runHermesTokenRevokeCommand(
+	dataStore *store.Store,
+	args []string,
+	output io.Writer,
+) error {
+	flags := flag.NewFlagSet("integration hermes-token revoke", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	id := flags.String("id", "", "credential ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*id) == "" {
+		return errors.New("hermes-token revoke requires --id")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := dataStore.RevokeHermesRestaurantCredential(ctx, *id); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(output, "Revoked Hermes restaurant credential %s.\n", *id)
+	return err
+}
+
+func formatOptionalUnixMillis(value int64) string {
+	if value == 0 {
+		return "-"
+	}
+	return time.UnixMilli(value).UTC().Format(time.RFC3339)
 }
 
 func runUserCommand(dataStore *store.Store, dataDir string, args []string) error {
