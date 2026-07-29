@@ -4,6 +4,7 @@ This script is executed inside the pinned Hermes container image by CI. It
 does not contact slim, Weixin, or any external service.
 """
 
+import asyncio
 import inspect
 import os
 import shutil
@@ -88,12 +89,22 @@ def _verify_gateway_contract() -> None:
         {"self", "source"},
         asynchronous=False,
     )
-    _require_method(
-        AsyncSessionStore,
-        "get_or_create_session",
-        {"self", "source"},
-        asynchronous=True,
-    )
+    class SessionProbe:
+        def get_or_create_session(self, source: object) -> object:
+            return source
+
+    async_store = AsyncSessionStore(SessionProbe())
+    forwarded_get_or_create = async_store.get_or_create_session
+    if not inspect.iscoroutinefunction(forwarded_get_or_create):
+        raise RuntimeError(
+            "Hermes AsyncSessionStore does not asynchronously forward "
+            "get_or_create_session"
+        )
+    probe_source = object()
+    if asyncio.run(forwarded_get_or_create(probe_source)) is not probe_source:
+        raise RuntimeError(
+            "Hermes AsyncSessionStore did not forward get_or_create_session"
+        )
     if not isinstance(
         inspect.getattr_static(GatewayRunner, "async_session_store"),
         property,
