@@ -431,6 +431,9 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 - [x] `sh -n deploy/*.sh`：发布、预检、备份和安装脚本语法通过。
 - [x] 应用 Docker 镜像构建和 Trivy `HIGH,CRITICAL`、`ignore-unfixed`
   阻断扫描。
+- [ ] 刚构建的最终镜像以生产约束启动，验证 `/healthz`、`/readyz`、内嵌
+  前端、公开配置、Bridge 未认证拒绝和容器内 healthcheck：新增
+  GitHub-hosted 闸门待验证。
 - [x] 工作树审计：Git 候选文件中没有 Bridge token、私钥、数据库、生成 WAV
   或 Playwright trace；详见第 14.2 节。
 

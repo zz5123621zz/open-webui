@@ -108,6 +108,96 @@ jobs:
           build-args: VERSION=${{ github.ref_name }}-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke-test built image
+        env:
+          SMOKE_IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          set -euo pipefail
+          smoke_root=$(mktemp -d)
+          container_name="owui-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker logs "$container_name" 2>&1 || true
+            fi
+            docker rm -f "$container_name" >/dev/null 2>&1 || true
+            rm -rf "$smoke_root"
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          printf '%s' 'ci-app-secret-0123456789-0123456789' \
+            >"$smoke_root/app_secret"
+          printf '%s' 'ci-provider-key' >"$smoke_root/provider_api_key"
+          printf '%s' 'ci-volcengine-key' >"$smoke_root/tts_volcengine_api_key"
+          chmod 0444 "$smoke_root"/*
+
+          docker run --detach \
+            --name "$container_name" \
+            --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777 \
+            --tmpfs /data:rw,nosuid,nodev,size=64m,mode=0700,uid=65532,gid=65532 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 100 \
+            --memory 320m \
+            --cpus 1 \
+            --publish 127.0.0.1::8080 \
+            --mount \
+              "type=bind,src=$smoke_root/app_secret,dst=/run/secrets/app_secret,readonly" \
+            --mount \
+              "type=bind,src=$smoke_root/provider_api_key,dst=/run/secrets/provider_api_key,readonly" \
+            --mount \
+              "type=bind,src=$smoke_root/tts_volcengine_api_key,dst=/run/secrets/tts_volcengine_api_key,readonly" \
+            --env APP_ENV=production \
+            --env APP_BASE_URL=http://127.0.0.1:8080 \
+            --env APP_DATA_DIR=/data \
+            --env APP_SECRET_FILE=/run/secrets/app_secret \
+            --env HTTP_ADDR=:8080 \
+            --env AI_PROVIDER=cpa \
+            --env AI_BASE_URL=http://127.0.0.1:9/v1 \
+            --env AI_API_KEY_FILE=/run/secrets/provider_api_key \
+            --env AI_DEFAULT_MODEL=gpt-5.6-sol \
+            --env RESTAURANT_GUIDANCE_ENABLED=true \
+            --env TTS_VOLCENGINE_API_KEY_FILE=/run/secrets/tts_volcengine_api_key \
+            --env TTS_VOLCENGINE_RESOURCE_ID=seed-tts-2.0 \
+            --env GOMEMLIMIT=220MiB \
+            --env GOGC=75 \
+            "$SMOKE_IMAGE"
+
+          smoke_port=$(docker port "$container_name" 8080/tcp | sed 's/.*://')
+          smoke_url="http://127.0.0.1:$smoke_port"
+          for _ in $(seq 1 30); do
+            if curl --fail --silent "$smoke_url/readyz" >/dev/null; then
+              break
+            fi
+            [ "$(docker inspect --format '{{.State.Running}}' "$container_name")" = true ]
+            sleep 1
+          done
+
+          curl --fail --silent "$smoke_url/healthz" >/dev/null
+          curl --fail --silent "$smoke_url/readyz" |
+            jq -e '.status == "ready"'
+          curl --fail --silent "$smoke_url/api/v1/config/public" |
+            jq -e '
+              .provider == "cpa" and
+              .restaurantGuidanceEnabled == true
+            '
+          curl --fail --silent \
+            --output "$smoke_root/index.html" \
+            "$smoke_url/"
+          grep -qi '<html' "$smoke_root/index.html"
+          bridge_status=$(
+            curl --silent --show-error \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              "$smoke_url/api/v1/integrations/hermes/restaurant/turn"
+          )
+          [ "$bridge_status" = 401 ]
+          docker exec "$container_name" /app/server healthcheck
       - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
