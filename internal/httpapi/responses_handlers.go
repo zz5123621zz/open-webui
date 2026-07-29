@@ -1915,6 +1915,12 @@ func (a *responseAccumulator) finalizeGuidance() {
 	if !a.guidanceRuntime.Enabled {
 		return
 	}
+	// A provider failure is not malformed guidance. Preserve the upstream
+	// failure classification so callers can distinguish an unavailable model
+	// from a model response that completed with an invalid control call.
+	if a.failureCode != "" {
+		return
+	}
 	controlRequired := a.guidanceRuntime.RequireClarification ||
 		a.guidanceRuntime.RequireTaskBrief
 	if len(a.guidanceCalls) == 0 && !controlRequired {

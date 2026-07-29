@@ -726,6 +726,40 @@ func TestRequiredGuidanceRejectsPlainTextWithoutControlCall(t *testing.T) {
 	}
 }
 
+func TestRequiredGuidancePreservesProviderFailure(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	stream := newSSEWriter(recorder)
+	accumulator := responseAccumulator{
+		guidanceRuntime: guidance.Runtime{
+			Enabled:              true,
+			AllowClarification:   true,
+			RequireClarification: true,
+			MaxQuestions:         guidance.MaximumQuestionsPerRound,
+			MaxRounds:            guidance.MaximumClarificationRounds,
+			RoundCount:           1,
+		},
+	}
+	event := providerStreamEvent{
+		Type:  "error",
+		Error: json.RawMessage(`{"type":"server_error","code":"internal_server_error"}`),
+	}
+	if err := accumulator.handle(stream, event); err != nil {
+		t.Fatal(err)
+	}
+	accumulator.finalizeGuidance()
+	parts := accumulator.parts()
+	if accumulator.failureCode != "internal_server_error" ||
+		len(parts) != 0 ||
+		accumulator.guidanceControlPart != nil {
+		t.Fatalf(
+			"provider failure was overwritten = failure %q parts %#v control %#v",
+			accumulator.failureCode,
+			parts,
+			accumulator.guidanceControlPart,
+		)
+	}
+}
+
 func TestInvalidGuidanceOutputPersistsOnlyFixedSafePart(t *testing.T) {
 	for _, test := range []struct {
 		name   string
