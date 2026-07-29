@@ -212,11 +212,29 @@ SSE 连接现在只是回答订阅，不再拥有 CPA 请求。关闭页面、�
 ```bash
 cd /opt/owui-personal-slim
 sudo ./deploy/backup.sh
-sudo docker compose pull
-sudo docker compose up -d
-sudo docker compose ps
+sudo docker compose \
+  -f compose.yaml \
+  -f compose.tts-volcengine.yaml \
+  config --quiet
+sudo docker compose \
+  -f compose.yaml \
+  -f compose.tts-volcengine.yaml \
+  pull app
+sudo docker compose \
+  -f compose.yaml \
+  -f compose.tts-volcengine.yaml \
+  up -d app
+sudo docker compose \
+  -f compose.yaml \
+  -f compose.tts-volcengine.yaml \
+  ps
 curl --fail --silent http://127.0.0.1:3001/readyz
 ```
+
+当前生产启用了豆包 TTS，发布和回滚都必须合并
+`compose.tts-volcengine.yaml`。只使用基础 `compose.yaml` 重建会移除 TTS
+secret 挂载，Bridge 会保留文字但把音频降级为 unavailable。安装器和预检会在
+检测到现有 `secrets/tts_volcengine_api_key` 后自动带上该 override。
 
 记录每次部署前后的镜像 digest：
 
@@ -296,9 +314,17 @@ SLIM_RESTAURANT_BRIDGE_MAX_TOTAL_AUDIO_BYTES=104857600
 ```
 
 插件源目录为
-`integrations/hermes/slim_restaurant_bridge/`，Hermes 启用名是 manifest
-中的 `slim-restaurant-bridge`。不同网络拓扑不能照搬上述 URL：只有
-Hermes 使用 host 网络且 slim 继续发布 `127.0.0.1:3001` 时才使用该值。
+`integrations/hermes/slim_restaurant_bridge/`。运行时文件安装一次到 active
+gateway 的 `$HERMES_HOME/plugins/slim_restaurant_bridge`；multiplex 二级
+Profile 只保存自己的 URL/token，不重复安装插件代码。Hermes 启用名是
+manifest 中的 `slim-restaurant-bridge`。
+
+Hermes 0.19.0 对二级 Profile adapter fail-closed，不会退回默认 Weixin
+adapter。目标二级 Profile 必须先有已连接的 Weixin adapter；若只有默认
+Profile 的一条连接，就不能直接采用该二级路由。不同网络拓扑也不能照搬上述
+URL：只有 Hermes 使用 host 网络且 slim 继续发布 `127.0.0.1:3001` 时才使用
+该值。
+
 撤销和核查命令为：
 
 ```bash
@@ -308,4 +334,5 @@ sudo docker compose exec app /app/server integration hermes-token revoke \
 ```
 
 微信收到的是完整文字及一个或多个可播放 WAV 文件附件；当前 Hermes
-Weixin 适配器不保证原生语音气泡或自动播放。
+Weixin 适配器不保证原生语音气泡或自动播放。完整发布闸门、逐项微信验收和
+回滚顺序见方案文档第 15 节。

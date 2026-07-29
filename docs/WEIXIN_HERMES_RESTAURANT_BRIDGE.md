@@ -2,12 +2,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | 实施合同；完成情况以第 14 节测试记录为准 |
+| 状态 | 实现完成；候选版本与远端验收证据以第 14 节为准 |
 | 日期 | 2026-07-28 |
 | 最后验收记录 | 2026-07-29 |
 | Hermes 基线 | 0.19.0，构建提交 `8a71feb84ca20d92908ab95a45f7fb39fd376b26` |
-| slim 基线 | 本仓库提交 `b15edece2d89eb580781ea901a179571d39fb4c5` |
-| 本轮范围 | 开发与完整测试，不部署 |
+| slim 基线 | 本仓库 `main` 提交 `f3e6ccb058064f030543bfac4419ce87dcc5b176` |
+| 本轮范围 | 开发、完整 CI、部署产物准备；不执行生产部署 |
 
 关联记录：
 
@@ -114,6 +114,13 @@ gateway:
 `father-restaurant/.env` 只保存该 Profile 的
 `SLIM_RESTAURANT_BRIDGE_TOKEN`。VPS 运维用户使用另一个 Profile、提示词、
 Skills、Tools 和 credential。
+
+Hermes 0.19.0 对二级 Profile 的 adapter 解析是 fail-closed：已经路由到
+`father-restaurant` 的消息不会退回默认 Profile 的 Weixin adapter。因而目标
+Profile 必须有自己的、已经连通的 Weixin adapter。若只有默认 Profile 的一条
+Weixin 连接，就不能仅靠 `profile_routes` 把它路由到一个没有 Weixin adapter
+的二级 Profile；应改用默认餐饮 Profile，或先为二级 Profile 配好独立 adapter。
+固定 Hermes 镜像的 CI 运行时检查会验证这一行为没有漂移。
 
 ## 5. 服务端 API
 
@@ -309,8 +316,12 @@ Hermes 先发送完整文字，再发送一条简短的“语音暂不可用”�
 
 ## 11. Hermes 插件
 
-仓库提供可复制到 Profile 插件目录的 Python 插件。它只使用 Python 标准库和
-Hermes 0.19.0 的公开插件注册入口，加上本版本已有的 gateway adapter 方法。
+仓库提供可复制到
+`$HERMES_HOME/plugins/slim_restaurant_bridge` 的 Python 用户插件。Hermes
+在 gateway 进程中只加载一次用户插件；multiplex 模式下，插件代码及
+`plugins.enabled` 位于 active/default gateway home，只有 Bridge URL 和 token
+位于目标餐饮 Profile 的 `.env`。插件只使用 Python 标准库、Hermes 0.19.0
+插件注册入口及本版本已有的 gateway adapter 方法。
 
 插件处理顺序：
 
@@ -329,8 +340,8 @@ HTTP 对瞬时网络错误最多重试两次，始终复用同一 `requestId`。
 
 本机当前 Hermes 容器使用 host 网络，因此部署时 Bridge URL 是
 `http://127.0.0.1:3001`。插件在 `plugins.enabled` 中的启用名必须使用
-manifest 的 `slim-restaurant-bridge`，不是 Python 目录名。这里只记录部署
-合同；本轮不复制、启用或重启插件。
+manifest 的 `slim-restaurant-bridge`，不是 Python 目录名。二级 Profile 必须
+先通过 adapter 预检。这里只记录部署合同；本轮不复制、启用或重启插件。
 
 ## 12. 安全不变量
 
@@ -402,21 +413,22 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 
 ### 13.4 全量回归
 
-- [x] `go test ./... -count=1`：在用户颁布禁令前通过；只作为历史证据，
-  禁止在 VPS 再次运行，后续由 GitHub-hosted CI 执行。
-- [ ] `go test -race ./...`：未完成。首次长时间停留在 modernc SQLite
-  编译，后一次按用户要求终止；不得在这台 VPS 上重跑，改由 GitHub-hosted
-  CI 验证。
-- [ ] `go vet ./...`：两次执行均被会话续接中断，没有可报告结果；它会触发
-  Go 编译链，不在 VPS 再启动，改由 GitHub-hosted CI 验证。
-- [x] `npm --prefix web run check`：0 错误、0 警告。
-- [x] `npm --prefix web run build`：通过，仅有既有 chunk 大小提示。
-- [ ] `npm --prefix web run test:e2e`：只完成部分项目，详见第 14.2 节；
-  受 1 GiB 内存安全规则限制，不在本机继续启动 Chromium。
-- [x] Hermes 插件 `python -m unittest`：Hermes 0.19.0 镜像内原 20 项通过；
-  修复真实 slim 错误 envelope 后，宿主机标准库测试 21 项再次通过。
-- [x] slim 与 Hermes 的 `docker compose config --quiet`：均通过，只解析
-  配置，未启动或部署。
+- [x] GitHub-hosted `go test ./...`：所有包通过。
+- [x] GitHub-hosted `go vet ./...`：通过。
+- [x] GitHub-hosted `go test -race ./...`：所有包通过。
+- [x] GitHub-hosted `govulncheck v1.6.0 ./...`：业务代码及实际调用链 0
+  vulnerabilities；依赖模块中另有 1 项未被代码调用，CI 如实保留该提示。
+- [x] `npm audit --audit-level=moderate`：0 vulnerabilities。
+- [x] `npm run check`：0 错误、0 警告；`npm run build` 通过。
+- [x] GitHub-hosted Playwright：10 项全部通过。
+- [x] Hermes 插件标准库 unittest：21 项全部通过。
+- [ ] 固定 Hermes 0.19.0 镜像的真实用户插件发现、allow-list 启用、hook
+  注册及 gateway API 合同验证：增强后的候选脚本待 GitHub-hosted 重验。
+- [x] 基础 Compose 和 `compose.tts-volcengine.yaml` 合并配置解析及 TTS
+  secret/environment 接线验证。
+- [x] `sh -n deploy/*.sh`：发布、预检、备份和安装脚本语法通过。
+- [x] 应用 Docker 镜像构建和 Trivy `HIGH,CRITICAL`、`ignore-unfixed`
+  阻断扫描。
 - [x] 工作树审计：Git 候选文件中没有 Bridge token、私钥、数据库、生成 WAV
   或 Playwright trace；详见第 14.2 节。
 
@@ -425,52 +437,55 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 ### 14.1 基线与范围
 
 - slim 基线提交：
-  `b15edece2d89eb580781ea901a179571d39fb4c5`；本方案目前是该基线上的
-  未提交工作树。
+  `f3e6ccb058064f030543bfac4419ce87dcc5b176`。
+- 开发分支：`agent/weixin-hermes-restaurant-bridge`；draft PR：
+  [#29](https://github.com/zz5123621zz/open-webui/pull/29)。
+- 首轮完整远端验证的 head 是
+  `d4d7cf2b3405da7a04e54d03a9e7bd3d9e5ba6c6`；后续文档和部署接线改动仍须
+  在同一 PR 重新通过，不能借用旧 head 的绿灯。
 - Hermes 源码基线：0.19.0，
-  `8a71feb84ca20d92908ab95a45f7fb39fd376b26`。
-- 实施内容仍未部署：未复制插件到 Hermes Profile、未签发生产 token、未改
-  `plugins.enabled`、未修改生产数据库，也未重启现有容器。
+  `8a71feb84ca20d92908ab95a45f7fb39fd376b26`；镜像固定为
+  `nousresearch/hermes-agent@sha256:8b4aac05369e6c30132ccaf2d2dab895f4e0cd7a67b44c570996363ff2d6933d`。
+- 2026-07-29 只读核对显示当前运行的 Hermes 容器正是上述 digest，但其
+  Compose 仍写 `latest`；正式部署前必须把 Compose 也固定到 digest。
+- 2026-07-29 只读核对显示当前 slim 容器通过
+  `compose.yaml + compose.tts-volcengine.yaml` 获得豆包 TTS secret 和环境；
+  Bridge 发布与回滚必须继续使用这两个 Compose 文件，不能只运行基础文件。
+- 实施内容仍未部署：未复制插件到 active Hermes home、未签发生产 token、
+  未改 `plugins.enabled` 或 Profile route、未修改生产数据库，也未重启现有
+  容器。
 
 ### 14.2 实际验证记录
 
-| 命令或验证 | 结果 |
+首轮 GitHub Actions：
+[run 30432176390](https://github.com/zz5123621zz/open-webui/actions/runs/30432176390)。
+`test` job 用时 2 分 35 秒，`image` job 用时 1 分 59 秒，结论均为
+`success`。
+
+| 远端命令或验证 | 首轮实际结果 |
 |---|---|
-| 新增 guidance、speech、store、HTTP 和 CLI 的定向 Go 测试 | 在禁令前通过；其覆盖点列于 13.1、13.2 |
-| `go test ./... -count=1` | 在禁令前全量通过；今后禁止再次执行 |
-| `go test -race ./...` | 未完成；modernc SQLite 编译开销过高，后续执行已终止 |
-| `go vet ./...` | 两次被会话续接中断，无最终结果；未宣称通过 |
-| `npm --prefix web run check` | 通过，0 错误、0 警告 |
-| `npm --prefix web run build` | 通过；只有既有 chunk 大小提示 |
-| `npm --prefix web audit --audit-level=moderate` | 通过，0 vulnerabilities |
-| Hermes 0.19.0 镜像内 `python -m unittest` | 原 20 项全部通过 |
-| `python3 -m unittest integrations.hermes.slim_restaurant_bridge.test_bridge` | 修复错误 envelope 与 WAV 边界后，21 项通过 |
-| Hermes 插件真实 import/register 验证 | 通过 |
-| slim、Hermes 各自的 `docker compose config --quiet` | 均通过 |
-| 新增 Go 文件的 `gofmt -d` | 无输出 |
-| `git diff --check` | 通过 |
-| Git 候选文件的凭据与运行时产物扫描 | 未发现真实 `hbr_` token、常见云/GitHub token、私钥、数据库、生成 WAV 或 trace |
+| `npm audit --audit-level=moderate` | 通过，0 vulnerabilities |
+| `npm run check` / `npm run build` | 0 错误、0 警告；生产构建通过 |
+| `npm run test:e2e` | 10 passed，32.9 秒 |
+| Bridge Python unittest | 21 passed，0.315 秒 |
+| Hermes 固定镜像加载 | 成功加载插件并注册 `pre_gateway_dispatch` |
+| 基础 Compose | `config --quiet` 通过 |
+| `go test ./...` / `go vet ./...` | 所有测试包通过，vet 通过 |
+| `go test -race ./...` | 所有测试包通过，无 race 报告 |
+| `govulncheck v1.6.0 ./...` | 实际调用链 0 vulnerabilities |
+| Docker build | 成功 |
+| Trivy | `HIGH,CRITICAL`、`ignore-unfixed`、`exit-code=1` 条件下成功 |
+| SARIF | 成功上传并完成处理 |
+
+首轮 PR 事件构建的是临时 merge ref，只加载到 Runner，没有推送到 GHCR，不能
+拿它部署。当前分支最终 head 通过后，必须再用 `workflow_dispatch` 从该 head
+发布 `sha-*` 镜像，随后以 registry 返回的 digest 固定部署。
 
 仓库原有的 `static/audio/greeting.mp3` 和 `notification.mp3` 是受版本控制的
-产品静态提示音，不是本轮 TTS 产物。`web/test-results/` 的失败 trace 和插件
-`__pycache__/` 存在于本地但均被 `.gitignore` 明确排除；用户原有、未跟踪的
-`docs/PROJECT_HANDOFF_2026-07-28.md` 保持原样。
-
-Playwright 的完整情况不能压缩成“通过”：
-
-1. 宿主机首次运行缺少 Chromium；浏览器安装到用户缓存后，宿主机仍缺
-   `libnspr4` 等系统库，因此没有修改系统包，改在已有 Hermes 镜像的一次性
-   容器中验证。
-2. 第一次容器运行中，桌面端大型首项执行到最后的滚动断言后触发 30 秒总超时；
-   其余 4 项桌面测试通过，移动端首项也通过。此时容器约占 323 MiB，swap
-   仅余约 27 MiB，按资源安全规则终止。
-3. 因大型首项同时覆盖登录、设置、模型选择、流式内容、富文本、语音和滚动，
-   已为该项单独设置 60 秒超时。该改动合理但尚未在本机安全重验。
-4. 受限重验给容器设置 350 MiB 上限；容器达到约 347.6 MiB，系统可用内存
-   约 129 MiB。任务因严重资源节流无法完成页面初始加载，并再次按规则终止。
-   这既不能记为产品失败，也不能记为修复验证成功。
-5. 当前 1 GiB VPS 不再运行浏览器 E2E。完整重验需要在内存充足的隔离 CI 或
-   测试机执行。
+产品静态提示音，不是本轮 TTS 产物。用户原有、未跟踪的
+`docs/PROJECT_HANDOFF_2026-07-28.md` 保持原样。VPS 早期未完成的 race、vet
+和浏览器尝试已经由 GitHub-hosted 结果补齐，但本机禁令仍永久生效，不因远端
+通过而恢复本地重测试。
 
 ### 14.3 验证中修复的问题
 
@@ -485,14 +500,78 @@ Playwright 的完整情况不能压缩成“通过”：
 - 服务端与插件的音频合同统一为最多 32 段、单段 25 MiB、总计 100 MiB。
 - 插件与服务端现一致拒绝只有 44 字节头、没有 PCM 载荷的空 WAV。
 - Hermes host 网络的正确 URL 和 manifest 插件启用名已在运维文档中固定。
-- Playwright 大型首项的独立超时由 30 秒调整为 60 秒；受资源规则限制，尚待
-  外部测试机重验。
+- Playwright 大型首项的独立超时由 30 秒调整为 60 秒，并已由 hosted Runner
+  完整重验 10 项。
+- CI 现在同时验证基础 Compose 和豆包 TTS override，防止发布时遗漏
+  `tts_volcengine_api_key` secret 而静默降级为只有文字。
+- Hermes 运行时验证从直接调用私有 loader 提升为真实用户插件目录发现、
+  `plugins.enabled` allow-list、hook 注册、Profile 路由、Profile secret
+  scope、session、typing、文字与 `send_voice` 文件附件合同检查。
+- 明确记录 Hermes 二级 Profile adapter 的 fail-closed 规则，避免把只有默认
+  Weixin adapter 的环境误判为可直接路由。
 
 ### 14.4 当前结论
 
-已安全执行的测试范围内没有遗留失败。`race`、`vet` 和完整浏览器 E2E 没有
-最终通过证据，原因和后续验证环境已如实记录，不能宣称它们通过。微信侧最终
-收到的是完整文字和一个或多个可播放 WAV 文件附件；腾讯 iLink/Hermes 当前
-没有可由发送端保证的原生语音气泡或自动播放字段。
+首轮完整 CI 没有遗留失败；race、vet、完整浏览器 E2E、Hermes 固定镜像加载、
+应用镜像构建及安全扫描均有远端证据。后续提交仍必须重新通过，且只有
+`workflow_dispatch` 从最终 head 推送并取得不可变应用镜像 digest 后，才能
+称为部署候选。微信侧最终收到的是完整文字和一个或多个可播放 WAV 文件附件；
+腾讯 iLink/Hermes 当前没有可由发送端保证的原生语音气泡或自动播放字段。
 
 **未部署，等待用户指令。**
+
+## 15. 正式部署闸门与回滚
+
+### 15.1 必须同时满足的发布条件
+
+1. PR #29 当前 head 的 `test` 和 `image` job 全部成功。
+2. 同一 head 的 `workflow_dispatch` 成功推送
+   `ghcr.io/zz5123621zz/owui-personal-slim:sha-*`，并记录 registry 返回的
+   不可变 digest；生产 `.env` 使用 digest，不使用 tag 或 `latest`。
+3. Hermes Compose 固定到本文件记录的 0.19.0 digest。
+4. 应用发布继续合并 `compose.yaml` 与
+   `compose.tts-volcengine.yaml`；豆包 secret 存在、非空、容器内只读，并且
+   `RESTAURANT_GUIDANCE_ENABLED=true`。
+5. slim 目标用户仍是启用状态的餐饮工作台用户；管理员语音服务为
+   `volcengine` 且已启用，用户音色属于 `seed-tts-2.0`。
+6. 若使用二级 Profile，目标 Profile 的 Weixin adapter 已连通，并能被
+   `_adapter_for_source` 解析；不能依赖回退到默认 adapter。
+7. 已记录旧 slim 应用镜像 digest、旧 Hermes 镜像 digest、Hermes
+   `config.yaml`/Profile `.env`/插件目录备份和应用加密备份编号。
+
+任何一项缺失都停止部署，不签发 credential，也不启用插件。
+
+### 15.2 获准后的发布顺序
+
+1. 先运行 `free -h`、`docker stats --no-stream` 和磁盘检查。VPS 不做任何
+   本地构建或重测试；发布只允许拉取已验证镜像和重建容器。
+2. 执行应用一致性加密备份，记录当前容器镜像 ID/digest。
+3. 将 `APP_IMAGE` 改为最终 digest，并用两个 Compose 文件执行
+   `config --quiet`、`pull` 和 `up -d app`。
+4. 验证 `/healthz`、`/readyz`、普通网页聊天、餐饮网页澄清和豆包 TTS；
+   失败时尚未启用微信流量，直接回滚应用。
+5. 为正确的 slim 餐饮用户签发一次性 Bridge credential；原始 token 只写入
+   目标 Profile 的 `.env`。
+6. 把运行时文件 `plugin.yaml`、`__init__.py`、`bridge.py` 从最终提交复制到
+   active/default `$HERMES_HOME/plugins/slim_restaurant_bridge`，在 gateway
+   的 `plugins.enabled` 加入 `slim-restaurant-bridge`。
+7. 备份并修改 Profile route；固定 Hermes digest 后重建 Hermes，确认插件
+   列表、目标 Profile adapter、授权与日志无错误。
+8. 用目标微信账号依次验收：首问出现恰好三题；`ABC` 和自然语言均可继续；
+   “直接生成”得到完整文字；typing 会出现并停止；文字之后收到一份或多份
+   可播放 WAV；并发消息得到 busy 提示。
+9. 观察应用/Hermes 日志、内存、swap、音频临时文件清理和 credential
+   `last_used_at`，确认稳定后才结束发布窗口。
+
+### 15.3 回滚顺序
+
+1. 先从 `plugins.enabled` 移除 Bridge 并恢复 Hermes 配置备份，重建固定旧
+   Hermes digest，立即停止新的微信 Bridge 流量。
+2. 撤销刚签发的 Bridge credential；不要把 token 留给普通 Hermes Agent。
+3. 若应用异常，将 `APP_IMAGE` 恢复为记录的旧 digest，仍使用
+   `compose.yaml + compose.tts-volcengine.yaml` 重建并检查 `/readyz`。
+4. schema v7 只新增 Bridge 表，旧应用可忽略；除非出现数据损坏，不为普通
+   代码回滚覆盖整个数据库。确需数据恢复时才按加密备份流程恢复，并明确接受
+   备份时间点之后的会话丢失。
+5. 删除失败发布留下的插件副本和临时 WAV，保留审计记录；验证网页聊天、
+   豆包 TTS 和原 Hermes 运维用途恢复正常。
