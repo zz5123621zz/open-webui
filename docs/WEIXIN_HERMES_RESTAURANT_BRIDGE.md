@@ -422,8 +422,10 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 - [x] `npm run check`：0 错误、0 警告；`npm run build` 通过。
 - [x] GitHub-hosted Playwright：10 项全部通过。
 - [x] Hermes 插件标准库 unittest：21 项全部通过。
-- [ ] 固定 Hermes 0.19.0 镜像的真实用户插件发现、allow-list 启用、hook
-  注册及 gateway API 合同验证：增强后的候选脚本待 GitHub-hosted 重验。
+- [x] 固定 Hermes 0.19.0 镜像的真实用户插件发现、allow-list 启用、hook
+  注册及 gateway API 合同验证：增强后的行为探针已由
+  [run 30433858746](https://github.com/zz5123621zz/open-webui/actions/runs/30433858746)
+  验证通过。
 - [x] 基础 Compose 和 `compose.tts-volcengine.yaml` 合并配置解析及 TTS
   secret/environment 接线验证。
 - [x] `sh -n deploy/*.sh`：发布、预检、备份和安装脚本语法通过。
@@ -443,6 +445,9 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 - 首轮完整远端验证的 head 是
   `d4d7cf2b3405da7a04e54d03a9e7bd3d9e5ba6c6`；后续文档和部署接线改动仍须
   在同一 PR 重新通过，不能借用旧 head 的绿灯。
+- Hermes 增强运行时合同修复提交是
+  `929c0c144760c958898ae7f9d01dc154f801c598`，其完整 PR CI 已通过；本节
+  验证记录的文档提交仍须在同一 PR 重新通过，之后才可发布部署候选。
 - Hermes 源码基线：0.19.0，
   `8a71feb84ca20d92908ab95a45f7fb39fd376b26`；镜像固定为
   `nousresearch/hermes-agent@sha256:8b4aac05369e6c30132ccaf2d2dab895f4e0cd7a67b44c570996363ff2d6933d`。
@@ -477,9 +482,18 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 | Trivy | `HIGH,CRITICAL`、`ignore-unfixed`、`exit-code=1` 条件下成功 |
 | SARIF | 成功上传并完成处理 |
 
+增强运行时合同后的 GitHub Actions：
+[run 30433858746](https://github.com/zz5123621zz/open-webui/actions/runs/30433858746)。
+该 run 对应 head `929c0c144760c958898ae7f9d01dc154f801c598`；`test` job
+用时 2 分 36 秒，`image` job 用时 1 分 11 秒，结论均为 `success`。除重跑
+表中全部项目外，它还确认 Hermes 0.19.0 的 `AsyncSessionStore` 动态异步转发
+行为探针通过，基础 Compose 与豆包 TTS override 接线通过，候选镜像在
+`HIGH,CRITICAL`、`ignore-unfixed`、`exit-code=1` 条件下通过 Trivy。
+
 首轮 PR 事件构建的是临时 merge ref，只加载到 Runner，没有推送到 GHCR，不能
-拿它部署。当前分支最终 head 通过后，必须再用 `workflow_dispatch` 从该 head
-发布 `sha-*` 镜像，随后以 registry 返回的 digest 固定部署。
+拿它部署。增强运行时合同的 PR 事件构建同样没有推送到 GHCR。当前分支最终
+head 通过后，必须再用 `workflow_dispatch` 从该 head 发布 `sha-*` 镜像，
+随后以 registry 返回的 digest 固定部署。
 
 仓库原有的 `static/audio/greeting.mp3` 和 `notification.mp3` 是受版本控制的
 产品静态提示音，不是本轮 TTS 产物。用户原有、未跟踪的
@@ -507,13 +521,20 @@ swap 和峰值余量，无法确认安全余量时必须不运行。
 - Hermes 运行时验证从直接调用私有 loader 提升为真实用户插件目录发现、
   `plugins.enabled` allow-list、hook 注册、Profile 路由、Profile secret
   scope、session、typing、文字与 `send_voice` 文件附件合同检查。
+- 增强验证曾把 `AsyncSessionStore.get_or_create_session` 当成显式类方法；
+  固定 Hermes 0.19.0 实际通过 `__getattr__` 将底层同步方法动态包装成异步
+  facade，因此 [run 30433389714](https://github.com/zz5123621zz/open-webui/actions/runs/30433389714)
+  在该静态断言处失败。验证现改为实例化 facade、实际等待转发调用并核对返回
+  对象，[run 30433858746](https://github.com/zz5123621zz/open-webui/actions/runs/30433858746)
+  已通过这一真实行为检查。
 - 明确记录 Hermes 二级 Profile adapter 的 fail-closed 规则，避免把只有默认
   Weixin adapter 的环境误判为可直接路由。
 
 ### 14.4 当前结论
 
-首轮完整 CI 没有遗留失败；race、vet、完整浏览器 E2E、Hermes 固定镜像加载、
-应用镜像构建及安全扫描均有远端证据。后续提交仍必须重新通过，且只有
+截至增强运行时合同提交 `929c0c144760c958898ae7f9d01dc154f801c598`，完整
+CI 没有遗留失败；race、vet、完整浏览器 E2E、Hermes 固定镜像加载、应用镜像
+构建及安全扫描均有远端证据。本次验证记录提交仍必须重新通过，且只有
 `workflow_dispatch` 从最终 head 推送并取得不可变应用镜像 digest 后，才能
 称为部署候选。微信侧最终收到的是完整文字和一个或多个可播放 WAV 文件附件；
 腾讯 iLink/Hermes 当前没有可由发送端保证的原生语音气泡或自动播放字段。
