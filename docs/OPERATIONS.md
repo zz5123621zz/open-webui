@@ -264,3 +264,48 @@ free -h
 
 常规聊天建议低于 `180 MiB`，容器硬上限 `320 MiB`。健康检查不依赖
 CPA，避免 Provider 临时故障引发重启风暴。
+
+## 8. 微信 Hermes 餐饮桥接（待单独批准部署）
+
+实现、边界、测试和回滚依据见
+[微信 + Hermes 餐饮问答桥接方案](WEIXIN_HERMES_RESTAURANT_BRIDGE.md)。
+代码完成或测试通过不代表已经启用。没有明确部署指令时，不得复制插件到
+Hermes Profile、签发生产 credential、修改 `plugins.enabled` 或重启容器。
+
+每位微信餐饮用户使用独立的 slim User、Hermes Profile 和 Bridge
+credential。签发命令只在应用新版本已经部署、目标用户仍为餐饮工作台且收到
+单独启用指令后执行：
+
+```bash
+sudo docker compose exec app /app/server integration hermes-token issue \
+  --username USERNAME \
+  --label PROFILE_NAME \
+  --model gpt-5.6-sol \
+  --reasoning-effort high
+```
+
+原始 token 只显示一次。Hermes 当前使用 `network_mode: host`，因此目标
+Profile 的 `.env` 使用：
+
+```dotenv
+SLIM_RESTAURANT_BRIDGE_URL=http://127.0.0.1:3001
+SLIM_RESTAURANT_BRIDGE_TOKEN=hbr_REPLACE_WITH_THE_ONE_TIME_TOKEN
+SLIM_RESTAURANT_BRIDGE_TIMEOUT_SECONDS=900
+SLIM_RESTAURANT_BRIDGE_MAX_AUDIO_BYTES=26214400
+SLIM_RESTAURANT_BRIDGE_MAX_TOTAL_AUDIO_BYTES=104857600
+```
+
+插件源目录为
+`integrations/hermes/slim_restaurant_bridge/`，Hermes 启用名是 manifest
+中的 `slim-restaurant-bridge`。不同网络拓扑不能照搬上述 URL：只有
+Hermes 使用 host 网络且 slim 继续发布 `127.0.0.1:3001` 时才使用该值。
+撤销和核查命令为：
+
+```bash
+sudo docker compose exec app /app/server integration hermes-token list
+sudo docker compose exec app /app/server integration hermes-token revoke \
+  --id CREDENTIAL_ID
+```
+
+微信收到的是完整文字及一个或多个可播放 WAV 文件附件；当前 Hermes
+Weixin 适配器不保证原生语音气泡或自动播放。

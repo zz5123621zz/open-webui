@@ -15,6 +15,7 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/owui-personal-slim
+  HERMES_TEST_IMAGE: nousresearch/hermes-agent@sha256:8b4aac05369e6c30132ccaf2d2dab895f4e0cd7a67b44c570996363ff2d6933d
 
 jobs:
   test:
@@ -40,6 +41,16 @@ jobs:
         working-directory: web
       - run: npm run test:e2e
         working-directory: web
+      - name: Test Hermes bridge plugin
+        run: python3 -m unittest integrations.hermes.slim_restaurant_bridge.test_bridge
+      - name: Verify plugin with Hermes 0.19.0
+        run: |
+          docker run --rm --entrypoint python \
+            --volume "$GITHUB_WORKSPACE/integrations/hermes/slim_restaurant_bridge:/plugin:ro" \
+            "$HERMES_TEST_IMAGE" \
+            /plugin/verify_hermes_runtime.py
+      - name: Validate Compose configuration
+        run: APP_IMAGE=ghcr.io/example/owui-personal-slim:test docker compose config --quiet
       - run: go test ./... && go vet ./...
       - run: go test -race ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...

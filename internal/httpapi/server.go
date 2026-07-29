@@ -38,6 +38,7 @@ type Server struct {
 	logins          *loginLimiter
 	actions         *actionLimiter
 	uploads         *keyedGate
+	hermesTurns     *keyedGate
 	activeMu        sync.Mutex
 	active          map[string]activeResponse
 	responseMu      sync.Mutex
@@ -71,6 +72,7 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 		logins:          newLoginLimiter(),
 		actions:         newActionLimiter(),
 		uploads:         newKeyedGate(),
+		hermesTurns:     newKeyedGate(),
 		active:          make(map[string]activeResponse),
 		responseContext: responseContext,
 		responseCancel:  responseCancel,
@@ -98,6 +100,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("HEAD /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("GET /api/v1/config/public", s.publicConfig)
+	s.mux.Handle(
+		"POST /api/v1/integrations/hermes/restaurant/turn",
+		s.hermesRestaurantAuth(s.limitAction(
+			// A lost HTTP response can make the Hermes client poll the same
+			// idempotent request every two seconds while the original turn is
+			// still running. Keep the authenticated limit above that recovery
+			// rate so a long CPA turn cannot turn into a false 429.
+			"hermes_restaurant_turn", 120, time.Minute,
+			http.HandlerFunc(s.hermesRestaurantTurn),
+		)),
+	)
+	s.mux.Handle(
+		"GET /api/v1/integrations/hermes/restaurant/audio/{id}",
+		s.hermesRestaurantAuth(http.HandlerFunc(s.hermesRestaurantAudio)),
+	)
 
 	s.mux.Handle("POST /api/v1/auth/login", s.origin(http.HandlerFunc(s.login)))
 	s.mux.Handle("POST /api/v1/auth/logout", s.auth(s.origin(s.csrf(http.HandlerFunc(s.logout)))))
