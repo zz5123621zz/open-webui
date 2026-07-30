@@ -1008,21 +1008,24 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
   });
 
   await page.goto('/');
-  await page.evaluate(() => {
+  const microphoneFixtureInstalled = await page.evaluate(() => {
     // Keep the interaction test independent of a runner audio device. Install
     // this after navigation so mediaDevices belongs to the secure app origin.
     // The destination owns a real browser MediaStream audio track, so the
     // production Web Audio graph and recorder lifecycle still run unchanged.
     const contexts: AudioContext[] = [];
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+    const getUserMedia = async () => {
+      const context = new AudioContext();
+      contexts.push(context);
+      return context.createMediaStreamDestination().stream;
+    };
+    Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
-      value: async () => {
-        const context = new AudioContext();
-        contexts.push(context);
-        return context.createMediaStreamDestination().stream;
-      }
+      value: { getUserMedia }
     });
+    return navigator.mediaDevices.getUserMedia === getUserMedia;
   });
+  expect(microphoneFixtureInstalled).toBe(true);
   await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: '打开侧边栏' }).click();
