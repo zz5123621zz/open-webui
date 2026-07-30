@@ -21,6 +21,8 @@
     error: { code: string; message: string };
   }>();
 
+  const workletStartupTimeoutMs = 2000;
+
   type AudioContextFactory = new (options?: AudioContextOptions) => AudioContext;
   type WebkitWindow = Window & { webkitAudioContext?: AudioContextFactory };
 
@@ -250,8 +252,17 @@
     silentGain.connect(audioContext.destination);
 
     if (audioContext.audioWorklet && typeof AudioWorkletNode !== 'undefined') {
+      let workletTimer: number | undefined;
       try {
-        await audioContext.audioWorklet.addModule('/dictation-processor.js');
+        await Promise.race([
+          audioContext.audioWorklet.addModule('/dictation-processor.js'),
+          new Promise<never>((_, reject) => {
+            workletTimer = window.setTimeout(
+              () => reject(new Error('dictation_worklet_timeout')),
+              workletStartupTimeoutMs
+            );
+          })
+        ]);
         workletNode = new AudioWorkletNode(
           audioContext,
           'la4rain-dictation-processor',
@@ -273,6 +284,8 @@
         return;
       } catch {
         workletNode = null;
+      } finally {
+        window.clearTimeout(workletTimer);
       }
     }
 
