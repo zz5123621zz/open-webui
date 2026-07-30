@@ -73,6 +73,31 @@ jobs:
               (.secrets.tts_volcengine_api_key.file |
                 endswith("/secrets/tts_volcengine_api_key"))
             '
+      - name: Validate Volcengine ASR deployment wiring
+        env:
+          APP_IMAGE: ghcr.io/example/owui-personal-slim:test
+        run: |
+          docker compose \
+            -f compose.yaml \
+            -f compose.tts-volcengine.yaml \
+            -f compose.asr-volcengine.yaml \
+            config --quiet
+          docker compose \
+            -f compose.yaml \
+            -f compose.tts-volcengine.yaml \
+            -f compose.asr-volcengine.yaml \
+            config --format json |
+            jq -e '
+              .services.app.environment.ASR_VOLCENGINE_API_KEY_FILE ==
+                "/run/secrets/asr_volcengine_api_key" and
+              .services.app.environment.ASR_VOLCENGINE_RESOURCE_ID ==
+                "volc.seedasr.sauc.duration" and
+              .services.app.environment.ASR_SESSION_TTL_SECONDS == "135" and
+              ([.services.app.secrets[]?.source] |
+                index("asr_volcengine_api_key") != null) and
+              (.secrets.asr_volcengine_api_key.file |
+                endswith("/secrets/asr_volcengine_api_key"))
+            '
       - name: Validate deployment scripts
         run: sh -n deploy/*.sh
       - run: go test ./... && go vet ./...
@@ -131,6 +156,7 @@ jobs:
             >"$smoke_root/app_secret"
           printf '%s' 'ci-provider-key' >"$smoke_root/provider_api_key"
           printf '%s' 'ci-volcengine-key' >"$smoke_root/tts_volcengine_api_key"
+          printf '%s' 'ci-volcengine-asr-key' >"$smoke_root/asr_volcengine_api_key"
           chmod 0444 "$smoke_root"/*
 
           docker run --detach \
@@ -150,6 +176,8 @@ jobs:
               "type=bind,src=$smoke_root/provider_api_key,dst=/run/secrets/provider_api_key,readonly" \
             --mount \
               "type=bind,src=$smoke_root/tts_volcengine_api_key,dst=/run/secrets/tts_volcengine_api_key,readonly" \
+            --mount \
+              "type=bind,src=$smoke_root/asr_volcengine_api_key,dst=/run/secrets/asr_volcengine_api_key,readonly" \
             --env APP_ENV=production \
             --env APP_BASE_URL=http://127.0.0.1:8080 \
             --env APP_DATA_DIR=/data \
@@ -162,6 +190,8 @@ jobs:
             --env RESTAURANT_GUIDANCE_ENABLED=true \
             --env TTS_VOLCENGINE_API_KEY_FILE=/run/secrets/tts_volcengine_api_key \
             --env TTS_VOLCENGINE_RESOURCE_ID=seed-tts-2.0 \
+            --env ASR_VOLCENGINE_API_KEY_FILE=/run/secrets/asr_volcengine_api_key \
+            --env ASR_VOLCENGINE_RESOURCE_ID=volc.seedasr.sauc.duration \
             --env GOMEMLIMIT=220MiB \
             --env GOGC=75 \
             "$SMOKE_IMAGE"

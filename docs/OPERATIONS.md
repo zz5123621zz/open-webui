@@ -2,6 +2,8 @@
 
 流式朗读提供商配置、运行时接口和 WebSocket 协议见
 [TTS_BACKEND.md](TTS_BACKEND.md)。
+网页语音输入的边界、火山流式 ASR 接线和验收见
+[DICTATION.md](DICTATION.md)。
 
 ## 1. 前置条件
 
@@ -47,6 +49,8 @@ sudo install -m 0400 -o 65532 -g 65532 /dev/null \
   /opt/owui-personal-slim/secrets/app_secret
 sudo install -m 0400 -o 65532 -g 65532 /dev/null \
   /opt/owui-personal-slim/secrets/provider_api_key
+sudo install -m 0400 -o 65532 -g 65532 /dev/null \
+  /opt/owui-personal-slim/secrets/asr_volcengine_api_key
 ```
 
 生成应用密钥：
@@ -71,6 +75,11 @@ unset CPA_SECRET_INPUT
 sudo chown 65532:65532 /opt/owui-personal-slim/secrets/*
 sudo chmod 0400 /opt/owui-personal-slim/secrets/*
 ```
+
+火山 ASR 使用独立的 Docker secret 文件。即使当前 ASR 与 TTS 使用同一个
+控制台 API Key，也不要复用同一个挂载路径；应分别写入
+`secrets/asr_volcengine_api_key` 与 `secrets/tts_volcengine_api_key`，便于
+后续独立轮换。交互式写入方式见 [DICTATION.md](DICTATION.md)。
 
 复制 `compose.yaml`、`.env.example`，把 `.env.example` 改名为 `.env`。
 `APP_IMAGE` 应在第一次验证后换成 GHCR 返回的不可变 digest。
@@ -215,26 +224,30 @@ sudo ./deploy/backup.sh
 sudo docker compose \
   -f compose.yaml \
   -f compose.tts-volcengine.yaml \
+  -f compose.asr-volcengine.yaml \
   config --quiet
 sudo docker compose \
   -f compose.yaml \
   -f compose.tts-volcengine.yaml \
+  -f compose.asr-volcengine.yaml \
   pull app
 sudo docker compose \
   -f compose.yaml \
   -f compose.tts-volcengine.yaml \
+  -f compose.asr-volcengine.yaml \
   up -d app
 sudo docker compose \
   -f compose.yaml \
   -f compose.tts-volcengine.yaml \
+  -f compose.asr-volcengine.yaml \
   ps
 curl --fail --silent http://127.0.0.1:3001/readyz
 ```
 
-当前生产启用了豆包 TTS，发布和回滚都必须合并
-`compose.tts-volcengine.yaml`。只使用基础 `compose.yaml` 重建会移除 TTS
-secret 挂载，Bridge 会保留文字但把音频降级为 unavailable。安装器和预检会在
-检测到现有 `secrets/tts_volcengine_api_key` 后自动带上该 override。
+当前生产启用了豆包 TTS 和网页端豆包 ASR，发布和回滚都必须合并
+`compose.tts-volcengine.yaml` 与 `compose.asr-volcengine.yaml`。只使用基础
+`compose.yaml` 重建会移除对应 secret 挂载。安装器和预检会在检测到相应
+secret 后自动带上 override。
 
 记录每次部署前后的镜像 digest：
 

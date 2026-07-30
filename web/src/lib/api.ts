@@ -4,6 +4,8 @@ import type {
   Conversation,
   ConversationSearchResult,
   ContextCheckpoint,
+  DictationAvailability,
+  DictationServiceSettings,
   GuidanceSubmission,
   Message,
   Model,
@@ -197,6 +199,33 @@ export async function updateSpeechServiceSettings(
     body: JSON.stringify({ enabled, provider, defaultVoice })
   });
   return body.speech;
+}
+
+export async function getDictationAvailability(): Promise<DictationAvailability> {
+  const body = await request<{ dictation: DictationAvailability }>(
+    '/api/v1/me/dictation'
+  );
+  return body.dictation;
+}
+
+export async function getDictationServiceSettings(): Promise<DictationServiceSettings> {
+  const body = await request<{ dictation: DictationServiceSettings }>(
+    '/api/v1/admin/dictation'
+  );
+  return body.dictation;
+}
+
+export async function updateDictationServiceSettings(
+  enabled: boolean
+): Promise<DictationServiceSettings> {
+  const body = await request<{ dictation: DictationServiceSettings }>(
+    '/api/v1/admin/dictation',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    }
+  );
+  return body.dictation;
 }
 
 export async function getConversations(archived = false): Promise<Conversation[]> {

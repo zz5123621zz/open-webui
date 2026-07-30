@@ -338,3 +338,31 @@ CREATE TABLE IF NOT EXISTS hermes_restaurant_audio (
 CREATE INDEX IF NOT EXISTS idx_hermes_restaurant_audio_expiry
 ON hermes_restaurant_audio(expires_at);
 `
+
+const schemaV8 = `
+CREATE TABLE IF NOT EXISTS dictation_service_settings (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+	updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dictation_service_setting_audit (
+	id TEXT PRIMARY KEY,
+	old_enabled INTEGER NOT NULL CHECK (old_enabled IN (0, 1)),
+	new_enabled INTEGER NOT NULL CHECK (new_enabled IN (0, 1)),
+	actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dictation_service_setting_audit_created
+ON dictation_service_setting_audit(created_at DESC);
+
+INSERT INTO dictation_service_settings(id, enabled, updated_by, updated_at)
+VALUES(
+	1,
+	1,
+	NULL,
+	CAST(strftime('%s', 'now') AS INTEGER) * 1000
+)
+ON CONFLICT(id) DO NOTHING;
+`

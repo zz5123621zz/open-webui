@@ -35,6 +35,12 @@ if [ -e secrets/tts_volcengine_api_key ]; then
   runtime_secrets="$runtime_secrets secrets/tts_volcengine_api_key"
   set -- "$@" -f compose.tts-volcengine.yaml
 fi
+if [ -e secrets/asr_volcengine_api_key ]; then
+  require_file compose.asr-volcengine.yaml
+  require_file secrets/asr_volcengine_api_key
+  runtime_secrets="$runtime_secrets secrets/asr_volcengine_api_key"
+  set -- "$@" -f compose.asr-volcengine.yaml
+fi
 if [ -e secrets/tts_aliyun_access_key_id ] ||
   [ -e secrets/tts_aliyun_access_key_secret ]; then
   require_file compose.tts.yaml
@@ -72,7 +78,7 @@ done
 if docker info >/dev/null 2>&1; then
   pass "Docker daemon is accessible"
   if docker compose "$@" config --quiet; then
-    pass "Compose configuration and configured TTS overrides are valid"
+    pass "Compose configuration and configured speech overrides are valid"
   else
     fail "Compose configuration is invalid"
   fi

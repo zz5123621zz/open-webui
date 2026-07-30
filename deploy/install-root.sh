@@ -62,6 +62,8 @@ install -m 0640 "$SOURCE_ROOT/compose.yaml" "$DEPLOY_ROOT/compose.yaml"
 install -m 0640 "$SOURCE_ROOT/compose.tts.yaml" "$DEPLOY_ROOT/compose.tts.yaml"
 install -m 0640 "$SOURCE_ROOT/compose.tts-volcengine.yaml" \
   "$DEPLOY_ROOT/compose.tts-volcengine.yaml"
+install -m 0640 "$SOURCE_ROOT/compose.asr-volcengine.yaml" \
+  "$DEPLOY_ROOT/compose.asr-volcengine.yaml"
 install -m 0750 "$SOURCE_ROOT/deploy/backup.sh" "$DEPLOY_ROOT/deploy/backup.sh"
 install -m 0750 "$SOURCE_ROOT/deploy/setup-backup-root.sh" "$DEPLOY_ROOT/deploy/setup-backup-root.sh"
 install -m 0750 "$SOURCE_ROOT/deploy/preflight.sh" "$DEPLOY_ROOT/deploy/preflight.sh"
@@ -141,6 +143,9 @@ if [ "$DEPLOY_START" = "1" ]; then
   set -- -f compose.yaml
   if [ -s secrets/tts_volcengine_api_key ]; then
     set -- "$@" -f compose.tts-volcengine.yaml
+  fi
+  if [ -s secrets/asr_volcengine_api_key ]; then
+    set -- "$@" -f compose.asr-volcengine.yaml
   fi
   if [ -s secrets/tts_aliyun_access_key_id ] &&
     [ -s secrets/tts_aliyun_access_key_secret ]; then

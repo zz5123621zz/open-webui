@@ -16,6 +16,7 @@
     | 'lock'
     | 'logout'
     | 'menu'
+    | 'microphone'
     | 'moon'
     | 'more'
     | 'plan'
@@ -115,6 +116,9 @@
     <path d="M4 7h16M4 12h16M4 17h16" />
   {:else if name === 'moon'}
     <path d="M20 15.5A8 8 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" />
+  {:else if name === 'microphone'}
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
   {:else if name === 'more'}
     <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
     <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />

@@ -10,6 +10,7 @@
     editResponse,
     getConversations,
     getContextCheckpoints,
+    getDictationAvailability,
     getMessages,
     getModels,
     getResponse,
@@ -30,6 +31,8 @@
     uploadAttachment
   } from './lib/api';
   import { locale, setLocale, translate } from './lib/i18n';
+  import DictationAdminSettings from './lib/DictationAdminSettings.svelte';
+  import DictationControl from './lib/DictationControl.svelte';
   import Icon from './lib/Icon.svelte';
   import { messageText } from './lib/messages';
   import MessageView from './lib/MessageView.svelte';
@@ -54,6 +57,8 @@
     Conversation,
     ConversationSearchResult,
     ContextCheckpoint,
+    DictationAvailability,
+    DictationPhase,
     GuidanceSubmission,
     Message,
     MessagePart,
@@ -130,6 +135,7 @@
     | 'service'
     | 'speech'
     | 'speech-admin'
+    | 'dictation-admin'
     | 'usage'
     | 'about' = '';
   let accountError = '';
@@ -179,6 +185,12 @@
   let dragDepth = 0;
   let draftStorageKey = '';
   let draftSaveTimer: number | undefined;
+  let dictationAvailability: DictationAvailability | null = null;
+  let dictationActive = false;
+  let dictationPhase: DictationPhase = 'idle';
+  let dictationElapsedSeconds = 0;
+  let dictationControl: DictationControl;
+  let dictationSpeechSuppressedMessageId = '';
   const fontSizeChoices = [
     {
       value: 'compact',
@@ -497,9 +509,12 @@
     : 0;
   $: if (activeAssistantId) {
     const speechMessage = messages.find((message) => message.id === activeAssistantId);
-    if (speechMessage) {
+    if (speechMessage && !dictationActive) {
       speechController.syncMessage(speechMessage);
-      if ($speechPreference?.mode === 'auto') {
+      if (
+        $speechPreference?.mode === 'auto' &&
+        activeAssistantId !== dictationSpeechSuppressedMessageId
+      ) {
         speechController.syncAutomatic(speechMessage);
       }
     }
@@ -747,17 +762,25 @@
   }
 
   async function loadWorkspace() {
-    const [loadedModels, loadedConversations, loadedStorage, loadedWorkbench] = await Promise.all([
+    const [
+      loadedModels,
+      loadedConversations,
+      loadedStorage,
+      loadedWorkbench,
+      loadedDictation
+    ] = await Promise.all([
       getModels(),
       getConversations(false),
       getStorageStatus().catch(() => null),
-      getWorkbench()
+      getWorkbench(),
+      getDictationAvailability().catch(() => null)
     ]);
     models = loadedModels;
     conversations = loadedConversations;
     storageStatus = loadedStorage;
     workbenchSetting = loadedWorkbench.workbench;
     restaurantGuidanceEnabled = loadedWorkbench.guidanceEnabled;
+    dictationAvailability = loadedDictation;
     const availableModes = visibleModeModels(loadedModels);
     const initialDraftModel =
       (user?.preferredModel &&
@@ -793,8 +816,23 @@
     }
   }
 
+  async function refreshDictationAvailability() {
+    try {
+      dictationAvailability = await getDictationAvailability();
+    } catch {
+      dictationAvailability = null;
+    }
+  }
+
   function reloadApplication() {
     profileOpen = false;
+    if (dictationActive) {
+      workspaceError = t(
+        '请先结束或取消当前语音输入，再刷新应用。',
+        'Finish or cancel the current voice input before reloading.'
+      );
+      return;
+    }
     if (generating) {
       workspaceError = t(
         '回答生成完成后再刷新应用。',
@@ -863,6 +901,7 @@
   }
 
   async function doLogout() {
+    if (dictationActive) await dictationControl?.cancel();
     try {
       await logout();
     } finally {
@@ -888,6 +927,8 @@
       profileOpen = false;
       onboardingOpen = false;
       updateAnnouncementOpen = false;
+      dictationAvailability = null;
+      dictationSpeechSuppressedMessageId = '';
       phase = 'login';
     }
   }
@@ -911,6 +952,11 @@
     workbenchSetting = null;
     restaurantGuidanceEnabled = false;
     workbenchPickerOpen = false;
+    dictationAvailability = null;
+    dictationActive = false;
+    dictationPhase = 'idle';
+    dictationElapsedSeconds = 0;
+    dictationSpeechSuppressedMessageId = '';
     resetSpeech();
     profileOpen = false;
     dialog = '';
@@ -932,6 +978,7 @@
     }
     accountPending = true;
     try {
+      if (dictationActive) await dictationControl?.cancel();
       await changePassword(currentPassword, newPassword);
       clearWorkspaceAndShowLogin();
     } catch (error) {
@@ -945,6 +992,7 @@
     accountError = '';
     accountPending = true;
     try {
+      if (dictationActive) await dictationControl?.cancel();
       await logoutAll();
       clearWorkspaceAndShowLogin();
     } catch (error) {
@@ -955,8 +1003,17 @@
   }
 
   async function openDialog(
-    value: 'appearance' | 'security' | 'service' | 'speech' | 'speech-admin' | 'usage' | 'about'
+    value:
+      | 'appearance'
+      | 'security'
+      | 'service'
+      | 'speech'
+      | 'speech-admin'
+      | 'dictation-admin'
+      | 'usage'
+      | 'about'
   ) {
+    if (dictationActive) await dictationControl?.cancel();
     profileOpen = false;
     accountError = '';
     dialog = value;
@@ -981,6 +1038,10 @@
       return;
     }
     if (id !== activeConversationId) speechController.stop();
+    if (id !== activeConversationId && dictationActive) {
+      await dictationControl?.cancel();
+      persistDraft();
+    }
     activeConversationId = id;
     const conversation = conversations.find((item) => item.id === id);
     const conversationModel = models.find((item) => item.id === conversation?.model);
@@ -1053,6 +1114,10 @@
 
   async function startNewChat() {
     if (generating || creatingConversation || !selectableModels.length) return;
+    if (dictationActive) {
+      await dictationControl?.cancel();
+      persistDraft();
+    }
     speechController.stop();
     const ownedConversation = ownsConversation(activeConversation) ? activeConversation : null;
     const requestedModel = ownedConversation?.model || draftModel;
@@ -1098,6 +1163,10 @@
 
   async function toggleArchiveView() {
     if (generating) return;
+    if (dictationActive) {
+      await dictationControl?.cancel();
+      persistDraft();
+    }
     showArchived = !showArchived;
     profileOpen = false;
     workspaceError = '';
@@ -1113,7 +1182,10 @@
 
   async function setArchived(event: Event, conversation: Conversation, archived: boolean) {
     event.stopPropagation();
-    if (generating && conversation.id === activeConversationId) return;
+    if (
+      (generating || dictationActive) &&
+      conversation.id === activeConversationId
+    ) return;
     try {
       await updateConversation(conversation.id, { archived });
       conversations = conversations.filter((item) => item.id !== conversation.id);
@@ -1144,7 +1216,10 @@
 
   async function removeConversation(event: Event, conversation: Conversation) {
     event.stopPropagation();
-    if (generating && conversation.id === activeConversationId) return;
+    if (
+      (generating || dictationActive) &&
+      conversation.id === activeConversationId
+    ) return;
     if (!confirm(t(
       `永久删除“${conversation.title}”及其全部消息和图片？此操作无法恢复。`,
       `Permanently delete “${conversation.title}” and all of its messages and images? This cannot be undone.`
@@ -1187,6 +1262,7 @@
     modelPickerOpen = false;
     effortPickerOpen = false;
     workbenchPickerOpen = false;
+    if (dictationActive) return;
     if (!activeConversation) {
       setDraftModel(model);
       await tick();
@@ -1214,14 +1290,19 @@
   }
 
   function toggleModelPicker() {
-    if (generating || activeConversationReadOnly || !selectableModels.length) return;
+    if (
+      generating ||
+      dictationActive ||
+      activeConversationReadOnly ||
+      !selectableModels.length
+    ) return;
     modelPickerOpen = !modelPickerOpen;
     effortPickerOpen = false;
     workbenchPickerOpen = false;
   }
 
   function toggleEffortPicker() {
-    if (generating || activeConversationReadOnly || !activeModel) return;
+    if (generating || dictationActive || activeConversationReadOnly || !activeModel) return;
     effortPickerOpen = !effortPickerOpen;
     modelPickerOpen = false;
     workbenchPickerOpen = false;
@@ -1230,6 +1311,7 @@
   function toggleWorkbenchPicker() {
     if (
       generating ||
+      dictationActive ||
       activeConversationReadOnly ||
       !restaurantGuidanceEnabled ||
       workbenchUpdating
@@ -1242,6 +1324,7 @@
   async function selectWorkbench(next: 'general' | 'restaurant') {
     if (
       generating ||
+      dictationActive ||
       activeConversationReadOnly ||
       workbenchUpdating ||
       next === workbenchSetting?.effective
@@ -1266,7 +1349,11 @@
   }
 
   async function selectEffort(reasoningEffort: string) {
-    if (generating || !supportsEffort(activeModel, reasoningEffort)) return;
+    if (
+      generating ||
+      dictationActive ||
+      !supportsEffort(activeModel, reasoningEffort)
+    ) return;
     effortPickerOpen = false;
     if (!activeConversation) {
       draftReasoningEffort = reasoningEffort;
@@ -1281,7 +1368,7 @@
   }
 
   function toggleImageGeneration() {
-    if (generating || activeConversationReadOnly) return;
+    if (generating || dictationActive || activeConversationReadOnly) return;
     if (!activeModel?.imageGenerationMode) {
       workspaceError = localizedAPIError(
         'model_image_generation_unsupported',
@@ -1321,7 +1408,7 @@
   async function addFiles(files: File[]) {
     if (!files.length) return;
     if (activeConversationReadOnly) return;
-    if (generating || uploading) {
+    if (generating || uploading || dictationActive) {
       workspaceError = t(
         '请等待当前操作完成后再添加图片。',
         'Wait for the current operation to finish before adding images.'
@@ -1421,6 +1508,7 @@
   }
 
   async function removeUpload(attachment: Attachment) {
+    if (dictationActive) return;
     uploads = uploads.filter((item) => item.id !== attachment.id);
     try {
       await deleteAttachment(attachment.id);
@@ -1478,6 +1566,58 @@
       event.preventDefault();
       void send();
     }
+  }
+
+  function handleDictationStart() {
+    workspaceError = '';
+    dictationSpeechSuppressedMessageId = activeAssistantId;
+    speechController.stop();
+    modelPickerOpen = false;
+    effortPickerOpen = false;
+    workbenchPickerOpen = false;
+  }
+
+  function handleDictationText(
+    event: CustomEvent<{ value: string; transcript: string; final: boolean }>
+  ) {
+    text = event.detail.value;
+    scheduleDraftSave();
+    void tick().then(resizeComposer);
+  }
+
+  async function finishDictationUI() {
+    persistDraft();
+    await tick();
+    resizeComposer();
+    textareaElement?.focus();
+  }
+
+  function handleDictationError(
+    event: CustomEvent<{ code: string; message: string }>
+  ) {
+    workspaceError = event.detail.message;
+    void finishDictationUI();
+    if (event.detail.code === 'dictation_disabled') {
+      void refreshDictationAvailability();
+    }
+  }
+
+  function dictationStatusLabel(): string {
+    if (dictationPhase === 'requesting') {
+      return t('正在请求麦克风权限…', 'Requesting microphone access…');
+    }
+    if (dictationPhase === 'connecting') {
+      return t('正在连接豆包语音识别…', 'Connecting to Doubao transcription…');
+    }
+    if (dictationPhase === 'finishing') {
+      return t('正在生成最终转写…', 'Finalizing the transcript…');
+    }
+    return t('正在听，请自然说话', 'Listening — speak naturally');
+  }
+
+  function formatDictationElapsed(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
   }
 
   function beginGenerationClock(
@@ -1801,6 +1941,7 @@
     const outgoingGenerateImage = generateImage;
     if (
       generating ||
+      dictationActive ||
       uploading ||
       activeConversationReadOnly ||
       (!outgoingText && outgoingUploads.length === 0)
@@ -1869,6 +2010,7 @@
   async function submitGuidance(submission: GuidanceSubmission) {
     if (
       generating ||
+      dictationActive ||
       !activeConversation ||
       activeConversationReadOnly ||
       !restaurantWorkbench
@@ -1908,7 +2050,12 @@
   }
 
   async function regenerate(message: Message, bypassGuidance = false) {
-    if (generating || !activeConversation || activeConversationReadOnly) return;
+    if (
+      generating ||
+      dictationActive ||
+      !activeConversation ||
+      activeConversationReadOnly
+    ) return;
     const conversationId = activeConversation.id;
     const watchVersion = ++responseWatchVersion;
     const requestId = crypto.randomUUID();
@@ -1946,7 +2093,7 @@
   }
 
   async function beginMessageEdit(message: Message) {
-    if (generating || activeConversationReadOnly) return;
+    if (generating || dictationActive || activeConversationReadOnly) return;
     editingMessageId = message.id;
     editingMessageText = messageText(message);
     await tick();
@@ -1972,7 +2119,13 @@
 
   async function submitMessageEdit(message: Message) {
     const newText = editingMessageText.trim();
-    if (!newText || generating || !activeConversation || activeConversationReadOnly) return;
+    if (
+      !newText ||
+      generating ||
+      dictationActive ||
+      !activeConversation ||
+      activeConversationReadOnly
+    ) return;
     if (newText === messageText(message).trim()) {
       cancelMessageEdit();
       return;
@@ -2285,8 +2438,8 @@
     if (!user) return '';
     const release =
       restaurantGuidanceEnabled && workbenchSetting?.initial === 'restaurant'
-        ? 'restaurant-v1'
-        : 'ux-v1';
+        ? 'restaurant-voice-v1'
+        : 'voice-v1';
     return `personal-chat-update-${release}:${user.id}`;
   }
 
@@ -2302,7 +2455,8 @@
     openUpdateAnnouncementIfNeeded();
   }
 
-  function openOnboarding() {
+  async function openOnboarding() {
+    if (dictationActive) await dictationControl?.cancel();
     profileOpen = false;
     sidebarOpen = false;
     workbenchPickerOpen = false;
@@ -2321,7 +2475,8 @@
     if (!updateAnnouncementOpen) textareaElement?.focus();
   }
 
-  function openUpdateAnnouncement() {
+  async function openUpdateAnnouncement() {
+    if (dictationActive) await dictationControl?.cancel();
     profileOpen = false;
     sidebarOpen = false;
     workbenchPickerOpen = false;
@@ -2903,6 +3058,7 @@
             {#if user?.role === 'admin'}
               <button on:click={() => openDialog('service')}><Icon name="sparkles" size={17} />{t('推理摘要设置', 'Reasoning summary settings')}</button>
               <button on:click={() => openDialog('speech-admin')}><Icon name="speaker" size={17} />{t('语音服务设置', 'Speech service settings')}</button>
+              <button on:click={() => openDialog('dictation-admin')}><Icon name="microphone" size={17} />{t('语音输入设置', 'Voice input settings')}</button>
             {/if}
             <button on:click={() => openDialog('security')}><Icon name="shield" size={17} />{t('账户与安全', 'Account & security')}</button>
             <button on:click={() => openDialog('about')}><Icon name="info" size={17} />{t('关于', 'About')}</button>
@@ -2919,7 +3075,11 @@
       on:dragleave={chatDragLeave}
       on:drop={chatDrop}
     >
-      {#if dragActive && !activeConversationReadOnly && !generating && !uploading}
+      {#if dragActive &&
+        !activeConversationReadOnly &&
+        !generating &&
+        !uploading &&
+        !dictationActive}
         <div class="drop-overlay" aria-hidden="true">
           <div class="drop-overlay-card">
             <Icon name="image-plus" size={22} />
@@ -2957,7 +3117,10 @@
                 aria-haspopup="listbox"
                 aria-expanded={workbenchPickerOpen}
                 on:click={toggleWorkbenchPicker}
-                disabled={generating || activeConversationReadOnly || workbenchUpdating}
+                disabled={generating ||
+                  dictationActive ||
+                  activeConversationReadOnly ||
+                  workbenchUpdating}
               >
                 <Icon name={restaurantWorkbench ? 'plan' : 'chat'} size={15} />
                 <span>
@@ -3028,7 +3191,10 @@
               aria-haspopup="listbox"
               aria-expanded={modelPickerOpen}
               on:click={toggleModelPicker}
-              disabled={generating || activeConversationReadOnly || !selectableModels.length}
+              disabled={generating ||
+                dictationActive ||
+                activeConversationReadOnly ||
+                !selectableModels.length}
             >
               <span>{modelDisplayName(activeModel) || activeConversation?.model || draftModel || t('选择模式', 'Select mode')}</span>
               <Icon name="chevron-down" size={15} />
@@ -3268,18 +3434,21 @@
                 canRegenerate={message.role === 'assistant' &&
                   message.id === messages.at(-1)?.id &&
                   !generating &&
+                  !dictationActive &&
                   !activeConversationReadOnly}
                 canEdit={message.role === 'user' &&
                   message.id === lastUserMessageId &&
                   message.parts.some((part) => part.type === 'text' && part.text) &&
                   !generating &&
+                  !dictationActive &&
                   !activeConversationReadOnly}
                 userId={user?.id || ''}
                 guidanceCurrent={restaurantWorkbench &&
                   !activeConversationReadOnly &&
                   message.id === messages.at(-1)?.id &&
                   (message.status === 'completed' || message.status === 'error')}
-                guidanceDisabled={generating}
+                guidanceDisabled={generating || dictationActive}
+                speechPlaybackBlocked={dictationActive}
                 guidanceDraftEnabled={!viewingOtherUser && !showArchived}
                 {submittedGuidanceAnswers}
                 on:regenerate={(event) => regenerate(event.detail.message)}
@@ -3362,7 +3531,12 @@
           </div>
         {/if}
         <SpeechPlayer locale={$locale} />
-        <div class:busy={generating} class:image-mode={generateImage} class="composer">
+        <div
+          class:busy={generating}
+          class:dictating={dictationActive}
+          class:image-mode={generateImage}
+          class="composer"
+        >
           {#if uploads.length}
             <div class="upload-strip">
               {#each uploads as attachment (attachment.id)}
@@ -3371,9 +3545,30 @@
                   <button
                     aria-label={t('移除图片', 'Remove image')}
                     on:click={() => removeUpload(attachment)}
+                    disabled={dictationActive}
                   ><Icon name="close" size={14} /></button>
                 </div>
               {/each}
+            </div>
+          {/if}
+          {#if dictationActive}
+            <div class="dictation-status" role="status" aria-live="polite">
+              <span class:listening={dictationPhase === 'listening'} class="dictation-live-dot">
+                <Icon name="microphone" size={15} />
+              </span>
+              <span class="dictation-status-copy">
+                <strong>{dictationStatusLabel()}</strong>
+                <small>
+                  {formatDictationElapsed(dictationElapsedSeconds)}
+                  · {t('转写仅放入输入框，不会自动发送', 'Transcript stays in the composer until you send it')}
+                </small>
+              </span>
+              <button
+                type="button"
+                on:click={() => dictationControl?.cancel()}
+              >
+                {t('取消', 'Cancel')}
+              </button>
             </div>
           {/if}
           <textarea
@@ -3382,7 +3577,9 @@
             on:input={composerInput}
             on:keydown={composerKeydown}
             on:paste={composerPaste}
-            placeholder={viewingOtherUser
+            placeholder={dictationActive
+              ? t('正在接收语音转写…', 'Receiving voice transcription…')
+              : viewingOtherUser
               ? t('管理员查看其他用户会话时为只读', 'Other users’ chats are read-only for administrators')
               : showArchived
               ? t('临时留档对话为只读', 'Retained chats are read-only')
@@ -3393,7 +3590,7 @@
             aria-label={generateImage
               ? t('图片生成描述', 'Image generation prompt')
               : t('聊天消息', 'Chat message')}
-            disabled={generating || activeConversationReadOnly}
+            disabled={generating || dictationActive || activeConversationReadOnly}
           ></textarea>
           <div class="composer-toolbar">
             <div>
@@ -3413,6 +3610,7 @@
                   : t('上传图片（单张不超过 12 MiB）', 'Upload images (up to 12 MiB each)')}
                 on:click={() => fileElement?.click()}
                 disabled={generating ||
+                  dictationActive ||
                   activeConversationReadOnly ||
                   uploading ||
                   generateImage ||
@@ -3427,6 +3625,24 @@
                 {/if}
                 <span>{t('上传图片', 'Upload image')}</span>
               </button>
+              <DictationControl
+                bind:this={dictationControl}
+                bind:active={dictationActive}
+                bind:phase={dictationPhase}
+                bind:elapsedSeconds={dictationElapsedSeconds}
+                locale={$locale}
+                availability={dictationAvailability}
+                draft={text}
+                sessionKey={`${user?.id || ''}:${activeConversationId || 'new'}`}
+                disabled={generating ||
+                  uploading ||
+                  activeConversationReadOnly}
+                on:start={handleDictationStart}
+                on:text={handleDictationText}
+                on:completed={finishDictationUI}
+                on:cancelled={finishDictationUI}
+                on:error={handleDictationError}
+              />
               <button
                 class="toolbar-button image-mode-button"
                 class:active={generateImage}
@@ -3441,6 +3657,7 @@
                       )}
                 on:click={toggleImageGeneration}
                 disabled={generating ||
+                  dictationActive ||
                   activeConversationReadOnly ||
                   !activeModel?.imageGenerationMode ||
                   uploads.length > 0}
@@ -3468,6 +3685,7 @@
                 aria-label={t('发送', 'Send')}
                 on:click={send}
                 disabled={activeConversationReadOnly ||
+                  dictationActive ||
                   uploading ||
                   (!text.trim() && uploads.length === 0)}
               ><Icon name="send" size={18} /></button>
@@ -3502,7 +3720,9 @@
         on:click={() => (dialog = '')}
       ></button>
       <div
-        class:speech-dialog={dialog === 'speech' || dialog === 'speech-admin'}
+        class:speech-dialog={dialog === 'speech' ||
+          dialog === 'speech-admin' ||
+          dialog === 'dictation-admin'}
         class="account-dialog"
         bind:this={dialogElement}
         role="dialog"
@@ -3674,6 +3894,13 @@
             locale={$locale}
             on:changed={() => {
               if (user) void refreshSpeechPreference();
+            }}
+          />
+        {:else if dialog === 'dictation-admin'}
+          <DictationAdminSettings
+            locale={$locale}
+            on:changed={() => {
+              void refreshDictationAvailability();
             }}
           />
         {:else}
