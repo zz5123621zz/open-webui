@@ -95,10 +95,17 @@
   function detectSupport() {
     const AudioContextConstructor =
       window.AudioContext || (window as WebkitWindow).webkitAudioContext;
+    const mediaDevices = Reflect.get(navigator, 'mediaDevices') as
+      | MediaDevices
+      | undefined;
+    const getUserMedia = mediaDevices
+      ? Reflect.get(mediaDevices, 'getUserMedia')
+      : undefined;
+    const WebSocketConstructor = Reflect.get(window, 'WebSocket');
     supported = Boolean(
       window.isSecureContext &&
-        navigator.mediaDevices?.getUserMedia &&
-        window.WebSocket &&
+        typeof getUserMedia === 'function' &&
+        typeof WebSocketConstructor === 'function' &&
         AudioContextConstructor
     );
     if (supported) {
