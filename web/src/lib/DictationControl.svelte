@@ -159,7 +159,13 @@
         throw new Error('audio_context_unavailable');
       }
       audioContext = new AudioContextConstructor({ latencyHint: 'interactive' });
-      await audioContext.resume();
+      // Start resuming while the pointer/click still carries user activation,
+      // but do not let a browser with a pending autoplay transition block the
+      // microphone permission request. The started event verifies the context
+      // is running before connecting the recorder graph.
+      void audioContext.resume().catch(() => {
+        // A second, awaited attempt runs once the provider session is ready.
+      });
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,

@@ -97,8 +97,8 @@
       }
     ],
     note: [
-      '原始麦克风音频不会保存，转写也不会自动发送。Safari 与桌面 Edge 正式支持；微信浏览器若无法授权麦克风，请改用 Safari 打开。',
-      'Raw microphone audio is not stored, and transcripts are never sent automatically. Safari and desktop Edge are supported; if WeChat cannot grant microphone access, open the site in Safari.'
+      '原始麦克风音频不会保存，转写也不会自动发送。Safari 与桌面 Edge 正式支持；微信浏览器若无法授权麦克风，请改用 Safari 打开。搜索仍只覆盖活跃对话，临时留档中的对话暂不参与。',
+      'Raw microphone audio is not stored, and transcripts are never sent automatically. Safari and desktop Edge are supported; if WeChat cannot grant microphone access, open the site in Safari. Search still covers active chats only; retained chats are not included.'
     ]
   };
 
