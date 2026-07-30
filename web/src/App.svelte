@@ -1606,14 +1606,14 @@
     }
   }
 
-  function dictationStatusLabel(): string {
-    if (dictationPhase === 'requesting') {
+  function dictationStatusLabel(currentPhase: DictationPhase): string {
+    if (currentPhase === 'requesting') {
       return t('正在请求麦克风权限…', 'Requesting microphone access…');
     }
-    if (dictationPhase === 'connecting') {
+    if (currentPhase === 'connecting') {
       return t('正在连接豆包语音识别…', 'Connecting to Doubao transcription…');
     }
-    if (dictationPhase === 'finishing') {
+    if (currentPhase === 'finishing') {
       return t('正在生成最终转写…', 'Finalizing the transcript…');
     }
     return t('正在听，请自然说话', 'Listening — speak naturally');
@@ -3561,7 +3561,7 @@
                 <Icon name="microphone" size={15} />
               </span>
               <span class="dictation-status-copy">
-                <strong>{dictationStatusLabel()}</strong>
+                <strong>{dictationStatusLabel(dictationPhase)}</strong>
                 <small>
                   {formatDictationElapsed(dictationElapsedSeconds)}
                   · {t('转写仅放入输入框，不会自动发送', 'Transcript stays in the composer until you send it')}
