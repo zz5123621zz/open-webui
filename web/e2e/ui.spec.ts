@@ -655,7 +655,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.getByLabel('聊天消息').fill('请生成一张未来城市的概念图');
   await page.locator('.image-mode-button').click();
   await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.conversation-item')).toHaveCount(1);
   await expect(page.locator('.context-status')).toContainText('正在发送请求');
   await expect(page.locator('.context-status')).toContainText('1 s', { timeout: 2500 });
@@ -1087,7 +1087,7 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
   await page.waitForTimeout(250);
   expect(speechSessions).toBe(1);
   expect(submittedTexts).toHaveLength(0);
-  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.getByText('已收到你确认后的语音转写。')).toBeVisible();
   expect(submittedTexts).toEqual(['原草稿\n帮我设计十款特色煨汤']);
 
