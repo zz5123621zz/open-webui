@@ -1585,6 +1585,10 @@
     void tick().then(resizeComposer);
   }
 
+  function handleDictationPhase(event: CustomEvent<DictationPhase>) {
+    dictationPhase = event.detail;
+  }
+
   async function finishDictationUI() {
     persistDraft();
     await tick();
@@ -3628,7 +3632,6 @@
               <DictationControl
                 bind:this={dictationControl}
                 bind:active={dictationActive}
-                bind:phase={dictationPhase}
                 bind:elapsedSeconds={dictationElapsedSeconds}
                 locale={$locale}
                 availability={dictationAvailability}
@@ -3638,6 +3641,7 @@
                   uploading ||
                   activeConversationReadOnly}
                 on:start={handleDictationStart}
+                on:phasechange={handleDictationPhase}
                 on:text={handleDictationText}
                 on:completed={finishDictationUI}
                 on:cancelled={finishDictationUI}

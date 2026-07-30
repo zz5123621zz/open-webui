@@ -18,6 +18,7 @@
     text: { value: string; transcript: string; final: boolean };
     cancelled: void;
     completed: void;
+    phasechange: DictationPhase;
     error: { code: string; message: string };
   }>();
 
@@ -144,6 +145,11 @@
     return `${protocol}//${window.location.host}/api/v1/dictation/sessions`;
   }
 
+  function setPhase(next: DictationPhase) {
+    phase = next;
+    dispatch('phasechange', next);
+  }
+
   async function begin() {
     if (active || buttonDisabled) return;
     const currentRun = ++runID;
@@ -151,7 +157,7 @@
     originalDraft = draft;
     latestTranscript = '';
     active = true;
-    phase = 'requesting';
+    setPhase('requesting');
     elapsedSeconds = 0;
     dispatch('start');
     try {
@@ -180,7 +186,7 @@
       if (currentRun !== runID || terminal) return;
       await prepareRecorder();
       if (currentRun !== runID || terminal) return;
-      phase = 'connecting';
+      setPhase('connecting');
       socket = new WebSocket(websocketURL());
       socket.binaryType = 'arraybuffer';
       socket.onmessage = (event) => {
@@ -337,7 +343,7 @@
         );
         break;
       case 'dictation.connecting':
-        phase = 'connecting';
+        setPhase('connecting');
         break;
       case 'dictation.started': {
         window.clearTimeout(connectionTimer);
@@ -359,7 +365,7 @@
           );
           return;
         }
-        phase = 'listening';
+        setPhase('listening');
         recordingStartedAt = Date.now();
         updateElapsed();
         elapsedTimer = window.setInterval(updateElapsed, 250);
@@ -373,7 +379,7 @@
         break;
       case 'dictation.stopping':
         if (phase === 'listening') {
-          phase = 'finishing';
+          setPhase('finishing');
           stopElapsedTimers();
           await haltRecorder(false);
         }
@@ -470,7 +476,7 @@
     }
     if (phase !== 'listening') return finishingPromise || undefined;
     if (finishingPromise) return finishingPromise;
-    phase = 'finishing';
+    setPhase('finishing');
     stopElapsedTimers();
     finishingPromise = (async () => {
       await haltRecorder(!quick);
@@ -543,7 +549,7 @@
         }
       }
     }
-    phase = 'idle';
+    setPhase('idle');
     active = false;
     pointerSession = false;
     holdGesture = false;
