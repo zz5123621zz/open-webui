@@ -790,20 +790,6 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
     localStorage.setItem('personal-chat-font-size', 'large');
     if (darkMode) localStorage.setItem('personal-chat-theme', 'dark');
   }, testInfo.project.name === 'desktop');
-  await page.addInitScript(() => {
-    // Keep the interaction test independent of a runner audio device. The
-    // destination owns a real browser MediaStream audio track, so the
-    // production Web Audio graph and recorder lifecycle still run unchanged.
-    const contexts: AudioContext[] = [];
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
-      configurable: true,
-      value: async () => {
-        const context = new AudioContext();
-        contexts.push(context);
-        return context.createMediaStreamDestination().stream;
-      }
-    });
-  });
   await page.routeWebSocket('**/api/v1/speech/sessions', (socket) => {
     speechSessions += 1;
     setTimeout(() => {
@@ -1022,6 +1008,21 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
   });
 
   await page.goto('/');
+  await page.evaluate(() => {
+    // Keep the interaction test independent of a runner audio device. Install
+    // this after navigation so mediaDevices belongs to the secure app origin.
+    // The destination owns a real browser MediaStream audio track, so the
+    // production Web Audio graph and recorder lifecycle still run unchanged.
+    const contexts: AudioContext[] = [];
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: async () => {
+        const context = new AudioContext();
+        contexts.push(context);
+        return context.createMediaStreamDestination().stream;
+      }
+    });
+  });
   await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: '打开侧边栏' }).click();
