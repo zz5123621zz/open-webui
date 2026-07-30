@@ -298,6 +298,52 @@ func TestVolcengineProviderRejectsInvalidStartupAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestVolcengineProviderAcceptsSequenceLessStartupAcknowledgement(
+	t *testing.T,
+) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(*http.Request) bool { return true },
+	}
+	asrServer := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		if _, err := readVolcDictationClientTestMessage(connection); err != nil {
+			return
+		}
+		_ = connection.WriteMessage(
+			websocket.BinaryMessage,
+			marshalVolcServerTestFrame(
+				t,
+				volcMsgFullServerResponse,
+				volcFlagNoSequence,
+				0,
+				0,
+				[]byte(`{"result":{"text":"","utterances":[]}}`),
+				false,
+			),
+		)
+	}))
+	defer asrServer.Close()
+
+	provider := newVolcengineTestProvider(t, asrServer.URL)
+	session, err := provider.Open(
+		context.Background(),
+		SessionConfig{UserID: "safe-user-id"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVolcengineProviderClassifiesHandshakeFailures(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string

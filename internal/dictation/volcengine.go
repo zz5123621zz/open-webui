@@ -121,9 +121,11 @@ func (p *VolcengineProvider) Open(
 		_ = session.Close()
 		return nil, session.providerError("startup", message)
 	}
+	startupAcknowledged := message.Flag == volcFlagNoSequence ||
+		(message.Flag == volcFlagPositiveSequence &&
+			message.Sequence == 1)
 	if message.MessageType != volcMsgFullServerResponse ||
-		message.Flag&volcFlagPositiveSequence == 0 ||
-		message.Sequence != 1 {
+		!startupAcknowledged {
 		_ = session.Close()
 		return nil, errors.New(
 			"Volcengine dictation returned an invalid startup acknowledgement",
@@ -134,6 +136,19 @@ func (p *VolcengineProvider) Open(
 		return nil, errors.New(
 			"Volcengine dictation ended during startup",
 		)
+	}
+	if len(message.Payload) > 0 {
+		var payload volcengineResponse
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf(
+				"decode Volcengine dictation startup response: %w", err,
+			)
+		}
+		if strings.TrimSpace(payload.Error) != "" {
+			_ = session.Close()
+			return nil, session.providerPayloadError(payload.Error)
+		}
 	}
 	_ = connection.SetReadDeadline(time.Time{})
 	return session, nil
