@@ -93,6 +93,12 @@ sudo docker compose \
 TTS 并发。管理员头像菜单中的“语音输入设置”只控制新会话，关闭不会中止已经
 开始的录音。
 
+生产 Nginx 必须为 `/api/v1/dictation/sessions` 配置独立的精确匹配
+WebSocket location，向应用转发 `Upgrade` 和 `Connection: upgrade`。
+普通 HTTP/SSE location 仍应清空 `Connection`，不得因此改变 CPA 限流或
+应用并发设置。仓库中的 `deploy/check-nginx-websocket-routes.py` 会在 CI
+中验证这条边界。
+
 ## 安全与浏览器行为
 
 - `Permissions-Policy` 只允许本站使用麦克风；
