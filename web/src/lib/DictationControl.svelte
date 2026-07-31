@@ -23,6 +23,10 @@
   }>();
 
   const workletStartupTimeoutMs = 2000;
+  const connectionTimeoutMs = 15000;
+  const pcmBytesPerSecond = 16000 * 2;
+  const maxEarlyAudioBytes = pcmBytesPerSecond * (connectionTimeoutMs / 1000);
+  const maxSocketBufferedBytes = 512 * 1024;
 
   type AudioContextFactory = new (options?: AudioContextOptions) => AudioContext;
   type WebkitWindow = Window & { webkitAudioContext?: AudioContextFactory };
@@ -43,8 +47,13 @@
   let flushResolve: (() => void) | null = null;
   let originalDraft = '';
   let latestTranscript = '';
+  let earlyAudio: ArrayBuffer[] = [];
+  let earlyAudioBytes = 0;
   let runID = 0;
   let terminal = true;
+  let captureStarted = false;
+  let providerStarted = false;
+  let stopRequested = false;
   let recordingStartedAt = 0;
   let elapsedTimer: number | undefined;
   let durationTimer: number | undefined;
@@ -156,6 +165,11 @@
     terminal = false;
     originalDraft = draft;
     latestTranscript = '';
+    earlyAudio = [];
+    earlyAudioBytes = 0;
+    captureStarted = false;
+    providerStarted = false;
+    stopRequested = false;
     active = true;
     setPhase('requesting');
     elapsedSeconds = 0;
@@ -169,12 +183,12 @@
       audioContext = new AudioContextConstructor({ latencyHint: 'interactive' });
       // Start resuming while the pointer/click still carries user activation,
       // but do not let a browser with a pending autoplay transition block the
-      // microphone permission request. The started event verifies the context
-      // is running before connecting the recorder graph.
+      // microphone permission request. A second, awaited attempt runs as soon
+      // as the microphone and recorder graph are ready.
       void audioContext.resume().catch(() => {
-        // A second, awaited attempt runs once the provider session is ready.
+        // The awaited attempt below handles browsers that suspend initially.
       });
-      stream = await navigator.mediaDevices.getUserMedia({
+      const requestedStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -183,10 +197,18 @@
         },
         video: false
       });
-      if (currentRun !== runID || terminal) return;
+      if (currentRun !== runID || terminal) {
+        requestedStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      stream = requestedStream;
       await prepareRecorder();
       if (currentRun !== runID || terminal) return;
+      await audioContext?.resume();
+      startRecorder();
+      captureStarted = true;
       setPhase('connecting');
+      startCaptureClock(currentRun, availability?.maxDurationSeconds || 120);
       socket = new WebSocket(websocketURL());
       socket.binaryType = 'arraybuffer';
       socket.onmessage = (event) => {
@@ -217,7 +239,7 @@
             )
           );
         }
-      }, 15000);
+      }, connectionTimeoutMs);
     } catch (value) {
       if (currentRun !== runID || terminal) return;
       const error = value as DOMException;
@@ -343,7 +365,7 @@
         );
         break;
       case 'dictation.connecting':
-        setPhase('connecting');
+        if (!stopRequested) setPhase('connecting');
         break;
       case 'dictation.started': {
         window.clearTimeout(connectionTimer);
@@ -352,26 +374,18 @@
           Number.isFinite(serverMaximum) && serverMaximum > 0
             ? serverMaximum
             : availability?.maxDurationSeconds || 120;
-        try {
-          await audioContext?.resume();
-          startRecorder();
-        } catch {
-          await fail(
-            'dictation_recorder_failed',
-            t(
-              '浏览器无法处理麦克风音频，请刷新后重试。',
-              'The browser could not process microphone audio. Reload and try again.'
-            )
-          );
+        if (stopRequested && finishingPromise) {
+          await finishingPromise;
+          if (currentRun !== runID || terminal) return;
+        }
+        providerStarted = true;
+        if (!flushEarlyAudio()) return;
+        if (stopRequested) {
+          sendFinish();
           return;
         }
         setPhase('listening');
-        recordingStartedAt = Date.now();
-        updateElapsed();
-        elapsedTimer = window.setInterval(updateElapsed, 250);
-        durationTimer = window.setTimeout(() => {
-          if (currentRun === runID && phase === 'listening') void stop();
-        }, maximum * 1000);
+        scheduleDurationLimit(currentRun, maximum);
         break;
       }
       case 'dictation.transcript':
@@ -410,6 +424,30 @@
       : 0;
   }
 
+  function startCaptureClock(currentRun: number, maximum: number) {
+    recordingStartedAt = Date.now();
+    updateElapsed();
+    elapsedTimer = window.setInterval(updateElapsed, 250);
+    scheduleDurationLimit(currentRun, maximum);
+  }
+
+  function scheduleDurationLimit(currentRun: number, maximum: number) {
+    window.clearTimeout(durationTimer);
+    const elapsed = recordingStartedAt
+      ? Math.max(0, Date.now() - recordingStartedAt)
+      : 0;
+    const remaining = Math.max(0, maximum * 1000 - elapsed);
+    durationTimer = window.setTimeout(() => {
+      if (
+        currentRun === runID &&
+        !terminal &&
+        ['connecting', 'listening'].includes(phase)
+      ) {
+        void stop();
+      }
+    }, remaining);
+  }
+
   function applyTranscript(transcript: string, final: boolean) {
     transcript = transcript.trim();
     if (transcript) latestTranscript = transcript;
@@ -429,14 +467,48 @@
   }
 
   function sendPCM(buffer: ArrayBuffer) {
-    if (
-      !active ||
-      terminal ||
-      !socket ||
-      socket.readyState !== WebSocket.OPEN ||
-      !['listening', 'finishing'].includes(phase)
-    ) return;
-    if (socket.bufferedAmount > 512 * 1024) {
+    if (!active || terminal || !captureStarted) return;
+    if (!providerStarted) {
+      if (earlyAudioBytes + buffer.byteLength > maxEarlyAudioBytes) {
+        void fail(
+          'dictation_connection_timeout',
+          t(
+            '连接语音识别服务时间过长，已停止录音，请稍后重试。',
+            'Connecting to speech recognition took too long. Recording stopped; try again.'
+          )
+        );
+        return;
+      }
+      earlyAudio.push(buffer);
+      earlyAudioBytes += buffer.byteLength;
+      return;
+    }
+    if (!['listening', 'finishing'].includes(phase)) return;
+    sendSocketPCM(buffer);
+  }
+
+  function flushEarlyAudio(): boolean {
+    const buffered = earlyAudio;
+    earlyAudio = [];
+    earlyAudioBytes = 0;
+    for (const buffer of buffered) {
+      if (!sendSocketPCM(buffer)) return false;
+    }
+    return true;
+  }
+
+  function sendSocketPCM(buffer: ArrayBuffer): boolean {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      void fail(
+        'dictation_connection_closed',
+        t(
+          '语音识别连接已断开，已保留最后识别出的文字。',
+          'The transcription connection closed; the latest text was kept.'
+        )
+      );
+      return false;
+    }
+    if (socket.bufferedAmount > maxSocketBufferedBytes) {
       void fail(
         'dictation_network_slow',
         t(
@@ -444,9 +516,26 @@
           'The network could not keep up with microphone audio. Recording stopped and the latest text was kept.'
         )
       );
-      return;
+      return false;
     }
     socket.send(buffer);
+    return true;
+  }
+
+  function sendFinish() {
+    if (socket?.readyState === WebSocket.OPEN && !terminal) {
+      socket.send(JSON.stringify({ type: 'dictation.finish' }));
+      return;
+    }
+    if (!terminal) {
+      void fail(
+        'dictation_connection_closed',
+        t(
+          '语音识别连接已断开，已保留最后识别出的文字。',
+          'The transcription connection closed; the latest text was kept.'
+        )
+      );
+    }
   }
 
   function resamplePCM(samples: Float32Array, sourceRate: number): ArrayBuffer {
@@ -470,27 +559,20 @@
 
   export async function stop(quick = false) {
     if (!active || terminal) return;
-    if (phase === 'requesting' || phase === 'connecting') {
+    if (phase === 'requesting') {
       await cancel();
       return;
     }
-    if (phase !== 'listening') return finishingPromise || undefined;
+    if (!['connecting', 'listening'].includes(phase)) {
+      return finishingPromise || undefined;
+    }
     if (finishingPromise) return finishingPromise;
+    stopRequested = true;
     setPhase('finishing');
     stopElapsedTimers();
     finishingPromise = (async () => {
       await haltRecorder(!quick);
-      if (socket?.readyState === WebSocket.OPEN && !terminal) {
-        socket.send(JSON.stringify({ type: 'dictation.finish' }));
-      } else if (!terminal) {
-        await fail(
-          'dictation_connection_closed',
-          t(
-            '语音识别连接已断开，已保留最后识别出的文字。',
-            'The transcription connection closed; the latest text was kept.'
-          )
-        );
-      }
+      if (providerStarted) sendFinish();
     })();
     try {
       await finishingPromise;
@@ -533,6 +615,11 @@
     window.clearTimeout(connectionTimer);
     window.clearTimeout(holdTimer);
     await haltRecorder(false);
+    earlyAudio = [];
+    earlyAudioBytes = 0;
+    providerStarted = false;
+    stopRequested = false;
+    recordingStartedAt = 0;
     if (socket) {
       const current = socket;
       socket = null;
@@ -605,6 +692,7 @@
       }
     }
     audioContext = null;
+    captureStarted = false;
   }
 
   function stopElapsedTimers() {
@@ -716,7 +804,7 @@
   type="button"
   class="toolbar-button dictation-button"
   class:active
-  class:listening={phase === 'listening'}
+  class:listening={phase === 'connecting' || phase === 'listening'}
   aria-label={buttonTitle}
   aria-pressed={active}
   title={buttonTitle}
@@ -727,7 +815,7 @@
   on:click={handleClick}
   on:contextmenu|preventDefault
 >
-  <Icon name={phase === 'finishing' ? 'stop' : 'microphone'} size={16} />
+  <Icon name={active ? 'stop' : 'microphone'} size={16} />
   <span>
     {active
       ? phase === 'finishing'

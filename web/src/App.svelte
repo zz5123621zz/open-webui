@@ -1608,10 +1608,16 @@
 
   function dictationStatusLabel(currentPhase: DictationPhase): string {
     if (currentPhase === 'requesting') {
-      return t('正在请求麦克风权限…', 'Requesting microphone access…');
+      return t(
+        '请允许麦克风，允许后即可说话…',
+        'Allow microphone access, then start speaking…'
+      );
     }
     if (currentPhase === 'connecting') {
-      return t('正在连接豆包语音识别…', 'Connecting to Doubao transcription…');
+      return t(
+        '已开始收音，正在连接识别…可以直接说话',
+        'Recording now while transcription connects — start speaking'
+      );
     }
     if (currentPhase === 'finishing') {
       return t('正在生成最终转写…', 'Finalizing the transcript…');
@@ -3557,7 +3563,11 @@
           {/if}
           {#if dictationActive}
             <div class="dictation-status" role="status" aria-live="polite">
-              <span class:listening={dictationPhase === 'listening'} class="dictation-live-dot">
+              <span
+                class:listening={dictationPhase === 'connecting' ||
+                  dictationPhase === 'listening'}
+                class="dictation-live-dot"
+              >
                 <Icon name="microphone" size={15} />
               </span>
               <span class="dictation-status-copy">
@@ -3597,7 +3607,7 @@
             disabled={generating || dictationActive || activeConversationReadOnly}
           ></textarea>
           <div class="composer-toolbar">
-            <div>
+            <div class="composer-secondary-actions">
               <input
                 class="hidden-file"
                 bind:this={fileElement}
@@ -3629,24 +3639,6 @@
                 {/if}
                 <span>{t('上传图片', 'Upload image')}</span>
               </button>
-              <DictationControl
-                bind:this={dictationControl}
-                bind:active={dictationActive}
-                bind:elapsedSeconds={dictationElapsedSeconds}
-                locale={$locale}
-                availability={dictationAvailability}
-                draft={text}
-                sessionKey={`${user?.id || ''}:${activeConversationId || 'new'}`}
-                disabled={generating ||
-                  uploading ||
-                  activeConversationReadOnly}
-                on:start={handleDictationStart}
-                on:phasechange={handleDictationPhase}
-                on:text={handleDictationText}
-                on:completed={finishDictationUI}
-                on:cancelled={finishDictationUI}
-                on:error={handleDictationError}
-              />
               <button
                 class="toolbar-button image-mode-button"
                 class:active={generateImage}
@@ -3677,23 +3669,43 @@
                 <span class="capability-pill"><i></i>{t('可联网', 'Web enabled')}</span>
               {/if}
             </div>
-            {#if generating}
-              <button
-                class="send-button stop"
-                aria-label={t('停止生成', 'Stop generating')}
-                on:click={stopGeneration}
-              ><Icon name="stop" size={17} /></button>
-            {:else}
-              <button
-                class="send-button"
-                aria-label={t('发送', 'Send')}
-                on:click={send}
-                disabled={activeConversationReadOnly ||
-                  dictationActive ||
+            <div class="composer-primary-actions">
+              <DictationControl
+                bind:this={dictationControl}
+                bind:active={dictationActive}
+                bind:elapsedSeconds={dictationElapsedSeconds}
+                locale={$locale}
+                availability={dictationAvailability}
+                draft={text}
+                sessionKey={`${user?.id || ''}:${activeConversationId || 'new'}`}
+                disabled={generating ||
                   uploading ||
-                  (!text.trim() && uploads.length === 0)}
-              ><Icon name="send" size={18} /></button>
-            {/if}
+                  activeConversationReadOnly}
+                on:start={handleDictationStart}
+                on:phasechange={handleDictationPhase}
+                on:text={handleDictationText}
+                on:completed={finishDictationUI}
+                on:cancelled={finishDictationUI}
+                on:error={handleDictationError}
+              />
+              {#if generating}
+                <button
+                  class="send-button stop"
+                  aria-label={t('停止生成', 'Stop generating')}
+                  on:click={stopGeneration}
+                ><Icon name="stop" size={17} /></button>
+              {:else}
+                <button
+                  class="send-button"
+                  aria-label={t('发送', 'Send')}
+                  on:click={send}
+                  disabled={activeConversationReadOnly ||
+                    dictationActive ||
+                    uploading ||
+                    (!text.trim() && uploads.length === 0)}
+                ><Icon name="send" size={18} /></button>
+              {/if}
+            </div>
           </div>
         </div>
         <p class="disclaimer">

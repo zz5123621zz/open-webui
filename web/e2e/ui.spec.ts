@@ -782,6 +782,8 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
   let speechSessions = 0;
   let speechCancels = 0;
   let dictationCancels = 0;
+  let firstSessionAudioFrames = 0;
+  let firstSessionAudioFramesBeforeStarted = 0;
 
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.addInitScript((darkMode) => {
@@ -822,6 +824,8 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
   await page.routeWebSocket('**/api/v1/dictation/sessions', (socket) => {
     dictationSessionNumber += 1;
     const sessionNumber = dictationSessionNumber;
+    let providerStarted = false;
+    let terminalMessageReceived = false;
     const partials: Record<number, string> = {
       1: '帮我设计十款',
       2: '这一段应该取消',
@@ -837,7 +841,13 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
       socket.send(JSON.stringify({ type: 'dictation.ready' }));
     }, 5);
     socket.onMessage((raw) => {
-      if (typeof raw !== 'string') return;
+      if (typeof raw !== 'string') {
+        if (sessionNumber === 1) {
+          firstSessionAudioFrames += 1;
+          if (!providerStarted) firstSessionAudioFramesBeforeStarted += 1;
+        }
+        return;
+      }
       const message = JSON.parse(raw) as {
         type: string;
         draft?: string;
@@ -845,40 +855,46 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
       if (message.type === 'dictation.start') {
         dictationDrafts.push(message.draft || '');
         socket.send(JSON.stringify({ type: 'dictation.connecting' }));
-        socket.send(JSON.stringify({
-          type: 'dictation.started',
-          maxDurationSeconds: 120,
-          audio: {
-            format: 'pcm',
-            sampleRate: 16000,
-            channels: 1,
-            bitDepth: 16
-          }
-        }));
         setTimeout(() => {
+          providerStarted = true;
           socket.send(JSON.stringify({
-            type: 'dictation.transcript',
-            text: partials[sessionNumber],
-            definite: false
+            type: 'dictation.started',
+            maxDurationSeconds: 120,
+            audio: {
+              format: 'pcm',
+              sampleRate: 16000,
+              channels: 1,
+              bitDepth: 16
+            }
           }));
-          if (sessionNumber === 3) {
-            setTimeout(() => {
-              socket.send(JSON.stringify({
-                type: 'dictation.error',
-                code: 'dictation_provider_busy',
-                message: 'provider busy'
-              }));
-            }, 40);
-          }
-        }, 120);
+          setTimeout(() => {
+            if (terminalMessageReceived) return;
+            socket.send(JSON.stringify({
+              type: 'dictation.transcript',
+              text: partials[sessionNumber],
+              definite: false
+            }));
+            if (sessionNumber === 3) {
+              setTimeout(() => {
+                socket.send(JSON.stringify({
+                  type: 'dictation.error',
+                  code: 'dictation_provider_busy',
+                  message: 'provider busy'
+                }));
+              }, 40);
+            }
+          }, 120);
+        }, sessionNumber === 1 || sessionNumber === 4 ? 700 : 0);
       }
       if (message.type === 'dictation.finish') {
+        terminalMessageReceived = true;
         socket.send(JSON.stringify({
           type: 'dictation.completed',
           text: finals[sessionNumber]
         }));
       }
       if (message.type === 'dictation.cancel') {
+        terminalMessageReceived = true;
         dictationCancels += 1;
         socket.send(JSON.stringify({ type: 'dictation.cancelled' }));
       }
@@ -1014,10 +1030,19 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
     // The destination owns a real browser MediaStream audio track, so the
     // production Web Audio graph and recorder lifecycle still run unchanged.
     const contexts: AudioContext[] = [];
+    const oscillators: OscillatorNode[] = [];
     const getUserMedia = async () => {
       const context = new AudioContext();
       contexts.push(context);
-      return context.createMediaStreamDestination().stream;
+      const destination = context.createMediaStreamDestination();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      gain.gain.value = 0.05;
+      oscillator.connect(gain);
+      gain.connect(destination);
+      oscillator.start();
+      oscillators.push(oscillator);
+      return destination.stream;
     };
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -1043,9 +1068,22 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
 
   const textarea = page.getByLabel('聊天消息');
   const microphone = page.locator('.dictation-button');
+  const sendButton = page.getByRole('button', { name: '发送', exact: true });
+  await expect(page.locator('.composer-primary-actions').locator('.dictation-button'))
+    .toBeVisible();
+  const idleMicrophoneBounds = await microphone.boundingBox();
+  const idleSendBounds = await sendButton.boundingBox();
+  expect(idleMicrophoneBounds).not.toBeNull();
+  expect(idleSendBounds).not.toBeNull();
+  expect(idleMicrophoneBounds!.x + idleMicrophoneBounds!.width)
+    .toBeLessThanOrEqual(idleSendBounds!.x);
   await textarea.fill('原草稿');
   await microphone.click();
+  await expect(page.locator('.dictation-status')).toContainText('已开始收音');
+  await page.waitForTimeout(300);
+  expect(firstSessionAudioFramesBeforeStarted).toBe(0);
   await expect(page.locator('.dictation-status')).toContainText('正在听');
+  await expect.poll(() => firstSessionAudioFrames).toBeGreaterThan(0);
   const microphoneSize = await microphone.boundingBox();
   expect(microphoneSize).not.toBeNull();
   expect(microphoneSize!.width).toBeGreaterThanOrEqual(44);
@@ -1119,12 +1157,13 @@ test('dictation supports click, hold, cancel, failure recovery, and manual send'
     microphoneBounds!.y + microphoneBounds!.height / 2
   );
   await page.mouse.down();
-  await expect(page.locator('.dictation-status')).toContainText('正在听');
+  await expect(page.locator('.dictation-status')).toContainText('已开始收音');
   await page.waitForTimeout(650);
   await page.mouse.up();
   await expect(textarea).toBeEnabled();
   await expect(textarea).toHaveValue('按住说话也可以');
   expect(submittedTexts).toHaveLength(1);
+  expect(dictationCancels).toBe(1);
   expect(dictationDrafts).toEqual([
     '原草稿',
     '取消前草稿',
