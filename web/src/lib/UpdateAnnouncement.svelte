@@ -7,7 +7,15 @@
   export let restaurantExperience = false;
 
   type Copy = [string, string];
-  type FeatureIcon = 'chat' | 'check' | 'edit' | 'image-plus' | 'info' | 'plan' | 'search';
+  type FeatureIcon =
+    | 'chat'
+    | 'check'
+    | 'edit'
+    | 'image-plus'
+    | 'info'
+    | 'microphone'
+    | 'plan'
+    | 'search';
   type ReleaseFeature = {
     icon: FeatureIcon;
     title: Copy;
@@ -24,12 +32,24 @@
 
   const generalRelease: Release = {
     tag: ['功能更新', 'Feature update'],
-    title: ['搜索、编辑与更顺手的输入', 'Search, editing, and a smoother composer'],
+    title: ['现在可以直接说话输入', 'Voice input is now available'],
     description: [
-      '这次更新带来对话搜索、消息编辑重发、粘贴或拖拽上传、草稿自动保存与用量统计，手机还能把应用添加到主屏幕。',
-      'This update adds chat search, message editing, paste-or-drop uploads, automatic drafts, usage stats, and add-to-home-screen on mobile.'
+      '输入框新增豆包流式语音识别。可以点击开始和停止，也可以按住说话、松开结束；识别文字会先留在输入框里，由你确认后手动发送。',
+      'The composer now supports Doubao streaming transcription. Click to start and stop, or hold to talk and release. The transcript stays in the composer for review before you send it.'
     ],
     features: [
+      {
+        icon: 'microphone',
+        title: ['点击录音，也可按住说话', 'Click or hold to talk'],
+        description: [
+          '点击“语音输入”开始，再点一次停止；也可以按住约半秒说话，松开后生成最终转写。单次最长两分钟。',
+          'Click “Voice input” to start and click again to stop, or hold for about half a second and release to finalize. Each recording is limited to two minutes.'
+        ],
+        location: [
+          ['输入框', 'Composer'],
+          ['语音输入', 'Voice input']
+        ]
+      },
       {
         icon: 'search',
         title: ['搜索所有对话', 'Search every chat'],
@@ -77,8 +97,8 @@
       }
     ],
     note: [
-      '搜索覆盖你自己的全部活跃对话，临时留档中的对话暂不参与；草稿只保存在当前浏览器。',
-      'Search covers all of your active chats; retained chats are not searched yet, and drafts stay in this browser only.'
+      '原始麦克风音频不会保存，转写也不会自动发送。Safari 与桌面 Edge 正式支持；微信浏览器若无法授权麦克风，请改用 Safari 打开。搜索仍只覆盖活跃对话，临时留档中的对话暂不参与。',
+      'Raw microphone audio is not stored, and transcripts are never sent automatically. Safari and desktop Edge are supported; if WeChat cannot grant microphone access, open the site in Safari. Search still covers active chats only; retained chats are not included.'
     ]
   };
 
@@ -90,6 +110,18 @@
       'La4RainGPT now guides restaurant-management tasks. When a request is broad, the Agent uses a few tappable choices to clarify the goal, context, and constraints before producing a more relevant answer.'
     ],
     features: [
+      {
+        icon: 'microphone',
+        title: ['餐饮需求可以直接说', 'Speak restaurant requests'],
+        description: [
+          '用普通话或上海话说出想法，识别结果会实时出现在输入框。停下后先检查文字，再由你手动发送给 Agent。',
+          'Speak an idea in Mandarin or Shanghainese and watch it appear in the composer. Review the final transcript before sending it to the Agent.'
+        ],
+        location: [
+          ['输入框', 'Composer'],
+          ['语音输入', 'Voice input']
+        ]
+      },
       {
         icon: 'chat',
         title: ['模糊问题先问关键点', 'Clarify only what matters'],
@@ -140,8 +172,8 @@
       }
     ],
     note: [
-      '餐饮引导仅在“餐饮任务”工作台生效，你可以随时切回“通用聊天”。卡片选项只补充当前需求，不会自动修改长期档案。',
-      'Restaurant guidance applies only in the Restaurant workbench, and you can switch back to General chat at any time. Card selections refine the current task and never silently change the saved profile.'
+      '语音只负责把话转成输入框文字，不会自动发送或保存原始音频。餐饮引导仍只在“餐饮任务”工作台生效，卡片选择不会静默修改长期档案。',
+      'Voice input only places text in the composer; it never auto-sends or stores raw audio. Restaurant guidance still applies only in the Restaurant workbench, and card choices never silently change the saved profile.'
     ]
   };
 
@@ -210,7 +242,7 @@
         <span><Icon name="sparkles" size={19} /></span>
         <div>
           <strong>{t('更新公告', 'What’s new')}</strong>
-          <small>La4RainGPT · 2026.07.28</small>
+          <small>La4RainGPT · 2026.07.30</small>
         </div>
       </div>
       <button

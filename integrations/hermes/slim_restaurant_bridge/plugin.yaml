@@ -1,0 +1,6 @@
+name: slim-restaurant-bridge
+version: 1.0.0
+description: "Route authorized Weixin restaurant text turns to the slim bridge and return text plus WAV attachments."
+author: "owui-personal-slim"
+hooks:
+  - pre_gateway_dispatch

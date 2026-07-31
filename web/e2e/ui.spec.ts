@@ -46,6 +46,15 @@ const models = [
   }
 ];
 
+const dictationAvailability = {
+  enabled: true,
+  configured: true,
+  provider: 'volcengine',
+  maxDurationSeconds: 120,
+  audioStored: false as const,
+  updatedAt: Date.now()
+};
+
 const onePixelPNG =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -139,6 +148,9 @@ async function mockAPI(page: Page) {
         workbench: { effective: 'general', initial: 'general' },
         guidanceEnabled: false
       });
+    }
+    if (path === '/api/v1/me/dictation') {
+      return json(200, { dictation: dictationAvailability });
     }
     if (path === '/api/v1/me/storage') {
       return json(200, {
@@ -452,6 +464,11 @@ async function mockAPI(page: Page) {
 }
 
 test('login and streaming chat are visually usable', async ({ page }, testInfo) => {
+  // This scenario intentionally exercises onboarding, settings, model
+  // selection, streaming, rich content, speech, and scrolling in one flow.
+  // It can exceed Playwright's 30 s default on the 1 GiB validation VPS even
+  // though each assertion is progressing normally.
+  test.setTimeout(60_000);
   const { speechTexts } = await mockAPI(page);
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '欢迎回来' })).toBeVisible();
@@ -485,8 +502,9 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
       page.evaluate(() => localStorage.getItem('personal-chat-onboarding-v1:user-1'))
     )
     .toBe('complete');
-  const updateDialog = page.getByRole('dialog', { name: '搜索、编辑与更顺手的输入' });
+  const updateDialog = page.getByRole('dialog', { name: '现在可以直接说话输入' });
   await expect(updateDialog).toBeVisible();
+  await expect(updateDialog).toContainText('点击录音，也可按住说话');
   await expect(updateDialog).toContainText('搜索所有对话');
   await expect(updateDialog).toContainText('编辑并重新发送');
   await expect(updateDialog).toContainText('粘贴上传与自动草稿');
@@ -507,7 +525,9 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await expect(updateDialog).toHaveCount(0);
   await expect
     .poll(() =>
-      page.evaluate(() => localStorage.getItem('personal-chat-update-ux-v1:user-1'))
+      page.evaluate(() =>
+        localStorage.getItem('personal-chat-update-voice-v1:user-1')
+      )
     )
     .toBe('complete');
 
@@ -577,7 +597,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     await page.getByRole('button', { name: /Alice/ }).click();
     await page.getByRole('button', { name: '更新公告' }).click();
     await expect(
-      page.getByRole('heading', { name: '搜索、编辑与更顺手的输入' })
+      page.getByRole('heading', { name: '现在可以直接说话输入' })
     ).toBeVisible();
     await page.getByRole('button', { name: '知道了' }).click();
 
@@ -635,7 +655,7 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
   await page.getByLabel('聊天消息').fill('请生成一张未来城市的概念图');
   await page.locator('.image-mode-button').click();
   await expect(page.locator('.image-mode-button')).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.conversation-item')).toHaveCount(1);
   await expect(page.locator('.context-status')).toContainText('正在发送请求');
   await expect(page.locator('.context-status')).toContainText('1 s', { timeout: 2500 });
@@ -721,6 +741,435 @@ test('login and streaming chat are visually usable', async ({ page }, testInfo) 
     )
     .toBeLessThanOrEqual(2);
   await page.screenshot({ path: testInfo.outputPath('chat.png'), fullPage: true });
+});
+
+test('dictation supports click, hold, cancel, failure recovery, and manual send', async ({
+  page
+}, testInfo) => {
+  test.setTimeout(45_000);
+  const conversation = {
+    id: 'conversation-dictation',
+    ownerId: user.id,
+    title: '语音输入测试',
+    model: model.id,
+    reasoningEffort: 'high',
+    createdAt: Date.now() - 5000,
+    updatedAt: Date.now()
+  };
+  const initialMessages = [
+    {
+      id: 'dictation-user-initial',
+      conversationId: conversation.id,
+      role: 'user',
+      status: 'completed',
+      createdAt: Date.now() - 4000,
+      parts: [{ type: 'text', text: '先给我一个简短建议' }]
+    },
+    {
+      id: 'dictation-assistant-initial',
+      conversationId: conversation.id,
+      role: 'assistant',
+      model: model.id,
+      status: 'completed',
+      parentMessageId: 'dictation-user-initial',
+      createdAt: Date.now() - 3000,
+      parts: [{ type: 'text', text: '可以先从最重要的一件事开始。' }]
+    }
+  ];
+  const dictationDrafts: string[] = [];
+  const submittedTexts: string[] = [];
+  let dictationSessionNumber = 0;
+  let speechSessions = 0;
+  let speechCancels = 0;
+  let dictationCancels = 0;
+  let firstSessionAudioFrames = 0;
+  let firstSessionAudioFramesBeforeStarted = 0;
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript((darkMode) => {
+    localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-voice-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-font-size', 'large');
+    if (darkMode) localStorage.setItem('personal-chat-theme', 'dark');
+  }, testInfo.project.name === 'desktop');
+  await page.routeWebSocket('**/api/v1/speech/sessions', (socket) => {
+    speechSessions += 1;
+    setTimeout(() => {
+      socket.send(JSON.stringify({
+        type: 'speech.connecting',
+        provider: 'volcengine'
+      }));
+      socket.send(JSON.stringify({
+        type: 'speech.started',
+        provider: 'volcengine',
+        voice: 'zh_female_vv_uranus_bigtts',
+        speed: 1,
+        audio: {
+          format: 'pcm',
+          sampleRate: 24000,
+          channels: 1,
+          bitDepth: 16
+        }
+      }));
+    }, 10);
+    socket.onMessage((raw) => {
+      if (typeof raw !== 'string') return;
+      const message = JSON.parse(raw) as { type: string };
+      if (message.type === 'speech.text') {
+        socket.send(Buffer.alloc(24000 * 2 * 10));
+      }
+      if (message.type === 'speech.cancel') speechCancels += 1;
+    });
+  });
+  await page.routeWebSocket('**/api/v1/dictation/sessions', (socket) => {
+    dictationSessionNumber += 1;
+    const sessionNumber = dictationSessionNumber;
+    let providerStarted = false;
+    let terminalMessageReceived = false;
+    const partials: Record<number, string> = {
+      1: '帮我设计十款',
+      2: '这一段应该取消',
+      3: '最后临时转写',
+      4: '按住说话'
+    };
+    const finals: Record<number, string> = {
+      1: '帮我设计十款特色煨汤',
+      2: '这一段不应保留',
+      4: '按住说话也可以'
+    };
+    setTimeout(() => {
+      socket.send(JSON.stringify({ type: 'dictation.ready' }));
+    }, 5);
+    socket.onMessage((raw) => {
+      if (typeof raw !== 'string') {
+        if (sessionNumber === 1) {
+          firstSessionAudioFrames += 1;
+          if (!providerStarted) firstSessionAudioFramesBeforeStarted += 1;
+        }
+        return;
+      }
+      const message = JSON.parse(raw) as {
+        type: string;
+        draft?: string;
+      };
+      if (message.type === 'dictation.start') {
+        dictationDrafts.push(message.draft || '');
+        socket.send(JSON.stringify({ type: 'dictation.connecting' }));
+        setTimeout(() => {
+          providerStarted = true;
+          socket.send(JSON.stringify({
+            type: 'dictation.started',
+            maxDurationSeconds: 120,
+            audio: {
+              format: 'pcm',
+              sampleRate: 16000,
+              channels: 1,
+              bitDepth: 16
+            }
+          }));
+          setTimeout(() => {
+            if (terminalMessageReceived) return;
+            socket.send(JSON.stringify({
+              type: 'dictation.transcript',
+              text: partials[sessionNumber],
+              definite: false
+            }));
+            if (sessionNumber === 3) {
+              setTimeout(() => {
+                socket.send(JSON.stringify({
+                  type: 'dictation.error',
+                  code: 'dictation_provider_busy',
+                  message: 'provider busy'
+                }));
+              }, 40);
+            }
+          }, 120);
+        }, sessionNumber === 1 || sessionNumber === 4 ? 700 : 0);
+      }
+      if (message.type === 'dictation.finish') {
+        terminalMessageReceived = true;
+        socket.send(JSON.stringify({
+          type: 'dictation.completed',
+          text: finals[sessionNumber]
+        }));
+      }
+      if (message.type === 'dictation.cancel') {
+        terminalMessageReceived = true;
+        dictationCancels += 1;
+        socket.send(JSON.stringify({ type: 'dictation.cancelled' }));
+      }
+    });
+  });
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (body: unknown, status = 200, contentType = 'application/json') =>
+      route.fulfill({
+        status,
+        contentType,
+        body:
+          contentType === 'application/json'
+            ? JSON.stringify(body)
+            : String(body)
+      });
+    if (path === '/api/v1/me') {
+      return respond({ user, csrfToken: 'csrf-dictation' });
+    }
+    if (path === '/api/v1/models') return respond({ models });
+    if (path === '/api/v1/me/workbench') {
+      return respond({
+        workbench: { effective: 'general', initial: 'general' },
+        guidanceEnabled: false
+      });
+    }
+    if (path === '/api/v1/me/dictation') {
+      return respond({ dictation: dictationAvailability });
+    }
+    if (path === '/api/v1/me/speech') {
+      return respond({
+        speech: {
+          mode: 'manual',
+          autoRead: false,
+          speed: 1,
+          voice: '',
+          effectiveVoice: 'zh_female_vv_uranus_bigtts',
+          updatedAt: Date.now(),
+          serviceEnabled: true,
+          provider: 'volcengine',
+          providerConfigured: true,
+          voices: [
+            {
+              id: 'zh_female_vv_uranus_bigtts',
+              label: 'Vivi 2.0（女声·中英）'
+            }
+          ],
+          audioAuthorization: 'required_on_each_device'
+        }
+      });
+    }
+    if (path === '/api/v1/me/storage') {
+      return respond({
+        storage: {
+          usedBytes: 0,
+          limitBytes: 3 * 1024 * 1024 * 1024,
+          retainedBytes: 0,
+          activeConversations: 1,
+          maxActiveConversations: 30,
+          pinnedConversations: 0,
+          maxPinnedConversations: 10,
+          retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/conversations' && request.method() === 'GET') {
+      return respond({ conversations: [conversation] });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/messages`) {
+      return respond({ messages: initialMessages });
+    }
+    if (path === `/api/v1/conversations/${conversation.id}/context-checkpoints`) {
+      return respond({ checkpoints: [] });
+    }
+    if (
+      path === `/api/v1/conversations/${conversation.id}/responses` &&
+      request.method() === 'POST'
+    ) {
+      const body = request.postDataJSON() as { text: string };
+      submittedTexts.push(body.text);
+      const now = Date.now();
+      const userMessage = {
+        id: 'dictation-manual-user',
+        conversationId: conversation.id,
+        role: 'user',
+        status: 'completed',
+        createdAt: now,
+        parts: [{ type: 'text', text: body.text }]
+      };
+      const assistantMessage = {
+        id: 'dictation-manual-assistant',
+        conversationId: conversation.id,
+        role: 'assistant',
+        model: model.id,
+        status: 'streaming',
+        parentMessageId: userMessage.id,
+        createdAt: now + 1,
+        parts: []
+      };
+      const finalMessage = {
+        ...assistantMessage,
+        status: 'completed',
+        parts: [{ type: 'text', text: '已收到你确认后的语音转写。' }]
+      };
+      const sse = [
+        [
+          'response.started',
+          {
+            requestId: 'dictation-manual-request',
+            userMessage,
+            assistantMessage
+          }
+        ],
+        ['response.completed', { message: finalMessage }]
+      ]
+        .map(([event, data]) =>
+          `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+        )
+        .join('');
+      return respond(sse, 200, 'text/event-stream');
+    }
+    return respond(
+      { error: { code: 'not_found', message: 'Not found.' } },
+      404
+    );
+  });
+
+  await page.goto('/');
+  const microphoneFixtureInstalled = await page.evaluate(() => {
+    // Keep the interaction test independent of a runner audio device. Install
+    // this after navigation so mediaDevices belongs to the secure app origin.
+    // The destination owns a real browser MediaStream audio track, so the
+    // production Web Audio graph and recorder lifecycle still run unchanged.
+    const contexts: AudioContext[] = [];
+    const oscillators: OscillatorNode[] = [];
+    const getUserMedia = async () => {
+      const context = new AudioContext();
+      contexts.push(context);
+      const destination = context.createMediaStreamDestination();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      gain.gain.value = 0.05;
+      oscillator.connect(gain);
+      gain.connect(destination);
+      oscillator.start();
+      oscillators.push(oscillator);
+      return destination.stream;
+    };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia }
+    });
+    return navigator.mediaDevices.getUserMedia === getUserMedia;
+  });
+  expect(microphoneFixtureInstalled).toBe(true);
+  await expect(page.getByRole('heading', { name: '今天想聊点什么？' })).toBeVisible();
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开侧边栏' }).click();
+  }
+  await page
+    .locator('.conversation-item')
+    .filter({ hasText: conversation.title })
+    .locator('.conversation-icon')
+    .click();
+  await expect(page.getByText('可以先从最重要的一件事开始。')).toBeVisible();
+
+  await page.getByRole('button', { name: '朗读' }).click();
+  await expect(page.getByLabel('朗读播放器')).toBeVisible();
+  await expect.poll(() => speechSessions).toBe(1);
+
+  const textarea = page.getByLabel('聊天消息');
+  const microphone = page.locator('.dictation-button');
+  const sendButton = page.getByRole('button', { name: '发送', exact: true });
+  await expect(page.locator('.composer-primary-actions').locator('.dictation-button'))
+    .toBeVisible();
+  const idleMicrophoneBounds = await microphone.boundingBox();
+  const idleSendBounds = await sendButton.boundingBox();
+  expect(idleMicrophoneBounds).not.toBeNull();
+  expect(idleSendBounds).not.toBeNull();
+  expect(idleMicrophoneBounds!.x + idleMicrophoneBounds!.width)
+    .toBeLessThanOrEqual(idleSendBounds!.x);
+  await textarea.fill('原草稿');
+  await microphone.click();
+  await expect(page.locator('.dictation-status')).toContainText('已开始收音');
+  await page.waitForTimeout(300);
+  expect(firstSessionAudioFramesBeforeStarted).toBe(0);
+  await expect(page.locator('.dictation-status')).toContainText('正在听');
+  await expect.poll(() => firstSessionAudioFrames).toBeGreaterThan(0);
+  const microphoneSize = await microphone.boundingBox();
+  expect(microphoneSize).not.toBeNull();
+  expect(microphoneSize!.width).toBeGreaterThanOrEqual(44);
+  expect(microphoneSize!.height).toBeGreaterThanOrEqual(44);
+  expect(
+    await page.locator('.dictation-live-dot').evaluate((element) =>
+      getComputedStyle(element, '::after').animationName
+    )
+  ).toBe('none');
+  await expect(textarea).toBeDisabled();
+  await expect(page.getByLabel('朗读播放器')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '上传图片' })).toBeDisabled();
+  await expect(page.locator('.image-mode-button')).toBeDisabled();
+  await expect(page.locator('.speech-message-control').first()).toBeDisabled();
+  await expect(textarea).toHaveValue('原草稿\n帮我设计十款');
+  if (testInfo.project.name === 'mobile') {
+    const statusBounds = await page.locator('.dictation-status').boundingBox();
+    expect(statusBounds).not.toBeNull();
+    expect(statusBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(statusBounds!.x + statusBounds!.width).toBeLessThanOrEqual(376);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
+    ).toBe(true);
+    await page.setViewportSize({ width: 812, height: 375 });
+    await expect(page.locator('.dictation-status')).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth
+      )
+    ).toBe(true);
+    await page.setViewportSize({ width: 375, height: 812 });
+  }
+  await microphone.click();
+  await expect(textarea).toBeEnabled();
+  await expect(textarea).toHaveValue('原草稿\n帮我设计十款特色煨汤');
+  await expect.poll(() => speechCancels).toBe(1);
+  await page.waitForTimeout(250);
+  expect(speechSessions).toBe(1);
+  expect(submittedTexts).toHaveLength(0);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.getByText('已收到你确认后的语音转写。')).toBeVisible();
+  expect(submittedTexts).toEqual(['原草稿\n帮我设计十款特色煨汤']);
+
+  await textarea.fill('取消前草稿');
+  await microphone.click();
+  await expect(page.locator('.dictation-status')).toContainText('正在听');
+  await expect(textarea).toHaveValue('取消前草稿\n这一段应该取消');
+  await page.locator('.dictation-status').getByRole('button', { name: '取消' }).click();
+  await expect(textarea).toBeEnabled();
+  await expect(textarea).toHaveValue('取消前草稿');
+  await expect.poll(() => dictationCancels).toBe(1);
+  expect(submittedTexts).toHaveLength(1);
+
+  await textarea.fill('失败前草稿');
+  await microphone.click();
+  await expect(page.locator('.dictation-status')).toContainText('正在听');
+  await expect(page.locator('.workspace-error')).toContainText(
+    '豆包语音识别暂时繁忙'
+  );
+  await expect(textarea).toBeEnabled();
+  await expect(textarea).toHaveValue('失败前草稿\n最后临时转写');
+  await page.locator('.workspace-error button').click();
+
+  await textarea.fill('');
+  const microphoneBounds = await microphone.boundingBox();
+  expect(microphoneBounds).not.toBeNull();
+  await page.mouse.move(
+    microphoneBounds!.x + microphoneBounds!.width / 2,
+    microphoneBounds!.y + microphoneBounds!.height / 2
+  );
+  await page.mouse.down();
+  await expect(page.locator('.dictation-status')).toContainText('已开始收音');
+  await page.waitForTimeout(650);
+  await page.mouse.up();
+  await expect(textarea).toBeEnabled();
+  await expect(textarea).toHaveValue('按住说话也可以');
+  expect(submittedTexts).toHaveLength(1);
+  expect(dictationCancels).toBe(1);
+  expect(dictationDrafts).toEqual([
+    '原草稿',
+    '取消前草稿',
+    '失败前草稿',
+    ''
+  ]);
 });
 
 test('restaurant guidance choices update immediately and submit together', async ({ page }, testInfo) => {
@@ -934,6 +1383,9 @@ test('restaurant guidance choices update immediately and submit together', async
         }
       });
     }
+    if (path === '/api/v1/me/dictation') {
+      return json(200, { dictation: dictationAvailability });
+    }
     if (path === '/api/v1/me/storage') {
       return json(200, {
         storage: {
@@ -1100,7 +1552,8 @@ test('restaurant guidance choices update immediately and submit together', async
   await expect
     .poll(() =>
       page.evaluate(
-        (userId) => localStorage.getItem(`personal-chat-update-restaurant-v1:${userId}`),
+        (userId) =>
+          localStorage.getItem(`personal-chat-update-restaurant-voice-v1:${userId}`),
         restaurantUser.id
       )
     )
@@ -1306,7 +1759,7 @@ test('a persisted background response resumes after reopening its chat', async (
 
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
-    localStorage.setItem('personal-chat-update-ux-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-voice-v1:user-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -1325,6 +1778,9 @@ test('a persisted background response resumes after reopening its chat', async (
         workbench: { effective: 'general', initial: 'general' },
         guidanceEnabled: false
       });
+    }
+    if (path === '/api/v1/me/dictation') {
+      return respond({ dictation: dictationAvailability });
     }
     if (path === '/api/v1/me/storage') {
       return respond({
@@ -1429,7 +1885,7 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
 
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:user-1', 'complete');
-    localStorage.setItem('personal-chat-update-ux-v1:user-1', 'complete');
+    localStorage.setItem('personal-chat-update-voice-v1:user-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -1448,6 +1904,9 @@ test('search, drafts, message editing, and usage stats work', async ({ page }, t
         workbench: { effective: 'general', initial: 'general' },
         guidanceEnabled: false
       });
+    }
+    if (path === '/api/v1/me/dictation') {
+      return json(200, { dictation: dictationAvailability });
     }
     if (path === '/api/v1/me/storage') {
       return json(200, {
@@ -1667,9 +2126,10 @@ test('administrator can inspect another user chat and manage summary compatibili
   };
   let summaryMode: 'auto' | 'off' = 'auto';
   let speechEnabled = true;
+  let dictationEnabled = true;
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
-    localStorage.setItem('personal-chat-update-ux-v1:admin-1', 'complete');
+    localStorage.setItem('personal-chat-update-voice-v1:admin-1', 'complete');
   });
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -1682,6 +2142,14 @@ test('administrator can inspect another user chat and manage summary compatibili
       });
     if (path === '/api/v1/me') return respond({ user: admin, csrfToken: 'admin-csrf' });
     if (path === '/api/v1/models') return respond({ models });
+    if (path === '/api/v1/me/dictation') {
+      return respond({
+        dictation: {
+          ...dictationAvailability,
+          enabled: dictationEnabled
+        }
+      });
+    }
     if (path === '/api/v1/me/speech') {
       return respond({
         speech: {
@@ -1785,6 +2253,21 @@ test('administrator can inspect another user chat and manage summary compatibili
         }
       });
     }
+    if (path === '/api/v1/admin/dictation') {
+      if (method === 'PUT') {
+        dictationEnabled = Boolean(
+          (route.request().postDataJSON() as { enabled: boolean }).enabled
+        );
+      }
+      return respond({
+        dictation: {
+          ...dictationAvailability,
+          enabled: dictationEnabled,
+          resourceId: 'volc.seedasr.sauc.duration',
+          concurrency: { perUser: 1, global: 2 }
+        }
+      });
+    }
     return route.fulfill({
       status: 404,
       contentType: 'application/json',
@@ -1840,6 +2323,25 @@ test('administrator can inspect another user chat and manage summary compatibili
     .getByRole('dialog', { name: '语音服务设置' })
     .getByRole('button', { name: '关闭', exact: true })
     .click();
+  await page.getByRole('button', { name: /Administrator/ }).click();
+  await page.getByRole('button', { name: '语音输入设置' }).click();
+  const dictationDialog = page.getByRole('dialog', { name: '语音输入设置' });
+  await expect(dictationDialog).toBeVisible();
+  await expect(
+    dictationDialog.getByRole('switch', { name: '全局语音输入' })
+  ).toHaveAttribute('aria-checked', 'true');
+  await expect(dictationDialog).toContainText('豆包流式语音识别 2.0');
+  await expect(dictationDialog).toContainText('麦克风原始音频不保存');
+  await expect(dictationDialog.locator('.speech-admin-status small')).toContainText(
+    '每用户 1'
+  );
+  await expect(dictationDialog.locator('.speech-admin-status small')).toContainText(
+    '全应用 2'
+  );
+  await dictationDialog.getByRole('switch', { name: '全局语音输入' }).click();
+  await dictationDialog.getByRole('button', { name: '保存语音输入设置' }).click();
+  await expect(dictationDialog.getByText('设置已即时生效。')).toBeVisible();
+  await dictationDialog.getByRole('button', { name: '关闭', exact: true }).click();
   if (testInfo.project.name === 'mobile') {
     await page.locator('.mobile-close').click();
   }

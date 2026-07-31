@@ -112,6 +112,30 @@ export interface SpeechServiceSettings {
   };
 }
 
+export interface DictationAvailability {
+  enabled: boolean;
+  configured: boolean;
+  provider: string;
+  maxDurationSeconds: number;
+  audioStored: false;
+  updatedAt: number;
+}
+
+export interface DictationServiceSettings extends DictationAvailability {
+  resourceId: string;
+  concurrency: {
+    perUser: number;
+    global: number;
+  };
+}
+
+export type DictationPhase =
+  | 'idle'
+  | 'requesting'
+  | 'connecting'
+  | 'listening'
+  | 'finishing';
+
 export type Workbench = 'general' | 'restaurant';
 
 export interface WorkbenchSetting {

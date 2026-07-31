@@ -144,6 +144,83 @@ func TestLoadRejectsUnknownVolcengineSpeechResource(t *testing.T) {
 	}
 }
 
+func TestLoadConfiguresVolcengineDictationFromIndependentSecret(t *testing.T) {
+	asrKeyPath := filepath.Join(t.TempDir(), "volcengine-asr-api-key")
+	if err := os.WriteFile(
+		asrKeyPath,
+		[]byte("volcengine-asr-secret\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("ASR_VOLCENGINE_API_KEY_FILE", asrKeyPath)
+	t.Setenv("ASR_SESSION_TTL_SECONDS", "140")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Dictation.Volcengine.APIKey != "volcengine-asr-secret" ||
+		cfg.Dictation.Volcengine.ResourceID !=
+			"volc.seedasr.sauc.duration" ||
+		cfg.Dictation.Volcengine.Endpoint.String() !=
+			"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async" ||
+		cfg.Dictation.Volcengine.Format != "pcm" ||
+		cfg.Dictation.Volcengine.SampleRate != 16000 ||
+		cfg.Dictation.Volcengine.Bits != 16 ||
+		cfg.Dictation.Volcengine.Channels != 1 ||
+		cfg.Dictation.MaxConcurrentGlobal != 2 ||
+		cfg.Dictation.MaxConcurrentPerUser != 1 ||
+		cfg.Dictation.MaxDuration.Seconds() != 120 ||
+		cfg.Dictation.SessionTTL.Seconds() != 140 {
+		t.Fatalf("Volcengine dictation config = %#v", cfg.Dictation)
+	}
+}
+
+func TestLoadRejectsInvalidVolcengineDictationConfiguration(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{
+			name: "resource",
+			key:  "ASR_VOLCENGINE_RESOURCE_ID", value: "unknown-resource",
+		},
+		{
+			name: "short ttl",
+			key:  "ASR_SESSION_TTL_SECONDS", value: "120",
+		},
+		{
+			name: "long ttl",
+			key:  "ASR_SESSION_TTL_SECONDS", value: "181",
+		},
+		{
+			name: "endpoint scheme",
+			key:  "ASR_VOLCENGINE_ENDPOINT", value: "https://example.test/asr",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv(
+				"APP_SECRET",
+				"01234567890123456789012345678901",
+			)
+			t.Setenv(
+				"AI_API_KEY",
+				"test-provider-api-key-32-bytes!",
+			)
+			t.Setenv("APP_DATA_DIR", t.TempDir())
+			t.Setenv(testCase.key, testCase.value)
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() error = nil")
+			}
+		})
+	}
+}
+
 func TestLoadSecretFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(path, []byte("abcdefghijklmnopqrstuvwxyz-123456\n"), 0o600); err != nil {

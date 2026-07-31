@@ -7,7 +7,14 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:4173',
-    trace: 'retain-on-failure'
+    trace: 'retain-on-failure',
+    permissions: ['microphone'],
+    launchOptions: {
+      args: [
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream'
+      ]
+    }
   },
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',

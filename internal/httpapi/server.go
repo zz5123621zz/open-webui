@@ -16,6 +16,7 @@ import (
 
 	"github.com/owui-personal-slim/owui-personal-slim/internal/activecontext"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/config"
+	"github.com/owui-personal-slim/owui-personal-slim/internal/dictation"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/jobs"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/progressivesummary"
 	"github.com/owui-personal-slim/owui-personal-slim/internal/provider"
@@ -27,26 +28,29 @@ import (
 var staticFiles embed.FS
 
 type Server struct {
-	cfg             config.Config
-	store           *store.Store
-	models          *provider.Client
-	jobs            *jobs.Scheduler
-	contexts        *activecontext.Manager
-	summaries       *progressivesummary.Manager
-	speechProviders *speech.Registry
-	speechGate      *speech.Gate
-	logins          *loginLimiter
-	actions         *actionLimiter
-	uploads         *keyedGate
-	activeMu        sync.Mutex
-	active          map[string]activeResponse
-	responseMu      sync.Mutex
-	responseContext context.Context
-	responseCancel  context.CancelCauseFunc
-	responseWG      sync.WaitGroup
-	shuttingDown    bool
-	logger          *slog.Logger
-	mux             *http.ServeMux
+	cfg               config.Config
+	store             *store.Store
+	models            *provider.Client
+	jobs              *jobs.Scheduler
+	contexts          *activecontext.Manager
+	summaries         *progressivesummary.Manager
+	speechProviders   *speech.Registry
+	speechGate        *speech.Gate
+	dictationProvider dictation.Provider
+	dictationGate     *dictation.Gate
+	logins            *loginLimiter
+	actions           *actionLimiter
+	uploads           *keyedGate
+	hermesTurns       *keyedGate
+	activeMu          sync.Mutex
+	active            map[string]activeResponse
+	responseMu        sync.Mutex
+	responseContext   context.Context
+	responseCancel    context.CancelCauseFunc
+	responseWG        sync.WaitGroup
+	shuttingDown      bool
+	logger            *slog.Logger
+	mux               *http.ServeMux
 }
 
 type activeResponse struct {
@@ -57,6 +61,7 @@ type activeResponse struct {
 func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client, logger *slog.Logger) *Server {
 	cfg.Lifecycle = cfg.Lifecycle.Normalized()
 	cfg.Speech = cfg.Speech.Normalized()
+	cfg.Dictation = cfg.Dictation.Normalized()
 	responseContext, responseCancel := context.WithCancelCause(context.Background())
 	server := &Server{
 		cfg: cfg, store: dataStore, models: modelClient,
@@ -71,6 +76,7 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 		logins:          newLoginLimiter(),
 		actions:         newActionLimiter(),
 		uploads:         newKeyedGate(),
+		hermesTurns:     newKeyedGate(),
 		active:          make(map[string]activeResponse),
 		responseContext: responseContext,
 		responseCancel:  responseCancel,
@@ -82,6 +88,13 @@ func New(cfg config.Config, dataStore *store.Store, modelClient *provider.Client
 		speechGate: speech.NewGate(
 			cfg.Speech.MaxConcurrentGlobal,
 			cfg.Speech.MaxConcurrentPerUser,
+		),
+		dictationProvider: dictation.NewVolcengineProvider(
+			cfg.Dictation.Volcengine,
+		),
+		dictationGate: dictation.NewGate(
+			cfg.Dictation.MaxConcurrentGlobal,
+			cfg.Dictation.MaxConcurrentPerUser,
 		),
 	}
 	server.contexts = activecontext.New(dataStore, modelClient, server.providerSafetyIdentifier)
@@ -98,6 +111,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("HEAD /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("GET /api/v1/config/public", s.publicConfig)
+	s.mux.Handle(
+		"POST /api/v1/integrations/hermes/restaurant/turn",
+		s.hermesRestaurantAuth(s.limitAction(
+			// A lost HTTP response can make the Hermes client poll the same
+			// idempotent request every two seconds while the original turn is
+			// still running. Keep the authenticated limit above that recovery
+			// rate so a long CPA turn cannot turn into a false 429.
+			"hermes_restaurant_turn", 120, time.Minute,
+			http.HandlerFunc(s.hermesRestaurantTurn),
+		)),
+	)
+	s.mux.Handle(
+		"GET /api/v1/integrations/hermes/restaurant/audio/{id}",
+		s.hermesRestaurantAuth(http.HandlerFunc(s.hermesRestaurantAudio)),
+	)
 
 	s.mux.Handle("POST /api/v1/auth/login", s.origin(http.HandlerFunc(s.login)))
 	s.mux.Handle("POST /api/v1/auth/logout", s.auth(s.origin(s.csrf(http.HandlerFunc(s.logout)))))
@@ -106,6 +134,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/v1/me/password", s.auth(s.origin(s.csrf(http.HandlerFunc(s.changePassword)))))
 	s.mux.Handle("GET /api/v1/me/storage", s.auth(http.HandlerFunc(s.storageStatus)))
 	s.mux.Handle("GET /api/v1/me/speech", s.auth(http.HandlerFunc(s.getMySpeechPreference)))
+	s.mux.Handle("GET /api/v1/me/dictation", s.auth(http.HandlerFunc(s.getMyDictationSetting)))
 	s.mux.Handle("GET /api/v1/me/workbench", s.auth(http.HandlerFunc(s.getMyWorkbench)))
 	s.mux.Handle(
 		"PUT /api/v1/me/workbench",
@@ -131,6 +160,10 @@ func (s *Server) routes() {
 		s.auth(s.origin(http.HandlerFunc(s.speechSession))),
 	)
 	s.mux.Handle(
+		"GET /api/v1/dictation/sessions",
+		s.auth(s.origin(http.HandlerFunc(s.dictationSession))),
+	)
+	s.mux.Handle(
 		"GET /api/v1/admin/speech",
 		s.auth(s.administrator(http.HandlerFunc(s.getSpeechServiceSetting))),
 	)
@@ -139,6 +172,17 @@ func (s *Server) routes() {
 		s.auth(s.administrator(s.limitAction(
 			"service_setting", 30, time.Minute,
 			s.origin(s.csrf(http.HandlerFunc(s.updateSpeechServiceSetting))),
+		))),
+	)
+	s.mux.Handle(
+		"GET /api/v1/admin/dictation",
+		s.auth(s.administrator(http.HandlerFunc(s.getDictationServiceSetting))),
+	)
+	s.mux.Handle(
+		"PUT /api/v1/admin/dictation",
+		s.auth(s.administrator(s.limitAction(
+			"service_setting", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateDictationServiceSetting))),
 		))),
 	)
 	s.mux.Handle(
