@@ -235,13 +235,13 @@ func (l Lifecycle) Normalized() Lifecycle {
 	if l.MaxStorageBytes <= 0 {
 		l.MaxStorageBytes = 3 * 1024 * 1024 * 1024
 	}
-	if l.MaxActiveConversations <= 0 {
+	if l.MaxActiveConversations < 0 {
 		l.MaxActiveConversations = 30
 	}
-	if l.MaxPinnedConversations <= 0 {
+	if l.MaxPinnedConversations < 0 {
 		l.MaxPinnedConversations = 10
 	}
-	if l.MaxPinnedConversations > l.MaxActiveConversations {
+	if l.MaxActiveConversations > 0 && l.MaxPinnedConversations > l.MaxActiveConversations {
 		l.MaxPinnedConversations = l.MaxActiveConversations
 	}
 	if l.RetentionTTL <= 0 {
@@ -575,7 +575,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxActiveConversations, err := intEnv("USER_MAX_ACTIVE_CONVERSATIONS", 30, 1, 200)
+	maxActiveConversations, err := intEnv("USER_MAX_ACTIVE_CONVERSATIONS", 30, 0, 10000)
 	if err != nil {
 		return Config{}, err
 	}
@@ -583,7 +583,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if maxPinnedConversations > maxActiveConversations {
+	if maxActiveConversations > 0 && maxPinnedConversations > maxActiveConversations {
 		return Config{}, fmt.Errorf("USER_MAX_PINNED_CONVERSATIONS cannot exceed active conversation limit")
 	}
 	retentionHours, err := intEnv("CONVERSATION_RETENTION_HOURS", 7*24, 24, 24*365)

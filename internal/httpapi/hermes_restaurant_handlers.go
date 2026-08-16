@@ -247,7 +247,7 @@ func (s *Server) hermesRestaurantTurn(w http.ResponseWriter, r *http.Request) {
 		credential,
 		request.SessionID,
 		hermesRestaurantConversationTitle(request.Text),
-		s.cfg.Lifecycle.MaxActiveConversations,
+		s.effectiveMaxActiveConversations(r.Context()),
 	)
 	if errors.Is(err, store.ErrConversationLimit) {
 		writeError(

@@ -366,3 +366,22 @@ VALUES(
 )
 ON CONFLICT(id) DO NOTHING;
 `
+
+const schemaV9 = `
+CREATE TABLE IF NOT EXISTS conversation_limit_settings (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	max_active INTEGER NOT NULL CHECK (max_active >= 0 AND max_active <= 10000),
+	updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+	updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_limit_setting_audit (
+	id TEXT PRIMARY KEY,
+	old_max_active INTEGER,
+	new_max_active INTEGER NOT NULL CHECK (new_max_active >= 0 AND new_max_active <= 10000),
+	actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_limit_setting_audit_created
+ON conversation_limit_setting_audit(created_at DESC);
+`

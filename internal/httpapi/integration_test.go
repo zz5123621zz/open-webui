@@ -134,6 +134,13 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 			MaxConcurrentGlobal: 4, MaxConcurrentPerUser: 2, MaxQueuedPerUser: 2, QueueTimeout: time.Second,
 		},
 		Tools: config.Tools{WebSearchEnabled: true, ImageGenerationEnabled: true},
+		Lifecycle: config.Lifecycle{
+			MaxStorageBytes:        3 * 1024 * 1024 * 1024,
+			MaxActiveConversations: 30,
+			MaxPinnedConversations: 10,
+			RetentionTTL:           7 * 24 * time.Hour,
+			MaintenanceInterval:    time.Hour,
+		},
 	}
 	modelClient := provider.NewClient(cfg.Provider, "test")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -471,6 +478,50 @@ func TestAuthenticatedChatFlow(t *testing.T) {
 		settingPayload.ProgressiveSummary.Mode != "off" ||
 		settingPayload.ProgressiveSummary.EffectiveState != "disabled" {
 		t.Fatalf("updated admin setting = status %d payload %#v", adminSettingUpdate.StatusCode, settingPayload)
+	}
+
+	regularLimit := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/admin/conversation-limit",
+		otherToken, "", "",
+	)
+	if regularLimit.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(regularLimit.Body)
+		t.Fatalf("regular user conversation limit status=%d body=%s", regularLimit.StatusCode, body)
+	}
+	regularLimit.Body.Close()
+	adminLimit := authenticatedRequest(
+		t, http.MethodGet, server.URL+"/api/v1/admin/conversation-limit",
+		adminToken, "", "",
+	)
+	var limitPayload struct {
+		ConversationLimit struct {
+			MaxActiveConversations int    `json:"maxActiveConversations"`
+			Unlimited              bool   `json:"unlimited"`
+			Source                 string `json:"source"`
+		} `json:"conversationLimit"`
+	}
+	if err := json.NewDecoder(adminLimit.Body).Decode(&limitPayload); err != nil {
+		t.Fatal(err)
+	}
+	adminLimit.Body.Close()
+	if adminLimit.StatusCode != http.StatusOK ||
+		limitPayload.ConversationLimit.Source != "env" ||
+		limitPayload.ConversationLimit.MaxActiveConversations != 30 {
+		t.Fatalf("admin conversation limit = status %d payload %#v", adminLimit.StatusCode, limitPayload)
+	}
+	adminLimitUpdate := authenticatedRequest(
+		t, http.MethodPut, server.URL+"/api/v1/admin/conversation-limit",
+		adminToken, app.csrfToken(adminToken), `{"maxActiveConversations":0}`,
+	)
+	if err := json.NewDecoder(adminLimitUpdate.Body).Decode(&limitPayload); err != nil {
+		t.Fatal(err)
+	}
+	adminLimitUpdate.Body.Close()
+	if adminLimitUpdate.StatusCode != http.StatusOK ||
+		!limitPayload.ConversationLimit.Unlimited ||
+		limitPayload.ConversationLimit.Source != "admin" ||
+		limitPayload.ConversationLimit.MaxActiveConversations != 0 {
+		t.Fatalf("updated conversation limit = status %d payload %#v", adminLimitUpdate.StatusCode, limitPayload)
 	}
 
 	adminRecheck := authenticatedRequest(

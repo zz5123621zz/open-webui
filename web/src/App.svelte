@@ -37,6 +37,7 @@
   import { messageText } from './lib/messages';
   import MessageView from './lib/MessageView.svelte';
   import Onboarding from './lib/Onboarding.svelte';
+  import ConversationLimitSettings from './lib/ConversationLimitSettings.svelte';
   import ProgressiveSummarySettings from './lib/ProgressiveSummarySettings.svelte';
   import SpeechAdminSettings from './lib/SpeechAdminSettings.svelte';
   import SpeechPlayer from './lib/SpeechPlayer.svelte';
@@ -133,6 +134,7 @@
     | 'appearance'
     | 'security'
     | 'service'
+    | 'conversation-limit'
     | 'speech'
     | 'speech-admin'
     | 'dictation-admin'
@@ -687,8 +689,8 @@
         'Your 3 GB active storage is full. Retain a chat or delete images before continuing.'
       ],
       conversation_limit_reached: [
-        '30 个活跃对话都已置顶保护，请先取消置顶或移入临时留档。',
-        'All 30 active chats are protected. Unpin or retain one before continuing.'
+        '活跃对话都已置顶保护，请先取消置顶或移入临时留档。',
+        'All active chats are protected. Unpin or retain one before continuing.'
       ],
       pin_limit_reached: [
         '每名用户最多置顶 10 个对话。',
@@ -1007,6 +1009,7 @@
       | 'appearance'
       | 'security'
       | 'service'
+      | 'conversation-limit'
       | 'speech'
       | 'speech-admin'
       | 'dictation-admin'
@@ -2933,7 +2936,7 @@
                       {conversation.ownerId === user.id ? t('（我）', ' (me)') : ''}
                     </small>
                   {:else if showArchived && conversation.retentionReason === 'conversation_limit'}
-                    <small>{t('因超过 30 个对话自动留档', 'Retained after reaching 30 chats')}</small>
+                    <small>{t('因超过会话上限自动留档', 'Retained after reaching the chat limit')}</small>
                   {/if}
                 </span>
               </button>
@@ -3004,7 +3007,11 @@
             aria-valuenow={Math.round(storagePercent(storageStatus))}
           ><i style={`width: ${storagePercent(storageStatus)}%`}></i></div>
           <div class="storage-meta">
-            <span>{storageStatus.activeConversations}/{storageStatus.maxActiveConversations} {t('对话', 'chats')}</span>
+            <span>
+              {storageStatus.maxActiveConversations > 0
+                ? `${storageStatus.activeConversations}/${storageStatus.maxActiveConversations} ${t('对话', 'chats')}`
+                : `${storageStatus.activeConversations} ${t('对话 · 无上限', 'chats · unlimited')}`}
+            </span>
             <span>{storageStatus.pinnedConversations}/{storageStatus.maxPinnedConversations} {t('置顶', 'pinned')}</span>
           </div>
           {#if storageStatus.retainedBytes > 0}
@@ -3067,6 +3074,7 @@
             <button on:click={reloadApplication}><Icon name="refresh" size={17} />{t('刷新应用', 'Reload app')}</button>
             {#if user?.role === 'admin'}
               <button on:click={() => openDialog('service')}><Icon name="sparkles" size={17} />{t('推理摘要设置', 'Reasoning summary settings')}</button>
+              <button on:click={() => openDialog('conversation-limit')}><Icon name="chat" size={17} />{t('会话数量上限', 'Conversation limit')}</button>
               <button on:click={() => openDialog('speech-admin')}><Icon name="speaker" size={17} />{t('语音服务设置', 'Speech service settings')}</button>
               <button on:click={() => openDialog('dictation-admin')}><Icon name="microphone" size={17} />{t('语音输入设置', 'Voice input settings')}</button>
             {/if}
@@ -3905,6 +3913,13 @@
           <SpeechSettings locale={$locale} />
         {:else if dialog === 'service'}
           <ProgressiveSummarySettings locale={$locale} />
+        {:else if dialog === 'conversation-limit'}
+          <ConversationLimitSettings
+            locale={$locale}
+            on:changed={() => {
+              void refreshStorage();
+            }}
+          />
         {:else if dialog === 'speech-admin'}
           <SpeechAdminSettings
             locale={$locale}

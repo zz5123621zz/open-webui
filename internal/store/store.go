@@ -232,6 +232,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("record schema v8: %w", err)
 		}
 	}
+	var hasV9 int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 9`).Scan(&hasV9); err != nil {
+		return fmt.Errorf("inspect schema v9: %w", err)
+	}
+	if hasV9 == 0 {
+		if _, err := tx.ExecContext(ctx, schemaV9); err != nil {
+			return fmt.Errorf("apply schema v9: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO schema_migrations(version, applied_at) VALUES(9, ?)
+		`, time.Now().Unix()); err != nil {
+			return fmt.Errorf("record schema v9: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
 	}

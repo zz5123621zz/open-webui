@@ -49,6 +49,15 @@ export interface StorageStatus {
   retentionDays: number;
 }
 
+export interface ConversationLimitSettings {
+  maxActiveConversations: number;
+  unlimited: boolean;
+  source: 'env' | 'admin';
+  envDefault: number;
+  updatedBy?: string;
+  updatedAt?: number;
+}
+
 export type ProgressiveSummaryMode = 'auto' | 'off';
 export type ProgressiveSummaryState =
   | 'unknown'
