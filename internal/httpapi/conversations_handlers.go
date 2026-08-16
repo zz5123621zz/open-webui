@@ -86,7 +86,7 @@ func (s *Server) createConversation(w http.ResponseWriter, r *http.Request) {
 		request.Title,
 		model.ID,
 		effort,
-		s.cfg.Lifecycle.MaxActiveConversations,
+		s.effectiveMaxActiveConversations(r.Context()),
 	)
 	if errors.Is(err, store.ErrConversationLimit) {
 		writeError(
@@ -199,7 +199,7 @@ func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 			session.User.ID,
 			current.ID,
 			*request.Archived,
-			s.cfg.Lifecycle.MaxActiveConversations,
+			s.effectiveMaxActiveConversations(r.Context()),
 			s.cfg.Lifecycle.MaxStorageBytes,
 		)
 		if errors.Is(archiveErr, store.ErrConversationLimit) {
@@ -273,7 +273,7 @@ func (s *Server) updateConversation(w http.ResponseWriter, r *http.Request) {
 			session.User.ID,
 			current.ID,
 			*request.Archived,
-			s.cfg.Lifecycle.MaxActiveConversations,
+			s.effectiveMaxActiveConversations(r.Context()),
 			s.cfg.Lifecycle.MaxStorageBytes,
 		)
 		if err != nil {

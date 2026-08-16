@@ -10,7 +10,7 @@ func (s *Server) storageStatus(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		session.User.ID,
 		s.cfg.Lifecycle.MaxStorageBytes,
-		s.cfg.Lifecycle.MaxActiveConversations,
+		s.effectiveMaxActiveConversations(r.Context()),
 		s.cfg.Lifecycle.MaxPinnedConversations,
 		int(s.cfg.Lifecycle.RetentionTTL.Hours()/24),
 	)

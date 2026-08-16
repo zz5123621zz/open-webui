@@ -2127,6 +2127,7 @@ test('administrator can inspect another user chat and manage summary compatibili
   let summaryMode: 'auto' | 'off' = 'auto';
   let speechEnabled = true;
   let dictationEnabled = true;
+  let maxActiveConversations = 30;
   await page.addInitScript(() => {
     localStorage.setItem('personal-chat-onboarding-v1:admin-1', 'complete');
     localStorage.setItem('personal-chat-update-voice-v1:admin-1', 'complete');
@@ -2182,10 +2183,27 @@ test('administrator can inspect another user chat and manage summary compatibili
           limitBytes: 3 * 1024 * 1024 * 1024,
           retainedBytes: 0,
           activeConversations: 0,
-          maxActiveConversations: 30,
+          maxActiveConversations,
           pinnedConversations: 0,
           maxPinnedConversations: 10,
           retentionDays: 7
+        }
+      });
+    }
+    if (path === '/api/v1/admin/conversation-limit') {
+      if (method === 'PUT') {
+        maxActiveConversations = Number(
+          (route.request().postDataJSON() as { maxActiveConversations: number })
+            .maxActiveConversations
+        );
+      }
+      return respond({
+        conversationLimit: {
+          maxActiveConversations,
+          unlimited: maxActiveConversations === 0,
+          source: maxActiveConversations === 30 ? 'env' : 'admin',
+          envDefault: 30,
+          updatedAt: Date.now()
         }
       });
     }
@@ -2342,6 +2360,16 @@ test('administrator can inspect another user chat and manage summary compatibili
   await dictationDialog.getByRole('button', { name: '保存语音输入设置' }).click();
   await expect(dictationDialog.getByText('设置已即时生效。')).toBeVisible();
   await dictationDialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: /Administrator/ }).click();
+  await page.getByRole('button', { name: '会话数量上限' }).click();
+  const limitDialog = page.getByRole('dialog', { name: '会话数量上限' });
+  await expect(limitDialog).toBeVisible();
+  await expect(limitDialog).toContainText('当前上限 30 个');
+  await limitDialog.getByRole('checkbox', { name: '不限制每名用户的活跃对话数' }).check();
+  await limitDialog.getByRole('button', { name: '保存会话上限' }).click();
+  await expect(limitDialog.getByText('设置已即时生效。')).toBeVisible();
+  await expect(limitDialog).toContainText('当前不限制会话数量');
+  await limitDialog.getByRole('button', { name: '关闭', exact: true }).click();
   if (testInfo.project.name === 'mobile') {
     await page.locator('.mobile-close').click();
   }

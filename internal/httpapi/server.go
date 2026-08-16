@@ -203,6 +203,17 @@ func (s *Server) routes() {
 			s.origin(s.csrf(http.HandlerFunc(s.recheckProgressiveSummaryCompatibility))),
 		))),
 	)
+	s.mux.Handle(
+		"GET /api/v1/admin/conversation-limit",
+		s.auth(s.administrator(http.HandlerFunc(s.getConversationLimitSetting))),
+	)
+	s.mux.Handle(
+		"PUT /api/v1/admin/conversation-limit",
+		s.auth(s.administrator(s.limitAction(
+			"service_setting", 30, time.Minute,
+			s.origin(s.csrf(http.HandlerFunc(s.updateConversationLimitSetting))),
+		))),
+	)
 
 	s.mux.Handle("GET /api/v1/conversations", s.auth(http.HandlerFunc(s.listConversations)))
 	s.mux.Handle("POST /api/v1/conversations", s.auth(s.limitAction("conversation_write", 120, time.Minute, s.origin(s.csrf(http.HandlerFunc(s.createConversation))))))

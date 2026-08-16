@@ -76,6 +76,22 @@ func TestDefaultVolcengineVoicesAreUnique(t *testing.T) {
 	}
 }
 
+func TestLoadTreatsZeroActiveConversationsAsUnlimited(t *testing.T) {
+	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
+	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("APP_BASE_URL", "http://localhost:8080")
+	t.Setenv("USER_MAX_ACTIVE_CONVERSATIONS", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Lifecycle.Normalized().MaxActiveConversations != 0 {
+		t.Fatalf("unlimited active conversations = %d", cfg.Lifecycle.MaxActiveConversations)
+	}
+}
+
 func TestLoadParsesProgressiveSummaryHardDisable(t *testing.T) {
 	t.Setenv("APP_SECRET", "01234567890123456789012345678901")
 	t.Setenv("AI_API_KEY", "test-provider-api-key-32-bytes!")

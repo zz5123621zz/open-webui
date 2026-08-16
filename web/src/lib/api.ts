@@ -4,6 +4,7 @@ import type {
   Conversation,
   ConversationSearchResult,
   ContextCheckpoint,
+  ConversationLimitSettings,
   DictationAvailability,
   DictationServiceSettings,
   GuidanceSubmission,
@@ -165,6 +166,26 @@ export async function recheckProgressiveSummaryCompatibility(): Promise<Progress
     { method: 'POST' }
   );
   return body.progressiveSummary;
+}
+
+export async function getConversationLimitSettings(): Promise<ConversationLimitSettings> {
+  const body = await request<{ conversationLimit: ConversationLimitSettings }>(
+    '/api/v1/admin/conversation-limit'
+  );
+  return body.conversationLimit;
+}
+
+export async function updateConversationLimitSettings(
+  maxActiveConversations: number
+): Promise<ConversationLimitSettings> {
+  const body = await request<{ conversationLimit: ConversationLimitSettings }>(
+    '/api/v1/admin/conversation-limit',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ maxActiveConversations })
+    }
+  );
+  return body.conversationLimit;
 }
 
 export async function getSpeechPreference(): Promise<SpeechPreference> {
