@@ -77,9 +77,7 @@ func (s *Store) CreateConversationWithLimit(
 	userID, title, model, reasoningEffort string,
 	maxActive int,
 ) (Conversation, error) {
-	if maxActive < 1 {
-		maxActive = defaultMaxActiveConversations
-	}
+	maxActive = normalizeMaxActiveConversations(maxActive)
 	title = normalizeTitle(title)
 	now := time.Now().UnixMilli()
 
@@ -131,7 +129,10 @@ func (s *Store) CreateConversationWithLimit(
 	`, userID).Scan(&activeCount); err != nil {
 		return Conversation{}, fmt.Errorf("count active conversations: %w", err)
 	}
-	toRetain := activeCount - maxActive + 1
+	toRetain := 0
+	if maxActive > 0 {
+		toRetain = activeCount - maxActive + 1
+	}
 	if toRetain > 0 {
 		rows, err := tx.QueryContext(ctx, `
 			SELECT id
@@ -454,9 +455,7 @@ func (s *Store) SetConversationArchivedWithPolicy(
 	maxActive int,
 	maxStorageBytes int64,
 ) (Conversation, error) {
-	if maxActive < 1 {
-		maxActive = defaultMaxActiveConversations
-	}
+	maxActive = normalizeMaxActiveConversations(maxActive)
 	if maxStorageBytes < 1 {
 		maxStorageBytes = defaultMaxStorageBytes
 	}
@@ -498,7 +497,7 @@ func (s *Store) SetConversationArchivedWithPolicy(
 		`, userID).Scan(&activeCount); err != nil {
 			return Conversation{}, err
 		}
-		if activeCount >= maxActive {
+		if maxActive > 0 && activeCount >= maxActive {
 			return Conversation{}, ErrConversationLimit
 		}
 		usedBytes, err := activeStorageBytes(ctx, tx, userID)

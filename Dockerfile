@@ -8,7 +8,7 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY web/ ./web/
 RUN cd web && npm run check && npm run build
 
-FROM golang:1.26.5-alpine AS go-build
+FROM golang:1.26.6-alpine AS go-build
 ARG VERSION=dev
 WORKDIR /src
 RUN apk add --no-cache ca-certificates

@@ -29,6 +29,7 @@
   export let guidanceCurrent = false;
   export let guidanceDisabled = false;
   export let guidanceDraftEnabled = true;
+  export let speechPlaybackBlocked = false;
   export let submittedGuidanceAnswers: Record<string, ClarificationAnswer[]> = {};
   let copied = false;
   const dispatch = createEventDispatcher<{
@@ -447,7 +448,7 @@
     {/if}
     {#if message.role === 'assistant' && hasReadableAssistantContent}
       <div class:streaming={message.status === 'streaming'} class="message-footer">
-        <SpeechMessageControl {message} {locale} />
+        <SpeechMessageControl {message} {locale} blocked={speechPlaybackBlocked} />
         {#if message.status !== 'streaming'}
           <button
             class="copy-answer"

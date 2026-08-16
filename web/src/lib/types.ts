@@ -49,6 +49,15 @@ export interface StorageStatus {
   retentionDays: number;
 }
 
+export interface ConversationLimitSettings {
+  maxActiveConversations: number;
+  unlimited: boolean;
+  source: 'env' | 'admin';
+  envDefault: number;
+  updatedBy?: string;
+  updatedAt?: number;
+}
+
 export type ProgressiveSummaryMode = 'auto' | 'off';
 export type ProgressiveSummaryState =
   | 'unknown'
@@ -111,6 +120,30 @@ export interface SpeechServiceSettings {
     global: number;
   };
 }
+
+export interface DictationAvailability {
+  enabled: boolean;
+  configured: boolean;
+  provider: string;
+  maxDurationSeconds: number;
+  audioStored: false;
+  updatedAt: number;
+}
+
+export interface DictationServiceSettings extends DictationAvailability {
+  resourceId: string;
+  concurrency: {
+    perUser: number;
+    global: number;
+  };
+}
+
+export type DictationPhase =
+  | 'idle'
+  | 'requesting'
+  | 'connecting'
+  | 'listening'
+  | 'finishing';
 
 export type Workbench = 'general' | 'restaurant';
 

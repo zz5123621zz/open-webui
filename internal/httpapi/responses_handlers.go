@@ -285,7 +285,7 @@ func (s *Server) createResponse(w http.ResponseWriter, r *http.Request) {
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, map[bool]string{true: "guidance", false: "create"}[structured],
 		assistantMessage, &userMessage, nil, queuedStream,
-		request.GenerateImage, request.Text, false,
+		request.GenerateImage, request.Text, false, 0,
 	)
 }
 
@@ -392,7 +392,7 @@ func (s *Server) regenerateResponse(w http.ResponseWriter, r *http.Request) {
 		w, r, clientContext, cancelResponse,
 		session.User.ID, request.RequestID, conversation, model, sentEffort,
 		summaryMode, "regenerate", assistant, nil, history, queuedStream, generateImage,
-		latestUserText(history), request.BypassGuidance,
+		latestUserText(history), request.BypassGuidance, 0,
 	)
 }
 
@@ -415,6 +415,7 @@ func (s *Server) streamAssistantResponse(
 	generateImage bool,
 	imagePrompt string,
 	forceGuidanceFinal bool,
+	exactGuidanceQuestions int,
 ) {
 	s.registerResponse(assistantMessage.ID, userID, cancelResponse)
 	defer s.unregisterResponse(assistantMessage.ID)
@@ -508,6 +509,13 @@ func (s *Server) streamAssistantResponse(
 			"message": "Restaurant guidance state could not be prepared.",
 		})
 		return
+	}
+	if guidanceState.Enabled &&
+		guidanceState.AllowClarification &&
+		exactGuidanceQuestions >= 2 &&
+		exactGuidanceQuestions <= guidance.MaximumQuestionsPerRound {
+		guidanceState.MinQuestions = exactGuidanceQuestions
+		guidanceState.MaxQuestions = exactGuidanceQuestions
 	}
 	active, err := s.contexts.Prepare(
 		r.Context(), userID, conversation, model, sentEffort, history, assistantMessage.ID,
@@ -1905,6 +1913,12 @@ func functionCallArguments(raw json.RawMessage) (json.RawMessage, bool) {
 
 func (a *responseAccumulator) finalizeGuidance() {
 	if !a.guidanceRuntime.Enabled {
+		return
+	}
+	// A provider failure is not malformed guidance. Preserve the upstream
+	// failure classification so callers can distinguish an unavailable model
+	// from a model response that completed with an invalid control call.
+	if a.failureCode != "" {
 		return
 	}
 	controlRequired := a.guidanceRuntime.RequireClarification ||

@@ -24,6 +24,7 @@ type Config struct {
 	SecureCookies     bool
 	Provider          Provider
 	Speech            Speech
+	Dictation         Dictation
 	Jobs              Jobs
 	Tools             Tools
 	Lifecycle         Lifecycle
@@ -79,6 +80,24 @@ type VolcengineSpeech struct {
 type SpeechVoice struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
+}
+
+type Dictation struct {
+	MaxConcurrentGlobal  int
+	MaxConcurrentPerUser int
+	MaxDuration          time.Duration
+	SessionTTL           time.Duration
+	Volcengine           VolcengineDictation
+}
+
+type VolcengineDictation struct {
+	Endpoint   *url.URL
+	APIKey     string
+	ResourceID string
+	Format     string
+	SampleRate int
+	Bits       int
+	Channels   int
 }
 
 const defaultVolcengineVoiceList = "" +
@@ -160,6 +179,37 @@ func (s Speech) Normalized() Speech {
 	return s
 }
 
+func (d Dictation) Normalized() Dictation {
+	if d.MaxConcurrentGlobal <= 0 {
+		d.MaxConcurrentGlobal = 2
+	}
+	if d.MaxConcurrentPerUser <= 0 {
+		d.MaxConcurrentPerUser = 1
+	}
+	if d.MaxDuration <= 0 {
+		d.MaxDuration = 2 * time.Minute
+	}
+	if d.SessionTTL <= d.MaxDuration {
+		d.SessionTTL = d.MaxDuration + 15*time.Second
+	}
+	if d.Volcengine.Format == "" {
+		d.Volcengine.Format = "pcm"
+	}
+	if d.Volcengine.SampleRate == 0 {
+		d.Volcengine.SampleRate = 16000
+	}
+	if d.Volcengine.Bits == 0 {
+		d.Volcengine.Bits = 16
+	}
+	if d.Volcengine.Channels == 0 {
+		d.Volcengine.Channels = 1
+	}
+	if d.Volcengine.ResourceID == "" {
+		d.Volcengine.ResourceID = "volc.seedasr.sauc.duration"
+	}
+	return d
+}
+
 type Jobs struct {
 	MaxConcurrentGlobal  int
 	MaxConcurrentPerUser int
@@ -185,13 +235,13 @@ func (l Lifecycle) Normalized() Lifecycle {
 	if l.MaxStorageBytes <= 0 {
 		l.MaxStorageBytes = 3 * 1024 * 1024 * 1024
 	}
-	if l.MaxActiveConversations <= 0 {
+	if l.MaxActiveConversations < 0 {
 		l.MaxActiveConversations = 30
 	}
-	if l.MaxPinnedConversations <= 0 {
+	if l.MaxPinnedConversations < 0 {
 		l.MaxPinnedConversations = 10
 	}
-	if l.MaxPinnedConversations > l.MaxActiveConversations {
+	if l.MaxActiveConversations > 0 && l.MaxPinnedConversations > l.MaxActiveConversations {
 		l.MaxPinnedConversations = l.MaxActiveConversations
 	}
 	if l.RetentionTTL <= 0 {
@@ -440,6 +490,46 @@ func Load() (Config, error) {
 			SampleRate: 24000,
 		},
 	}
+	dictationEndpoint, err := parseAbsoluteURL(
+		"ASR_VOLCENGINE_ENDPOINT",
+		"wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+		[]string{"ws", "wss"},
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	dictationAPIKey, err := readOptionalSecret(
+		"ASR_VOLCENGINE_API_KEY", "ASR_VOLCENGINE_API_KEY_FILE",
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	dictationResourceID := env(
+		"ASR_VOLCENGINE_RESOURCE_ID",
+		"volc.seedasr.sauc.duration",
+	)
+	if dictationResourceID != "volc.seedasr.sauc.duration" {
+		return Config{}, fmt.Errorf(
+			"ASR_VOLCENGINE_RESOURCE_ID must be volc.seedasr.sauc.duration",
+		)
+	}
+	dictationTTLSeconds, err := intEnv(
+		"ASR_SESSION_TTL_SECONDS", 135, 125, 180,
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Dictation = Dictation{
+		MaxConcurrentGlobal:  2,
+		MaxConcurrentPerUser: 1,
+		MaxDuration:          2 * time.Minute,
+		SessionTTL:           time.Duration(dictationTTLSeconds) * time.Second,
+		Volcengine: VolcengineDictation{
+			Endpoint: dictationEndpoint, APIKey: string(dictationAPIKey),
+			ResourceID: dictationResourceID, Format: "pcm",
+			SampleRate: 16000, Bits: 16, Channels: 1,
+		},
+	}
 	globalLimit, err := intEnv("PROVIDER_MAX_CONCURRENT_GLOBAL", 4, 1, 32)
 	if err != nil {
 		return Config{}, err
@@ -485,7 +575,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	maxActiveConversations, err := intEnv("USER_MAX_ACTIVE_CONVERSATIONS", 30, 1, 200)
+	maxActiveConversations, err := intEnv("USER_MAX_ACTIVE_CONVERSATIONS", 30, 0, 10000)
 	if err != nil {
 		return Config{}, err
 	}
@@ -493,7 +583,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if maxPinnedConversations > maxActiveConversations {
+	if maxActiveConversations > 0 && maxPinnedConversations > maxActiveConversations {
 		return Config{}, fmt.Errorf("USER_MAX_PINNED_CONVERSATIONS cannot exceed active conversation limit")
 	}
 	retentionHours, err := intEnv("CONVERSATION_RETENTION_HOURS", 7*24, 24, 24*365)

@@ -11,6 +11,7 @@
 
   export let message: Message;
   export let locale: Locale = 'zh-CN';
+  export let blocked = false;
 
   $: t = (chinese: string, english: string) => translate(locale, chinese, english);
   $: hasText = Boolean(messageSpeechText(message));
@@ -24,7 +25,9 @@
       $speechPlayerState.status === 'buffering' ||
       $speechPlayerState.status === 'connecting');
   $: isPaused = active && $speechPlayerState.status === 'paused';
-  $: label = !available
+  $: label = blocked
+    ? t('语音输入期间暂停朗读', 'Read aloud is paused during voice input')
+    : !available
     ? t('朗读服务暂不可用', 'Read aloud is unavailable')
     : isPlaying
       ? t('暂停朗读', 'Pause read aloud')
@@ -37,7 +40,7 @@
             : t('朗读', 'Read aloud');
 
   async function toggle() {
-    if (!available || !hasText) return;
+    if (blocked || !available || !hasText) return;
     await speechController.playMessage(message);
   }
 </script>
@@ -47,7 +50,7 @@
     class:active
     class="speech-message-control copy-answer"
     type="button"
-    disabled={!available}
+    disabled={blocked || !available}
     aria-label={label}
     aria-pressed={active && (isPlaying || isPaused)}
     title={label}

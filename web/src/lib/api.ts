@@ -4,6 +4,9 @@ import type {
   Conversation,
   ConversationSearchResult,
   ContextCheckpoint,
+  ConversationLimitSettings,
+  DictationAvailability,
+  DictationServiceSettings,
   GuidanceSubmission,
   Message,
   Model,
@@ -165,6 +168,26 @@ export async function recheckProgressiveSummaryCompatibility(): Promise<Progress
   return body.progressiveSummary;
 }
 
+export async function getConversationLimitSettings(): Promise<ConversationLimitSettings> {
+  const body = await request<{ conversationLimit: ConversationLimitSettings }>(
+    '/api/v1/admin/conversation-limit'
+  );
+  return body.conversationLimit;
+}
+
+export async function updateConversationLimitSettings(
+  maxActiveConversations: number
+): Promise<ConversationLimitSettings> {
+  const body = await request<{ conversationLimit: ConversationLimitSettings }>(
+    '/api/v1/admin/conversation-limit',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ maxActiveConversations })
+    }
+  );
+  return body.conversationLimit;
+}
+
 export async function getSpeechPreference(): Promise<SpeechPreference> {
   const body = await request<{ speech: SpeechPreference }>('/api/v1/me/speech');
   return body.speech;
@@ -197,6 +220,33 @@ export async function updateSpeechServiceSettings(
     body: JSON.stringify({ enabled, provider, defaultVoice })
   });
   return body.speech;
+}
+
+export async function getDictationAvailability(): Promise<DictationAvailability> {
+  const body = await request<{ dictation: DictationAvailability }>(
+    '/api/v1/me/dictation'
+  );
+  return body.dictation;
+}
+
+export async function getDictationServiceSettings(): Promise<DictationServiceSettings> {
+  const body = await request<{ dictation: DictationServiceSettings }>(
+    '/api/v1/admin/dictation'
+  );
+  return body.dictation;
+}
+
+export async function updateDictationServiceSettings(
+  enabled: boolean
+): Promise<DictationServiceSettings> {
+  const body = await request<{ dictation: DictationServiceSettings }>(
+    '/api/v1/admin/dictation',
+    {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    }
+  );
+  return body.dictation;
 }
 
 export async function getConversations(archived = false): Promise<Conversation[]> {

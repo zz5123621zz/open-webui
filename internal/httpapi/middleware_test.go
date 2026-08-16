@@ -55,4 +55,8 @@ func TestSecurityHeadersAllowConfiguredWebSocketOrigin(t *testing.T) {
 	if !strings.Contains(policy, "connect-src 'self' wss://chat.example.test") {
 		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
+	permissions := response.Header().Get("Permissions-Policy")
+	if permissions != "camera=(), microphone=(self), geolocation=()" {
+		t.Fatalf("Permissions-Policy = %q", permissions)
+	}
 }

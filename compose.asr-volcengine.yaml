@@ -1,0 +1,12 @@
+services:
+  app:
+    environment:
+      ASR_VOLCENGINE_API_KEY_FILE: /run/secrets/asr_volcengine_api_key
+      ASR_VOLCENGINE_RESOURCE_ID: ${ASR_VOLCENGINE_RESOURCE_ID:-volc.seedasr.sauc.duration}
+      ASR_SESSION_TTL_SECONDS: ${ASR_SESSION_TTL_SECONDS:-135}
+    secrets:
+      - asr_volcengine_api_key
+
+secrets:
+  asr_volcengine_api_key:
+    file: ./secrets/asr_volcengine_api_key

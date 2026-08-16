@@ -2124,7 +2124,21 @@ button:disabled {
 
 .composer-toolbar > div {
   min-width: 0;
-  gap: 4px;
+  gap: 8px;
+}
+
+.composer-toolbar .composer-secondary-actions {
+  flex: 1 1 auto;
+}
+
+.composer-toolbar .composer-primary-actions {
+  min-width: auto;
+  flex: 0 0 auto;
+}
+
+.composer-primary-actions .dictation-button {
+  min-width: 96px;
+  justify-content: center;
 }
 
 .toolbar-button {
@@ -4282,5 +4296,186 @@ button:disabled {
 @media (max-width: 760px) {
   .sidebar {
     transition: transform 260ms var(--ease-drawer);
+  }
+}
+
+/* Browser voice input */
+
+.composer.dictating {
+  border-color: color-mix(in srgb, var(--danger) 62%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent),
+    0 12px 34px rgba(24, 33, 47, 0.1);
+}
+
+.composer.dictating:focus-within {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--danger) 12%, transparent),
+    0 12px 34px rgba(24, 33, 47, 0.1);
+}
+
+.composer.dictating textarea:disabled {
+  color: var(--text);
+  opacity: 1;
+  -webkit-text-fill-color: var(--text);
+}
+
+.dictation-status {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 8px 0;
+  padding: 8px 8px 8px 10px;
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.dictation-live-dot {
+  position: relative;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: var(--danger);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+}
+
+.dictation-live-dot.listening::after {
+  position: absolute;
+  inset: -3px;
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  border-radius: inherit;
+  content: "";
+  animation: dictation-pulse 1.5s ease-out infinite;
+}
+
+@keyframes dictation-pulse {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.82);
+  }
+
+  75%,
+  100% {
+    opacity: 0;
+    transform: scale(1.24);
+  }
+}
+
+.dictation-status-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.dictation-status-copy strong {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 670;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dictation-status-copy small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dictation-status > button {
+  min-width: 54px;
+  min-height: 44px;
+  padding: 0 12px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
+  border-radius: 11px;
+  cursor: pointer;
+  background: var(--surface);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.dictation-status > button:hover {
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.dictation-button.active {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+}
+
+.dictation-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dictation-button:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--border));
+}
+
+.dictation-button.listening {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+@media (max-width: 760px) {
+  .composer-primary-actions .dictation-button {
+    min-width: 44px;
+    width: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .composer-primary-actions .dictation-button > span {
+    display: none;
+  }
+
+  .dictation-status {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 8px;
+    margin: 7px 7px 0;
+    padding: 7px;
+  }
+
+  .dictation-status-copy small {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 380px) {
+  .dictation-status {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  .dictation-status-copy small {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) and (orientation: landscape) {
+  .dictation-status {
+    min-height: 50px;
+    margin-top: 5px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictation-live-dot.listening::after {
+    animation: none;
+    opacity: 0.5;
+    transform: none;
   }
 }

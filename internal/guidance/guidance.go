@@ -166,6 +166,7 @@ type Runtime struct {
 	AllowTaskBrief       bool
 	RequireClarification bool
 	RequireTaskBrief     bool
+	MinQuestions         int
 	MaxQuestions         int
 	MaxRounds            int
 	RoundCount           int
@@ -210,7 +211,11 @@ func ParseControlCall(
 		if cards.Round < 1 || cards.Round > cards.MaxRounds {
 			return ControlPart{}, errors.New("clarification round is outside the task limit")
 		}
-		if err := ValidateClarificationCards(cards, runtime.MaxQuestions); err != nil {
+		if err := ValidateClarificationCardsRange(
+			cards,
+			runtime.MinQuestions,
+			runtime.MaxQuestions,
+		); err != nil {
 			return ControlPart{}, err
 		}
 		raw, err := json.Marshal(cards)
@@ -410,6 +415,14 @@ func DecodeStoredSubmission(raw json.RawMessage) (StoredSubmission, error) {
 }
 
 func ValidateClarificationCards(cards ClarificationCards, maximumQuestions int) error {
+	return ValidateClarificationCardsRange(cards, 2, maximumQuestions)
+}
+
+func ValidateClarificationCardsRange(
+	cards ClarificationCards,
+	minimumQuestions int,
+	maximumQuestions int,
+) error {
 	if cards.SchemaVersion != SchemaVersion {
 		return errors.New("unsupported clarification schema version")
 	}
@@ -429,8 +442,22 @@ func ValidateClarificationCards(cards ClarificationCards, maximumQuestions int) 
 	if maximumQuestions < 2 || maximumQuestions > MaximumQuestionsPerRound {
 		maximumQuestions = MaximumQuestionsPerRound
 	}
-	if len(cards.Questions) < 2 || len(cards.Questions) > maximumQuestions {
-		return fmt.Errorf("clarification must contain 2 to %d questions", maximumQuestions)
+	if minimumQuestions < 2 || minimumQuestions > maximumQuestions {
+		minimumQuestions = 2
+	}
+	if len(cards.Questions) < minimumQuestions ||
+		len(cards.Questions) > maximumQuestions {
+		if minimumQuestions == maximumQuestions {
+			return fmt.Errorf(
+				"clarification must contain exactly %d questions",
+				minimumQuestions,
+			)
+		}
+		return fmt.Errorf(
+			"clarification must contain %d to %d questions",
+			minimumQuestions,
+			maximumQuestions,
+		)
 	}
 	if err := validateOptionalDisplayText(cards.Intro, 240); err != nil {
 		return fmt.Errorf("invalid clarification intro: %w", err)
@@ -747,7 +774,14 @@ func ToolDefinitions(runtime Runtime) []map[string]any {
 		if maximumQuestions > MaximumQuestionsPerRound {
 			maximumQuestions = MaximumQuestionsPerRound
 		}
-		tools = append(tools, clarificationTool(maximumQuestions))
+		minimumQuestions := runtime.MinQuestions
+		if minimumQuestions < 2 || minimumQuestions > maximumQuestions {
+			minimumQuestions = 2
+		}
+		tools = append(
+			tools,
+			clarificationTool(minimumQuestions, maximumQuestions),
+		)
 	}
 	if runtime.AllowTaskBrief {
 		tools = append(tools, taskBriefTool())
@@ -792,9 +826,21 @@ The user has explicitly confirmed generation. Do not ask another ordinary clarif
 	maximumRounds := effectiveMaximumRounds(runtime.MaxRounds)
 	if runtime.RequireClarification {
 		nextRound := runtime.RoundCount + 1
+		questionInstruction := fmt.Sprintf(
+			"at most %d of the highest-impact unanswered questions allowed by the schema",
+			runtime.MaxQuestions,
+		)
+		if runtime.MinQuestions == runtime.MaxQuestions &&
+			runtime.MaxQuestions >= 2 {
+			questionInstruction = fmt.Sprintf(
+				"exactly %d high-impact questions allowed by the schema; use a practical delegated-default or unknown option when fewer than %d facts are strictly required",
+				runtime.MaxQuestions,
+				runtime.MaxQuestions,
+			)
+		}
 		output.WriteString(fmt.Sprintf(`
-The user explicitly chose to keep refining after clarification round %d of %d. You MUST call %s exactly once and return no substantive answer text. This next card is clarification round %d of %d. Do not call %s, do not answer the task yet, and do not repeat questions already answered in earlier rounds. Ask only the %d or fewer highest-impact unanswered questions allowed by the schema, using plain language and practical tap-friendly options.
-`, runtime.RoundCount, maximumRounds, ToolShowClarificationCards, nextRound, maximumRounds, ToolShowTaskBrief, runtime.MaxQuestions))
+The user explicitly chose to keep refining after clarification round %d of %d. You MUST call %s exactly once and return no substantive answer text. This next card is clarification round %d of %d. Do not call %s, do not answer the task yet, and do not repeat questions already answered in earlier rounds. Ask %s, using plain language and practical tap-friendly options.
+`, runtime.RoundCount, maximumRounds, ToolShowClarificationCards, nextRound, maximumRounds, ToolShowTaskBrief, questionInstruction))
 		return output.String()
 	}
 	if runtime.RequireTaskBrief {
@@ -804,10 +850,21 @@ The clarification limit of %d rounds has been reached, or ordinary clarification
 		return output.String()
 	}
 	if runtime.AllowClarification {
+		questionInstruction := fmt.Sprintf(
+			"at most %d of the highest-impact unanswered questions",
+			runtime.MaxQuestions,
+		)
+		if runtime.MinQuestions == runtime.MaxQuestions &&
+			runtime.MaxQuestions >= 2 {
+			questionInstruction = fmt.Sprintf(
+				"exactly %d high-impact questions (include a practical unknown or delegated-default choice when necessary)",
+				runtime.MaxQuestions,
+			)
+		}
 		output.WriteString(fmt.Sprintf(`
-If material ambiguity remains, call %s exactly once and return no substantive answer text with it. This would be clarification round %d of at most %d. Ask only the %d or fewer highest-impact unanswered questions allowed by its schema, and do not repeat questions already answered in earlier rounds. Use plain language suitable for a restaurant operator, give practical tap-friendly options, and keep every option neutral enough that the user can choose without reading an analysis. If enough information is already available, call %s instead.
+If material ambiguity remains, call %s exactly once and return no substantive answer text with it. This would be clarification round %d of at most %d. Ask %s as allowed by its schema, and do not repeat questions already answered in earlier rounds. Use plain language suitable for a restaurant operator, give practical tap-friendly options, and keep every option neutral enough that the user can choose without reading an analysis. If enough information is already available, call %s instead.
 In currentUnderstanding, include a concise restatement of the original task and only confirmed context or profile facts actually used. Label the source when a profile fact is used, and never place an inferred assumption there.
-`, ToolShowClarificationCards, runtime.RoundCount+1, maximumRounds, runtime.MaxQuestions, ToolShowTaskBrief))
+`, ToolShowClarificationCards, runtime.RoundCount+1, maximumRounds, questionInstruction, ToolShowTaskBrief))
 	} else if runtime.AllowTaskBrief {
 		output.WriteString(fmt.Sprintf(`
 The normal clarification limit has been reached. Do not ask more ordinary questions. If the task is ready, call %s exactly once and return no substantive answer text with it. Put remaining non-blocking uncertainty under unresolved or delegated assumptions rather than inventing facts.
@@ -841,7 +898,7 @@ func GuidanceErrorPart(code string) ControlPart {
 	}
 }
 
-func clarificationTool(maximumQuestions int) map[string]any {
+func clarificationTool(minimumQuestions, maximumQuestions int) map[string]any {
 	nullableString := []string{"string", "null"}
 	nullableInteger := []string{"integer", "null"}
 	return map[string]any{
@@ -861,7 +918,7 @@ func clarificationTool(maximumQuestions int) map[string]any {
 					"items": map[string]any{"type": "string"},
 				},
 				"questions": map[string]any{
-					"type": "array", "minItems": 2, "maxItems": maximumQuestions,
+					"type": "array", "minItems": minimumQuestions, "maxItems": maximumQuestions,
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
